@@ -6,6 +6,7 @@ import type { Scene } from '../../src/scenes/types';
 import { memoryMediaStore } from '../../src/store/media';
 import { createProject, deleteProject, listProjects, saveProject, setMediaStore, type Project } from '../../src/store/projects';
 import type { RunClient } from '../../src/studio/runClient';
+import { fakeDownloads } from '../files/fakeDownloads';
 
 export const STUDIO = 'chrome-extension://vidflow/studio.html';
 export const sceneId = (i: number) => `scene-${String(i).padStart(2, '0')}`;
@@ -107,7 +108,8 @@ export function stubChrome(data: Record<string, unknown> = {}) {
     getAll: vi.fn(async (): Promise<unknown[]> => []),
     create: vi.fn(async () => ({ id: 50 })),
   };
-  const downloads = { download: vi.fn(async (_opts: chrome.downloads.DownloadOptions) => 1) };
+  const fake = fakeDownloads();
+  const downloads = fake.api;
   vi.stubGlobal('chrome', {
     runtime: { id: 'vidflow', getURL: (p: string) => `chrome-extension://vidflow${p}` },
     storage: {
@@ -126,5 +128,5 @@ export function stubChrome(data: Record<string, unknown> = {}) {
     windows,
     downloads,
   });
-  return { data, tabs, windows, downloads, listeners };
+  return { data, tabs, windows, downloads, fakeDownloads: fake, listeners };
 }

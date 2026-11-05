@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { memoryMediaStore } from '../../src/store/media';
 import type { FlowResultCard } from '../../src/flow/driver';
 import type { FlowPort } from '../../src/runs/coordinator';
+import { fakeDownloads } from '../files/fakeDownloads';
 
 const TILE_X = 50;
 /** A finished result tile, newest first by domIndex. */
@@ -36,7 +37,7 @@ function mockChrome() {
     alarms: { create: vi.fn(async (_name: string, _info: unknown) => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
     power: { requestKeepAwake: vi.fn(), releaseKeepAwake: vi.fn() },
     notifications: { create: vi.fn(async () => '') },
-    downloads: { download: vi.fn(async (_opts: chrome.downloads.DownloadOptions) => 1) },
+    downloads: fakeDownloads().api,
     windows: { create: vi.fn(async () => ({ id: 3, tabs: [{ id: 7 }] })), update: vi.fn(async () => undefined), onRemoved: listener() },
     tabs: {
       get: vi.fn(async () => ({ ...tab })),
@@ -537,7 +538,13 @@ describe('matching results to scenes', () => {
         continue;
       }
       await waitFor(() => chromeMock.downloads.download.mock.calls.length === 1, 'the auto-save download');
-      expect(chromeMock.downloads.download.mock.calls[0]![0]).toMatchObject({ filename: 'Demo/Slide_01.png', conflictAction: 'uniquify', saveAs: false });
+      // Straight from the signed Flow address the picture was verified at (a data: URL can't carry a 4 MB PNG).
+      expect(chromeMock.downloads.download.mock.calls[0]![0]).toEqual({
+        url: 'https://flow-content.google/image/k1',
+        filename: 'Demo/Slide_01.png',
+        conflictAction: 'uniquify',
+        saveAs: false,
+      });
       const store = await import('../../src/store/projects');
       let downloaded: Record<string, string> | undefined;
       for (let i = 0; i < 200 && !downloaded; i++) {
@@ -546,6 +553,23 @@ describe('matching results to scenes', () => {
       }
       expect(downloaded).toEqual({ [`${project.id}/scene-01-option-1`]: 'Slide_01.png' });
     }
+  });
+
+  it("a download mark written while the run commits is never lost", async () => {
+    const { coordinator, project } = await submitted(1);
+    const store = await import('../../src/store/projects');
+    // Each mark lands a little later into a commit (0–39 turns of the event loop), so some fall between its read and write.
+    const marks: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const later = async () => {
+        for (let k = 0; k < i; k++) await Promise.resolve();
+        await store.updateProject(project.id, (v) => void (v.downloaded = { ...v.downloaded, [`m${i}`]: `f${i}.png` }));
+      };
+      marks.push(`m${i}`);
+      await Promise.all([i % 2 ? coordinator.resumeRun() : coordinator.pauseRun(), later()]);
+    }
+    await coordinator.settledForTests();
+    expect(Object.keys((await store.getProject(project.id))!.downloaded ?? {}).sort()).toEqual(marks.sort());
   });
 
   it('a failing auto-save never fails the scene or the run', async () => {
@@ -1051,7 +1075,8 @@ describe("the scene's chosen picture", () => {
     const heard: import('../../src/runs/run').RunState[] = [];
     coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
     await coordinator.startRun(project.id);
-    await waitFor(() => coordinator.getRunState()?.status === 'running');
+    // Settled: the run is waiting on Flow's start (its press recorded), so nothing else changes it meanwhile.
+    await waitFor(() => !!coordinator.getRunState()?.sceneStates.s1?.unconfirmed);
     const before = coordinator.getRunState()!;
     coordinator.onRunState((s) => heard.push(s));
 

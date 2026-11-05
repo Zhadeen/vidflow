@@ -111,19 +111,21 @@ export async function saveProject(p: Project): Promise<void> {
 
 /**
  * Changes one stored project in a single IndexedDB transaction (read and write together), so a change made by another
- * page meanwhile can't be lost between the read and the write. `edit` must not await anything. Returns the saved
- * project, or undefined when it is gone.
+ * page or the background meanwhile can't be lost between the read and the write. `edit` changes the project in place or
+ * returns its replacement, and must not await anything (the transaction would close). Returns the saved project, or
+ * undefined when it is gone.
  */
-export async function updateProject(id: string, edit: (p: Project) => void): Promise<Project | undefined> {
+export async function updateProject(id: string, edit: (p: Project) => Project | void): Promise<Project | undefined> {
   const tx = (await db()).transaction('projects', 'readwrite');
-  const p = await tx.store.get(id);
-  if (p) {
-    edit(p);
-    p.updatedAt = Date.now();
-    await tx.store.put(p);
+  const stored = await tx.store.get(id);
+  let out: Project | undefined;
+  if (stored) {
+    out = edit(stored) ?? stored;
+    out.updatedAt = Date.now();
+    await tx.store.put(out);
   }
   await tx.done;
-  return p;
+  return out;
 }
 
 export async function listProjects(): Promise<Pick<Project, 'id' | 'name' | 'updatedAt'>[]> {

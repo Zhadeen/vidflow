@@ -90,6 +90,17 @@ describe('side panel: Files tab', () => {
     expect(await screen.findByText('Saved 3 pictures to Downloads/Phone Bill Story.')).toBeTruthy();
   });
 
+  it('shows progress while it saves: "Saving 2 of 3…"', async () => {
+    const { chrome } = await openFiles(3);
+    chrome.fakeDownloads.hold();
+    fireEvent.click(screen.getByRole('button', { name: 'Download all 3 pictures' }));
+    expect(await screen.findByText('Saving 3 of 3…')).toBeTruthy();
+    await waitFor(() => expect(chrome.fakeDownloads.listeners.size).toBe(3));
+    for (const id of [1, 2, 3]) chrome.fakeDownloads.finish(id);
+    expect(await screen.findByText('Saved 3 pictures to Downloads/Phone Bill Story.')).toBeTruthy();
+    expect(screen.queryByText(/^Saving \d+ of/)).toBeNull();
+  });
+
   it('Both options doubles the count and is remembered for every video', async () => {
     const { chrome } = await openFiles(3);
     fireEvent.click(screen.getByRole('radio', { name: 'Both options' }));

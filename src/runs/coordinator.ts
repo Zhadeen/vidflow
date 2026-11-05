@@ -10,7 +10,7 @@ import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
-import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
+import { getMediaStore, getProject, updateProject, type Project, type SceneState } from '../store/projects';
 import { getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
 import { autoSaveScene, forgetDownloads } from '../files/downloads';
 import {
@@ -423,10 +423,10 @@ async function commit(next: RunState): Promise<void> {
   state = next;
   await chrome.storage.local.set({ [RUN_KEY]: next });
 
-  // Re-read the project so edits made in Studio meanwhile are not overwritten; only sceneStates (or, for a model
-  // sheet run, heroSheet) is ours. The sheet never goes into sceneStates: it isn't a scene.
-  const project = await getProject(next.projectId);
-  if (project) {
+  // Read and write the project in one transaction so edits made in the studio or panel meanwhile (and pictures marked
+  // downloaded) are never overwritten; only sceneStates (or, for a model sheet run, heroSheet) is ours. The sheet never
+  // goes into sceneStates: it isn't a scene.
+  const project = await updateProject(next.projectId, (project) => {
     if (isHeroSheetRun(next)) {
       const sheet = next.sceneStates[HERO_SHEET_ID];
       if (sheet) {
@@ -438,9 +438,8 @@ async function commit(next: RunState): Promise<void> {
         };
       }
     } else project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
-    await saveProject(project);
-    noteChanges(prev, next, project);
-  }
+  });
+  if (project) noteChanges(prev, next, project);
   if (next.status !== 'running') setStep(null).catch((err) => console.warn('[VidFlow] step clear failed', err));
 
   if (next.status === 'running') {
@@ -1021,6 +1020,8 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
   const wanted = () => state?.projectId === project.id && state.inFlight.includes(sceneId);
   // The reference uploaded into this run's Flow project was attached to every prompt sent in it.
   const withHero = !sheet && !!state?.reference && state.reference.flowProjectUrl === state.flowProjectUrl;
+  // Media id → the signed Flow address it came from: auto-save downloads from there (a data: URL can't carry 4 MB).
+  const urls: Record<string, string> = {};
   try {
     const mediaIds: string[] = [];
     for (const [i, key] of cardKeys.entries()) {
@@ -1035,7 +1036,9 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
       if (!res.ok) throw new Error(`picture fetch ${res.status}`);
       const blob = await res.blob();
       if (!wanted()) return;
-      mediaIds.push(await getMediaStore().put(project.id, `${base}-option-${i + 1}`, blob));
+      const mediaId = await getMediaStore().put(project.id, `${base}-option-${i + 1}`, blob);
+      mediaIds.push(mediaId);
+      urls[mediaId] = url;
     }
     // Made again under the same media ids: the old files on the Mac are not these pictures.
     if (!sheet) await enqueue(() => forgetDownloads(project.id, mediaIds)).catch((err) => console.warn('[VidFlow] download record failed', err));
@@ -1045,7 +1048,7 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
     return;
   }
   // Auto-save (when its switch is on): never awaited, never fails the run; its project write takes the queue's turn.
-  if (!sheet) void autoSaveScene(project.id, sceneId, { writer: (write) => enqueue(write) });
+  if (!sheet) void autoSaveScene(project.id, sceneId, { urls, writer: (write) => enqueue(write) });
 }
 
 async function pump(): Promise<void> {
@@ -1297,12 +1300,15 @@ export async function chooseScenePicture(projectId: string, sceneId: string, pic
       await commit(reduceRun(state, { type: 'choose', sceneId, pictureId }));
       return inRun.pictureIds.indexOf(pictureId) + 1;
     }
-    const project = await getProject(projectId);
-    const scene = project?.sceneStates[sceneId];
-    if (!project || !scene || !scene.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
-    project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
-    await saveProject(project);
-    return scene.pictureIds.indexOf(pictureId) + 1;
+    let option = 0;
+    await updateProject(projectId, (project) => {
+      const scene = project.sceneStates[sceneId];
+      if (!scene || !scene.pictureIds.includes(pictureId)) return;
+      project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
+      option = scene.pictureIds.indexOf(pictureId) + 1;
+    });
+    if (!option) throw new Error(NOT_THIS_SCENES_PICTURE);
+    return option;
   });
   // Written before the studio hears back, so its activity list shows the line with the swap. A log failure never
   // undoes the choice.

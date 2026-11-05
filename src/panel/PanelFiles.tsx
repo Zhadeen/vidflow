@@ -95,6 +95,7 @@ export function PanelFiles({ project, run, onChange, media }: Props) {
   const [folder, setFolder] = useState(() => folderOf(project));
   const [busy, setBusy] = useState<null | 'all' | 'csv' | 'json'>(null);
   const [message, setMessage] = useState<Message | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Another video, or its folder changed elsewhere: show its folder.
   useEffect(() => setFolder(folderOf(project)), [project.id, project.downloadFolder, project.name]);
@@ -144,7 +145,7 @@ export function PanelFiles({ project, run, onChange, media }: Props) {
     setBusy('all');
     setMessage(null);
     try {
-      const r: DownloadResult = await downloadAll(project.id, { both: both === true, again });
+      const r: DownloadResult = await downloadAll(project.id, { both: both === true, again, onProgress: (done, total) => setProgress({ done, total }) });
       if (r.failed > 0) {
         setMessage({
           text: `Couldn't save ${pictures(r.failed)} to your Mac${r.saved ? ` (saved ${r.saved})` : ''}. Check Chrome can download, then try again.`,
@@ -161,6 +162,7 @@ export function PanelFiles({ project, run, onChange, media }: Props) {
       setMessage({ text: "VidFlow couldn't save the pictures. Try again.", problem: true });
     } finally {
       setBusy(null);
+      setProgress(null);
     }
   }
 
@@ -236,6 +238,11 @@ export function PanelFiles({ project, run, onChange, media }: Props) {
       <p className="vf-pn-label vf-pn-label-gap">Coming next</p>
       <p className="vf-pn-note">Clips · Voice · Finished video (MP4)</p>
 
+      {busy === 'all' && progress && (
+        <p className="vf-pn-sub" role="status">
+          Saving {progress.done} of {progress.total}…
+        </p>
+      )}
       {message?.problem && (
         <p className="vf-notice vf-pn-notice" role="alert">
           {message.text}

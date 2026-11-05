@@ -67,4 +67,20 @@ describe('file names', () => {
     expect(folderName('..')).toBe('VidFlow');
     expect(folderName('   ')).toBe('VidFlow');
   });
+
+  it('drops invisible format characters (\\p{Cf})', () => {
+    expect(folderName('Phone\u200bBill\u202e Story\ufeff')).toBe('PhoneBill Story');
+  });
+
+  it('Windows-reserved names get a "_"', () => {
+    for (const n of ['CON', 'prn', 'Aux', 'NUL', 'COM1', 'com9', 'LPT1', 'LPT9']) expect(folderName(n)).toBe(`${n}_`);
+    expect(folderName('CON.txt')).toBe('CON_.txt');
+    expect(folderName('Console')).toBe('Console');
+    expect(folderName('COM10')).toBe('COM10');
+  });
+
+  it('is capped at 100 characters, trimmed after the cut', () => {
+    expect(folderName('a'.repeat(150))).toBe('a'.repeat(100));
+    expect(folderName(`${'b'.repeat(99)} tail`)).toBe('b'.repeat(99));
+  });
 });
