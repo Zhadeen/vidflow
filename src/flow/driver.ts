@@ -9,6 +9,8 @@ import {
 } from './messages';
 import {
   ASPECT_ICON,
+  ANNOUNCEMENT_CLOSE_PATTERN,
+  ANNOUNCEMENT_MORE_PATTERN,
   BILLING_PATTERN,
   CLIP_URL_PREFIX,
   LIMIT_PATTERN,
@@ -27,6 +29,8 @@ export interface FlowPageState {
   noticeDialog: boolean;
   /** A billing / payment / upgrade dialog is open: never accepted; the run stops with a plain message. */
   billingDialog: boolean;
+  /** Flow's "What's new" announcement is open (spike S8): VidFlow closes it with "Get started" and carries on. */
+  announcement: boolean;
 }
 
 export interface FlowResultCard {
@@ -138,6 +142,13 @@ export interface FlowDriver {
   agentModeOn(): boolean;
   /** Empties the prompt box (Flow's Clear prompt button, else select-all and delete); true once it is empty. */
   clearPrompt(): Promise<boolean>;
+  /**
+   * Closes Flow's open "What's new" announcement with its "Get started" button (never "View all changelogs");
+   * true when it pressed it. Also done by every step that watches for dialogs. Logs nothing: the background does.
+   */
+  dismissAnnouncement(): boolean;
+  /** How many announcements this helper has closed (the background logs "Closed Flow's announcement" per new one). */
+  announcementsClosed(): number;
 
   // ---- Clips (spike S8) ----
   setVideoMode(): Promise<void>;
@@ -245,8 +256,8 @@ const REFERENCE_TILE_TIMEOUT_MS = 10_000;
 const ASSETS_LOAD_WAIT_MS = 1_500;
 const CLOSE_WAIT_MS = 1_000;
 const AGENT_OFF_TRIES = 3;
-/** Agent replies stream in; one unchanged this long is taken as finished. */
-const AGENT_SETTLE_MS = 3_000;
+/** Agent replies may stream in; one unchanged this long is taken as finished. */
+const AGENT_SETTLE_MS = 2_000;
 /** Placeholder text the Agent shows before its answer. */
 const AGENT_THINKING = /^(?:thinking|working|generating|analy[sz]ing)\b[^]{0,40}$/i;
 const CREDIT_BALANCE = /(\d[\d,]*)\s+Google\s+Flow\s+credits?/i;
@@ -437,13 +448,40 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       limitMessage,
       noticeDialog: dialogs.some(isUsageNotice),
       billingDialog: dialogs.some(isBilling),
+      announcement: !!announcementButton(),
     };
   }
 
   // ---- Flow's notices -------------------------------------------------------
   // Flow's own Account details panel (opened by readCreditBalance) is neither a notice nor billing, whatever it says.
+  // An announcement is told apart by its two buttons (Get started + View all changelogs), not its wording, which may
+  // name plans ("for Ultra subscribers"); a billing dialog never has View all changelogs.
+  const buttonsIn = (el: Element) => [...el.querySelectorAll<HTMLElement>('button, [role="button"]')];
+  const isAnnouncement = (el: Element) => {
+    const labels = buttonsIn(el).map((b) => squash(textNodes(b, true).join(' ')));
+    return labels.some((l) => ANNOUNCEMENT_CLOSE_PATTERN.test(l)) && labels.some((l) => ANNOUNCEMENT_MORE_PATTERN.test(l));
+  };
   const shownDialogs = () =>
-    [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].filter((d) => isShown(d) && !d.querySelector(SEL.closeAccountPanel));
+    [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].filter(
+      (d) => isShown(d) && !d.querySelector(SEL.closeAccountPanel) && !isAnnouncement(d),
+    );
+  function announcementButton(): HTMLElement | null {
+    const box = [...doc.querySelectorAll<HTMLElement>(`${SEL.dialog}, .cdk-overlay-pane`)].find((el) => isShown(el) && isAnnouncement(el));
+    return box ? (buttonsIn(box).find((b) => ANNOUNCEMENT_CLOSE_PATTERN.test(squash(textNodes(b, true).join(' ')))) ?? null) : null;
+  }
+  let closedAnnouncements = 0;
+  const pressedAt = new WeakMap<Element, number>();
+  function dismissAnnouncement(): boolean {
+    const button = announcementButton();
+    if (!button) return false;
+    // Pressed again only if it is still there a second later (each poll would otherwise press it).
+    const last = pressedAt.get(button);
+    if (last !== undefined && Date.now() - last < CLOSE_WAIT_MS) return false;
+    if (last === undefined) closedAnnouncements += 1;
+    pressedAt.set(button, Date.now());
+    button.click();
+    return true;
+  }
   const isBilling = (dialog: Element) => BILLING_PATTERN.test(squash(dialog.textContent));
   /** A usage-policy / rights notice; billing wording anywhere in it makes it a billing dialog instead. */
   const isUsageNotice = (dialog: Element) => !isBilling(dialog) && USAGE_NOTICE_PATTERN.test(squash(dialog.textContent));
@@ -454,6 +492,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
    * notice the background may accept, a billing dialog as a plain stop. Unknown dialogs: the step's own wait decides.
    */
   function stopForDialog(): void {
+    dismissAnnouncement(); // never a stop: Flow's "What's new" is closed and the step carries on
     const dialogs = shownDialogs();
     const billing = dialogs.some(isBilling);
     if (!billing && !dialogs.some(isUsageNotice)) return;
@@ -539,9 +578,9 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   /** The open picker: its asset list, or (in a brand-new Flow project, which says "No assets found.") its Upload button. */
   const pickerOpen = () => q(SEL.assetList) ?? overlayButton('Upload media');
 
-  async function openPicker(message?: string): Promise<void> {
+  async function openPicker(message?: string, findTrigger: () => HTMLElement | null = () => q(SEL.ingredients)): Promise<void> {
     if (pickerOpen()) return;
-    const trigger = q(SEL.ingredients);
+    const trigger = findTrigger();
     if (!trigger) throw blocked(message);
     trigger.click();
     await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS, message);
@@ -795,13 +834,15 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     }
   }
 
-  // ---- Agent questions (spikes S6/S7) ----------------------------------------------
-  /** The question waiting for its reply: replies already in the panel before it, and the settle state. */
+  // ---- Agent questions (spike S8, Agent panel recorded live) ---------------------------
+  /** The question waiting for its reply: Agent rows already in the panel before it, and the settle state. */
   let asked: { baseline: number; question: string; last: string; since: number } | null = null;
-  const agentReplies = () => {
-    const panel = q(SEL.agentPanel);
-    return panel ? [...panel.querySelectorAll(SEL.agentReply)] : [];
-  };
+  const agentPanel = () => q(SEL.agentPanel);
+  const agentRows = () => [...(agentPanel()?.querySelectorAll(SEL.agentRow) ?? [])];
+  /** Pictures attached to an Agent question show as Image ingredient chips (plain Ingredient ones are counted too). */
+  const agentChips = () => doc.querySelectorAll(`${SEL.ingredientChip}, ${SEL.startFrameChip}`).length;
+  /** The panel's own control when the panel is open (the prompt bar moves into it), else the page's. */
+  const inPanel = (sel: string) => agentPanel()?.querySelector<HTMLElement>(sel) ?? q(sel);
 
   async function turnOnAgentMode(): Promise<void> {
     const chip = q(SEL.agentModeChip);
@@ -814,18 +855,17 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   async function finishAgent(): Promise<boolean> {
     asked = null;
     const panelGone = async () => {
-      const close = q(SEL.agentPanel)?.querySelector<HTMLElement>(SEL.agentPanelClose);
-      close?.click();
-      await until(() => !q(SEL.agentPanel), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+      agentPanel()?.querySelector<HTMLElement>(SEL.agentPanelClose)?.click();
+      await until(() => !agentPanel(), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
     };
     try {
       await panelGone();
       await turnOffAgentMode().catch(() => undefined);
-      if (q(SEL.agentPanel)) await panelGone(); // turning Agent off may have reopened or kept it
+      if (agentPanel()) await panelGone(); // turning Agent off may have kept it
     } catch {
       // Never throws: the background asks again when the run stops.
     }
-    return !q(SEL.agentPanel) && !q(SEL.agentModeOn);
+    return !agentPanel() && !q(SEL.agentModeOn);
   }
 
   async function prepareAgentQuestion(names: string[], question: string): Promise<{ x: number; y: number }> {
@@ -833,23 +873,30 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     try {
       stopForDialog();
       await turnOnAgentMode();
-      if (chips() > 0) {
-        // Pictures left from an earlier question: start from an empty bar so the order is known.
-        const clear = q(SEL.clearPrompt);
+      // A fresh conversation per question, so earlier answers can't sway this one (spike S8).
+      const fresh = agentPanel()?.querySelector<HTMLElement>(SEL.agentNewSession);
+      if (fresh) {
+        fresh.click();
+        await until(() => agentRows().length === 0, CLOSE_WAIT_MS, 'not cleared').catch(() => undefined);
+      }
+      if (agentChips() > 0) {
+        // A picture left in the prompt bar: start from an empty bar so the order is known.
+        const clear = inPanel(SEL.clearPrompt);
         if (!clear) throw blocked(AGENT_ASK_MESSAGE);
         clear.click();
-        await untilOrBlocked(() => chips() === 0, wait, AGENT_ASK_MESSAGE);
+        await untilOrBlocked(() => agentChips() === 0, wait, AGENT_ASK_MESSAGE);
       }
-      // Spike S6: option → Add to prompt, one at a time; an attached asset leaves the list.
+      // Spike S6: option → Add to prompt, one at a time, through the panel's own picker button; an attached asset
+      // leaves the list.
       for (const [i, name] of names.entries()) {
-        await openPicker(AGENT_ASK_MESSAGE);
+        await openPicker(AGENT_ASK_MESSAGE, () => inPanel(SEL.ingredients));
         const option = await untilOrBlocked(() => readyAsset(name), wait, AGENT_ASK_MESSAGE);
         option.click();
         const add = await untilOrBlocked(() => overlayButton('Add to prompt'), wait, AGENT_ASK_MESSAGE);
         add.click();
-        await untilOrBlocked(() => chips() === i + 1, wait, AGENT_ASK_MESSAGE);
+        await untilOrBlocked(() => agentChips() === i + 1, wait, AGENT_ASK_MESSAGE);
       }
-      const baseline = agentReplies().length;
+      const baseline = agentRows().length;
       const at = await prepareSubmit(question, { ingredients: names.length });
       asked = { baseline, question: squash(question), last: '', since: 0 };
       return at;
@@ -865,8 +912,10 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const probe = (): string | null => {
       const ask = asked;
       if (!ask) return null;
-      const el = agentReplies().slice(ask.baseline).pop();
-      const text = el ? squash(textNodes(el, true).join(' ')) : '';
+      // Only a NEW Agent row counts, and only its answer text (not Show thinking or the response buttons).
+      const row = agentRows().slice(ask.baseline).pop();
+      const answer = row ? [...row.querySelectorAll(SEL.agentReplyText)].pop() : undefined;
+      const text = answer ? squash(textNodes(answer, true).join(' ')) : '';
       if (!text || text === ask.question || AGENT_THINKING.test(text)) {
         ask.last = '';
         return null;
@@ -967,6 +1016,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     readCredits,
     readCreditsResets,
     agentModeOn: () => !!q(SEL.agentModeOn),
+    dismissAnnouncement,
+    announcementsClosed: () => closedAnnouncements,
     clearPrompt,
 
     async waitForStart(before, timeoutMs) {
@@ -1088,7 +1139,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       const at = centre(button);
       if (!at) throw new Error("Flow's Generate button isn't visible.");
       // Never answer ready for a prompt that names the reference picture while its chip isn't there.
-      if (expected > 0 && chips() !== expected) throw blocked(submitOpts.ingredients !== undefined ? AGENT_ASK_MESSAGE : undefined);
+      const attached = submitOpts.ingredients !== undefined ? agentChips() : chips();
+      if (expected > 0 && attached !== expected) throw blocked(submitOpts.ingredients !== undefined ? AGENT_ASK_MESSAGE : undefined);
       // Nor for a clip whose start frame isn't in the Start slot.
       if (submitOpts.startFrame && !hasStartFrame()) throw blocked(START_FRAME_MESSAGE);
       return at;

@@ -46,6 +46,8 @@ export interface PortDeps {
   press(tabId: number, x: number, y: number): Promise<void>;
   wait(ms: number): Promise<void>;
   getZoom(tabId: number): Promise<number>;
+  /** The Flow tab closed Flow's "What's new" announcement while answering (the background logs it). */
+  onAnnouncement?(tabId: number): void;
 }
 
 const defaultDeps: PortDeps = {
@@ -107,7 +109,9 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort & FlowMot
   async function ask(tabId: number, message: ToFlowTab): Promise<unknown> {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await deps.send(tabId, message);
+        const reply = await deps.send(tabId, message);
+        if ((reply as { announcement?: unknown } | null | undefined)?.announcement === true) deps.onAnnouncement?.(tabId);
+        return reply;
       } catch (err) {
         // A freshly opened or navigated Flow tab may not have loaded the helper yet.
         if (!helperMissing(err)) throw err;

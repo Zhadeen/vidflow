@@ -44,12 +44,15 @@ export const SEL = {
   menuItem: '[role="menuitem"]',
   agentModeChip: '.agent-mode-chip',
   /**
-   * Flow's Agent chat panel, its replies and its close button. NOT captured live (spikes S6/S7 recorded only that the
-   * panel opens beside the grid and must be closed): confirm these in the Plan 3 live check.
+   * Flow's Agent chat panel, recorded live (spike S8, "Agent panel"): the Agent's answers are .agent-row message rows
+   * with the text in .markdown-container; header buttons Start new session and Close. While the panel is open the
+   * prompt bar (prompt box, Add ingredients, Start generation) sits inside it, and pictures show as Image ingredient chips.
    */
-  agentPanel: 'flow-agent-panel, .agent-panel, [role="complementary"][aria-label="Agent"]',
-  agentReply: '.model-message, [data-author="model"], [data-role="model"], .agent-response',
-  agentPanelClose: '[aria-label="Close agent panel"], [aria-label="Close Agent"], [aria-label="Close"]',
+  agentPanel: 'flow-agent-panel',
+  agentRow: '.message-row.agent-row',
+  agentReplyText: '.markdown-container',
+  agentNewSession: '[aria-label="Start new session"]',
+  agentPanelClose: '[aria-label="Close"]',
   dialog: '[role="dialog"], [role="alertdialog"], dialog[open], mat-dialog-container',
   notice: '[role="alert"], [role="status"], [aria-live], mat-snack-bar-container, .mat-mdc-snack-bar-container',
 } as const;
@@ -72,4 +75,7 @@ export const USAGE_NOTICE_PATTERN = /usage polic(?:y|ies)|use policy|prohibited 
 export const BILLING_PATTERN = /paid tier|billing|payment|upgrade|subscribe/i;
 /** The accept button of a usage notice: its whole label, so "OK", "Edit prompt" or "Confirm" never match. */
 export const NOTICE_ACCEPT_PATTERN = /^\s*(?:i understand|i agree|agree|accept|agree and continue|continue)\s*$/i;
+/** Flow's "What's new" announcements (spike S8): closed with "Get started"; never a notice or a billing dialog. */
+export const ANNOUNCEMENT_CLOSE_PATTERN = /^\s*get started\s*$/i;
+export const ANNOUNCEMENT_MORE_PATTERN = /^\s*view all changelogs\s*$/i;
 export const PROGRESS_PATTERN = /\b(\d{1,3})\s?%/;

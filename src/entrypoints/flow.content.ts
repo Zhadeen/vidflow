@@ -396,7 +396,17 @@ export default defineContentScript({
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;
-      void handle().then(sendResponse);
+      // Flow's "What's new" announcement is closed before any step (it would cover the page) and by the driver's own
+      // waits; the answer says so, and the background logs "Closed Flow's announcement".
+      const closedBefore = driver.announcementsClosed();
+      driver.dismissAnnouncement();
+      void handle().then((reply) =>
+        sendResponse(
+          driver.announcementsClosed() > closedBefore && reply && typeof reply === 'object'
+            ? { ...(reply as object), announcement: true }
+            : reply,
+        ),
+      );
       return true; // answer asynchronously
     });
 

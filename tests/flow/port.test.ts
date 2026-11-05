@@ -299,3 +299,21 @@ describe('Flow port: clips and Agent questions', () => {
     expect(await port.finishAgent(7)).toBe(false);
   });
 });
+
+describe("Flow port: Flow's announcements", () => {
+  it('tells the background when the tab closed an announcement while answering', async () => {
+    const onAnnouncement = vi.fn();
+    const responses: unknown[] = [{ kind: 'ready', x: 1, y: 2, announcement: true }, { kind: 'ready', x: 3, y: 4 }];
+    const port = createFlowPort({
+      send: async () => responses.shift(),
+      press: async () => undefined,
+      wait: async () => undefined,
+      getZoom: async () => 1,
+      onAnnouncement,
+    });
+    expect(await port.prepare(7, 's1', 'p')).toEqual({ x: 1, y: 2 });
+    await port.prepare(7, 's1', 'p');
+    expect(onAnnouncement).toHaveBeenCalledTimes(1);
+    expect(onAnnouncement).toHaveBeenCalledWith(7);
+  });
+});

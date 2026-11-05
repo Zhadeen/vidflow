@@ -1,10 +1,25 @@
 <!--
-  NOT captured live. Spikes S6/S7 recorded only that Agent mode (.agent-mode-chip, aria-pressed) opens a chat panel
-  beside the grid, that pictures are attached through the same "Add ingredients" picker (option → Add to prompt), and
-  that the panel must be closed afterwards. This fixture stands in for that panel using the selectors in
-  SEL.agentPanel / SEL.agentReply / SEL.agentPanelClose; confirm them in the Plan 3 live check (Task 7).
+  Flow's Agent panel, recorded live 5 Nov 2026 (spike S8, "Agent panel"). It opens beside the grid when a question is
+  sent with Agent mode on. The owner's messages are .message-row.user-row (text in span.structured-prompt-text); the
+  Agent's are .message-row.agent-row with the answer in flow-markdown-content > div.markdown-container. Header buttons:
+  Open session history, Start new session, Close. While the panel is open the prompt bar (prompt box, "Add ingredients
+  to the prompt box", "Start generation") sits inside it; attached pictures are button.chip-container[aria-label="Image
+  ingredient"]. Hand-built: Angular attributes left out; the prompt bar is moved in by the tests.
 -->
-<flow-agent-panel class="agent-panel" aria-label="Agent">
-  <header><span>Agent</span><button aria-label="Close agent panel"><mat-icon>close</mat-icon></button></header>
-  <div class="agent-messages"></div>
+<flow-agent-panel>
+  <div class="agent-panel-wrapper">
+    <div class="agent-panel-header">
+      <button aria-label="Open session history"><mat-icon>history</mat-icon></button>
+      <button aria-label="Start new session"><mat-icon>add_comment</mat-icon></button>
+      <button aria-label="Close"><mat-icon>close</mat-icon></button>
+    </div>
+    <div class="agent-panel-content">
+      <flow-chat-view>
+        <flow-chat-scroller>
+          <div class="scroll-viewport"><div class="messages-list"></div></div>
+        </flow-chat-scroller>
+      </flow-chat-view>
+      <div class="agent-prompt-bar"></div>
+    </div>
+  </div>
 </flow-agent-panel>

@@ -49,6 +49,7 @@ const idle: FlowPageState = {
   limitMessage: null,
   noticeDialog: false,
   billingDialog: false,
+  announcement: false,
 };
 
 afterEach(() => {
@@ -66,6 +67,7 @@ describe('FlowDriver.read', () => {
       limitMessage: null,
       noticeDialog: false,
       billingDialog: false,
+      announcement: false,
     });
   });
 
@@ -1458,14 +1460,15 @@ describe('FlowDriver video tiles and clip detail (spike S8)', () => {
   });
 });
 
-describe('FlowDriver Agent questions (spikes S6/S7)', () => {
+describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () => {
   afterEach(() => vi.unstubAllGlobals());
   const QUESTION = 'Image 1 is the first attachment, image 2 the second. Which shows the shoulder bag? Answer 1 or 2.';
+  const imageChips = () => document.querySelectorAll('button.chip-container[aria-label="Image ingredient"]');
 
   /**
-   * Agent mode as S6/S7 describe it: the chip toggles aria-pressed; pictures are attached with the S7 picker (an
-   * attached asset leaves the list); pressing send (the background's trusted press, simulated by `send()`) opens the
-   * Agent panel with the question and, later, the reply.
+   * Agent mode as recorded (spike S8): the chip toggles aria-pressed; the first send opens flow-agent-panel and moves
+   * the prompt bar into it; pictures are attached with the S7 picker and show as "Image ingredient" chips; Start new
+   * session empties the conversation; Close removes the panel. `send()` stands in for the background's trusted press.
    */
   function fakeAgent(names: string[]) {
     vi.stubGlobal('DataTransfer', FakeDataTransfer);
@@ -1474,11 +1477,10 @@ describe('FlowDriver Agent questions (spikes S6/S7)', () => {
     document.body.append(overlay);
     const attached: string[] = [];
     const chip = $('.agent-mode-chip');
-    const chipClicks = vi.fn(() => {
-      chip.setAttribute('aria-pressed', chip.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
-    });
-    chip.addEventListener('click', chipClicks);
-    $(SEL.ingredients).addEventListener('click', () => {
+    chip.addEventListener('click', () => chip.setAttribute('aria-pressed', chip.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'));
+    const triggers: string[] = []; // where each picker opening came from
+    $(SEL.ingredients).addEventListener('click', (e) => {
+      triggers.push((e.currentTarget as Element).closest('flow-agent-panel') ? 'panel' : 'page');
       overlay.innerHTML = fixture('ingredients-picker.html');
       const list = overlay.querySelector('[role="listbox"]')!;
       let selected: string | null = null;
@@ -1493,27 +1495,48 @@ describe('FlowDriver Agent questions (spikes S6/S7)', () => {
         if (!selected) return;
         attached.push(selected);
         overlay.innerHTML = '';
-        $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Ingredient"></button>');
+        $(SEL.promptBar).insertAdjacentHTML(
+          'beforeend',
+          '<button class="chip-container" aria-label="Image ingredient"><img class="chip-image" alt="Ingredient image"></button>',
+        );
       });
     });
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button aria-label="Clear prompt">close</button>');
+    const clears = vi.fn(() => imageChips().forEach((c) => c.remove()));
+    $(SEL.clearPrompt).addEventListener('click', clears);
     const closes = vi.fn();
-    function send(reply: string | null, extra = '') {
-      if (!document.querySelector(SEL.agentPanel)) {
-        document.body.insertAdjacentHTML('beforeend', fixture('agent-panel.html'));
-        $(SEL.agentPanelClose).addEventListener('click', () => {
-          closes();
-          document.querySelector(SEL.agentPanel)!.remove();
-        });
-      }
-      const messages = $('.agent-messages');
-      messages.insertAdjacentHTML('beforeend', `<div class="agent-message user-message">${QUESTION}</div>`);
-      if (reply === null) return;
-      messages.insertAdjacentHTML('beforeend', '<div class="agent-message model-message">Thinking…</div>');
-      setTimeout(() => {
-        messages.lastElementChild!.innerHTML = `<p>${reply}</p>${extra}`;
-      }, 20);
+    const newSessions = vi.fn();
+    const list = () => $('.messages-list');
+    function openPanel() {
+      document.body.insertAdjacentHTML('beforeend', fixture('agent-panel.html'));
+      $('.agent-prompt-bar').append($(SEL.promptBar)); // the prompt bar moves into the panel
+      $('[aria-label="Close"]').addEventListener('click', () => {
+        closes();
+        document.body.prepend($(SEL.promptBar));
+        document.querySelector('flow-agent-panel')!.remove();
+      });
+      $('[aria-label="Start new session"]').addEventListener('click', () => {
+        newSessions();
+        list().innerHTML = '';
+      });
     }
-    return { attached, chipClicks, chip, send, closes };
+    /** The background's press on send: the question row, then (after a moment) the Agent's row. */
+    function send(reply: string | null) {
+      if (!document.querySelector('flow-agent-panel')) openPanel();
+      imageChips().forEach((c) => c.remove()); // sending clears the attached pictures
+      list().insertAdjacentHTML('beforeend', `<div class="message-row user-row"><span class="structured-prompt-text">${QUESTION}</span></div>`);
+      if (reply === null) return;
+      setTimeout(() => {
+        list().insertAdjacentHTML(
+          'beforeend',
+          `<div class="message-row agent-row"><flow-chat-bubble><div class="agent-bubble"><button>Show thinking</button><div class="agent-message-content"><flow-a2ui-message-renderer><flow-markdown-content><div class="markdown-container"></div></flow-markdown-content></flow-a2ui-message-renderer></div><button aria-label="Good response">thumb_up</button><button aria-label="Copy">content_copy</button></div></flow-chat-bubble></div>`,
+        );
+        setTimeout(() => {
+          list().lastElementChild!.querySelector('.markdown-container')!.innerHTML = `<p>${reply}</p>`;
+        }, 15);
+      }, 15);
+    }
+    return { attached, chip, send, closes, newSessions, clears, triggers, openPanel, list };
   }
 
   const ready = () => {
@@ -1527,16 +1550,15 @@ describe('FlowDriver Agent questions (spikes S6/S7)', () => {
     load('prompt-bar.html');
     ready();
     const agent = fakeAgent(['vidflow-s01-a.png', 'vidflow-s01-b.png']);
-    const d = driver();
-    const at = await d.prepareAgentQuestion(['vidflow-s01-b.png', 'vidflow-s01-a.png'], QUESTION);
+    const at = await driver().prepareAgentQuestion(['vidflow-s01-b.png', 'vidflow-s01-a.png'], QUESTION);
     expect(at).toEqual({ x: 110, y: 610 });
     expect(agent.chip.getAttribute('aria-pressed')).toBe('true');
     expect(agent.attached).toEqual(['vidflow-s01-b.png', 'vidflow-s01-a.png']);
-    expect(document.querySelectorAll(SEL.ingredientChip)).toHaveLength(2);
+    expect(imageChips()).toHaveLength(2);
     expect($(SEL.promptBox).textContent).toBe(QUESTION);
   });
 
-  it('returns the reply text once it has settled, and the background then finishes: panel closed, Agent off', async () => {
+  it('returns the new agent row\'s answer, and finishing closes the panel and turns Agent mode off', async () => {
     load('prompt-bar.html');
     ready();
     const agent = fakeAgent(['a.png', 'b.png']);
@@ -1547,22 +1569,47 @@ describe('FlowDriver Agent questions (spikes S6/S7)', () => {
     await expect(d.finishAgent()).resolves.toBe(true);
     expect(agent.closes).toHaveBeenCalledTimes(1);
     expect(agent.chip.getAttribute('aria-pressed')).toBe('false');
-    expect(document.querySelector(SEL.agentPanel)).toBeNull();
+    expect(document.querySelector('flow-agent-panel')).toBeNull();
   });
 
-  it('never takes an earlier reply or its own question for the answer', async () => {
+  it('starts a new session in an open panel, attaches through its own Add ingredients, after clearing a leftover picture', async () => {
     load('prompt-bar.html');
     ready();
     const agent = fakeAgent(['a.png', 'b.png', 'c.png', 'd.png']);
     const d = driver();
     await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
-    agent.send('1 — the first one');
-    await expect(d.readAgentReply(1_000)).resolves.toBe('1 — the first one');
-    // A second question in the same chat: the first reply is already there.
-    document.querySelectorAll(SEL.ingredientChip).forEach((c) => c.remove());
+    agent.send('1');
+    await d.readAgentReply(1_000);
+    // A picture left in the panel's prompt bar, e.g. from a question that never went.
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Image ingredient"></button>');
+    // A stale Add ingredients button left in the page outside the panel must not be used.
+    document.body.insertAdjacentHTML('afterbegin', '<button aria-label="Add ingredients to the prompt box" class="stale">add</button>');
+    const stale = vi.fn();
+    $('.stale').addEventListener('click', stale);
+    agent.triggers.length = 0;
     $(SEL.promptBox).innerHTML = '<p><br></p>';
     await d.prepareAgentQuestion(['c.png', 'd.png'], QUESTION);
-    agent.send(null); // only the question shows so far
+    expect(agent.newSessions).toHaveBeenCalledTimes(1);
+    expect(agent.list().children).toHaveLength(0); // fresh context
+    expect(agent.clears).toHaveBeenCalledTimes(1);
+    expect(stale).not.toHaveBeenCalled();
+    expect(agent.triggers).toEqual(['panel', 'panel']);
+    expect(agent.attached.slice(2)).toEqual(['c.png', 'd.png']);
+    expect(imageChips()).toHaveLength(2);
+  });
+
+  it('never takes its own question, an empty answer or an earlier row for the reply', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    agent.openPanel();
+    agent.list().innerHTML =
+      '<div class="message-row agent-row"><div class="markdown-container"><p>An old answer</p></div></div>';
+    $('[aria-label="Start new session"]').replaceWith(document.createElement('span')); // no new session: old row stays
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.list().insertAdjacentHTML('beforeend', `<div class="message-row user-row"><span class="structured-prompt-text">${QUESTION}</span></div>`);
+    agent.list().insertAdjacentHTML('beforeend', '<div class="message-row agent-row"><div class="markdown-container"></div></div>');
     await expect(d.readAgentReply(80)).resolves.toBeNull();
   });
 
@@ -1576,7 +1623,7 @@ describe('FlowDriver Agent questions (spikes S6/S7)', () => {
     await expect(d.readAgentReply(60)).resolves.toBeNull();
     await d.finishAgent();
     expect(agent.chip.getAttribute('aria-pressed')).toBe('false');
-    expect(document.querySelector(SEL.agentPanel)).toBeNull();
+    expect(document.querySelector('flow-agent-panel')).toBeNull();
   });
 
   it('gives null without a question asked first (e.g. after the page reloaded)', async () => {
@@ -1616,5 +1663,72 @@ describe('FlowDriver Agent questions (spikes S6/S7)', () => {
     document.body.insertAdjacentHTML('beforeend', fixture('usage-notice.html'));
     const err = await d.readAgentReply(500).catch((e: unknown) => e);
     expect((err as FlowBlockedError).notice).toBe(true);
+  });
+});
+
+describe("FlowDriver Flow's announcements (spike S8)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const announce = () => {
+    document.body.insertAdjacentHTML('beforeend', fixture('announcement.html'));
+    const getStarted = vi.fn(() => document.querySelector('.announcement')!.closest('.cdk-overlay-container')!.remove());
+    const changelogs = vi.fn();
+    $('.get-started').addEventListener('click', getStarted);
+    $('.changelogs').addEventListener('click', changelogs);
+    return { getStarted, changelogs };
+  };
+
+  it('reads an announcement as its own kind: not a notice, not billing', () => {
+    load('prompt-bar.html');
+    announce();
+    expect(createFlowDriver().read()).toMatchObject({ announcement: true, noticeDialog: false, billingDialog: false });
+  });
+
+  it('closes it with Get started (never View all changelogs) and counts it', () => {
+    load('prompt-bar.html');
+    const a = announce();
+    const d = createFlowDriver();
+    expect(d.dismissAnnouncement()).toBe(true);
+    expect(a.getStarted).toHaveBeenCalledTimes(1);
+    expect(a.changelogs).not.toHaveBeenCalled();
+    expect(d.announcementsClosed()).toBe(1);
+    expect(d.dismissAnnouncement()).toBe(false);
+    expect(d.read().announcement).toBe(false);
+  });
+
+  it('a billing dialog with a Get started button is never taken for one', () => {
+    load('prompt-bar.html', 'billing-dialog.html');
+    $('mat-dialog-container').insertAdjacentHTML('beforeend', '<button>Get started</button>');
+    const d = createFlowDriver();
+    expect(d.dismissAnnouncement()).toBe(false);
+    expect(d.read()).toMatchObject({ announcement: false, billingDialog: true });
+  });
+
+  it('an announcement appearing mid-upload is closed and the upload carries on', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker({ uploadMs: 40 });
+    const a = { getStarted: vi.fn() };
+    setTimeout(() => {
+      const shown = announce();
+      shown.getStarted.mockImplementation(() => {
+        a.getStarted();
+        document.querySelector('.announcement')!.closest('.cdk-overlay-container')!.remove();
+      });
+    }, 10);
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
+    await expect(d.uploadReference(new File([new Uint8Array([1])], REFERENCE, { type: 'image/png' }))).resolves.toBe('ref-media-1');
+    expect(picker.uploaded).toHaveLength(1);
+    expect(a.getStarted).toHaveBeenCalledTimes(1);
+    expect(d.announcementsClosed()).toBe(1);
+  });
+
+  it('is closed before a clip start frame is attached', async () => {
+    load('video-prompt-bar.html');
+    fakeFramePicker();
+    const a = announce();
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
+    await d.uploadStartFrame(new File([new Uint8Array([1])], START_FRAME, { type: 'image/png' }));
+    await d.attachStartFrame(START_FRAME);
+    expect(a.getStarted).toHaveBeenCalledTimes(1);
+    expect(d.hasStartFrame()).toBe(true);
   });
 });

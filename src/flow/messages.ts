@@ -309,6 +309,15 @@ export function decodeBytes(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/**
+ * Every answer from the Flow tab may also carry `announcement: true`: the helper closed Flow's "What's new"
+ * announcement ("Get started", spike S8) while handling the request. The port reports it (PortDeps.onAnnouncement)
+ * so the background can log "Closed Flow's announcement".
+ */
+export interface AnnouncementFlag {
+  announcement?: true;
+}
+
 export type ToFlowTab =
   | PrepareRequest
   | NewProjectRequest

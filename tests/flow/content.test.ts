@@ -200,3 +200,18 @@ describe('Flow helper: clips and Agent questions (Plan 3)', () => {
     expect(SEL.agentModeOn).toBe('.agent-mode-chip[aria-pressed="true"]');
   });
 });
+
+describe("Flow helper: Flow's announcements", () => {
+  it('closes a "What\'s new" announcement before a step and says so in the answer', async () => {
+    await boot({ fixture: 'video-prompt-bar.html' });
+    document.body.insertAdjacentHTML('beforeend', readFileSync(resolve(__dirname, '../fixtures/flow/announcement.html'), 'utf8'));
+    const getStarted = vi.fn(() => document.querySelector('.announcement')!.remove());
+    const changelogs = vi.fn();
+    document.querySelector('.get-started')!.addEventListener('click', getStarted);
+    document.querySelector('.changelogs')!.addEventListener('click', changelogs);
+    expect(await ask({ type: 'flow/generate-cost' })).toEqual({ cost: 14, announcement: true });
+    expect(getStarted).toHaveBeenCalledTimes(1);
+    expect(changelogs).not.toHaveBeenCalled();
+    expect(await ask({ type: 'flow/generate-cost' })).toEqual({ cost: 14 });
+  });
+});
