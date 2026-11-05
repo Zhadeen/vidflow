@@ -48,6 +48,8 @@ export interface PortDeps {
   getZoom(tabId: number): Promise<number>;
   /** The Flow tab closed Flow's "What's new" announcement while answering (the background logs it). */
   onAnnouncement?(tabId: number): void;
+  /** Flow's Account details panel, or the Agent panel / Agent mode, couldn't be closed again (the background logs it). */
+  onLeftOpen?(tabId: number, what: 'account' | 'agent'): void;
 }
 
 const defaultDeps: PortDeps = {
@@ -105,7 +107,8 @@ const helperMissing = (err: unknown) =>
  * The coordinator's FlowPort. The Flow helper (content script) does the DOM work and answers with coordinates; the
  * background presses. Preparing and pressing are separate so the coordinator can re-check the run in between.
  */
-export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort & FlowMotionPort {
+export function createFlowPort(over: Partial<PortDeps> = {}): FlowPort & FlowMotionPort {
+  const deps: PortDeps = { ...defaultDeps, ...over };
   async function ask(tabId: number, message: ToFlowTab): Promise<unknown> {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -204,7 +207,9 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort & FlowMot
     },
 
     async creditBalance(tabId) {
-      return settled((await ask(tabId, { type: FLOW_CREDIT_BALANCE })) as CreditBalanceResponse | undefined).balance;
+      const reply = settled((await ask(tabId, { type: FLOW_CREDIT_BALANCE })) as CreditBalanceResponse | undefined);
+      if (reply.panelOpen === true) deps.onLeftOpen?.(tabId, 'account');
+      return reply.balance;
     },
 
     async videoTiles(tabId) {
@@ -233,7 +238,7 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort & FlowMot
         await press(tabId, at.x, at.y);
         return await readAgentReply(tabId, timeoutMs);
       } finally {
-        await finishAgent(tabId);
+        if (!(await finishAgent(tabId))) deps.onLeftOpen?.(tabId, 'agent');
       }
     },
 

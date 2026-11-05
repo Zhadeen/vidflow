@@ -186,7 +186,8 @@ export default defineContentScript({
 
     async function creditBalance(): Promise<CreditBalanceResponse> {
       try {
-        return { kind: 'done', balance: await driver.readCreditBalance() };
+        const balance = await driver.readCreditBalance();
+        return { kind: 'done', balance, ...(driver.accountPanelOpen() ? { panelOpen: true as const } : {}) };
       } catch (err) {
         return failure(err) as CreditBalanceResponse;
       }

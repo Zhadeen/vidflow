@@ -18,6 +18,8 @@ vi.mock('../../src/runs/coordinator', () => ({
   setFlowPort: vi.fn(),
   setStartChecks: vi.fn(),
   startHeroSheetRun: vi.fn(async () => undefined),
+  startClipRun: vi.fn(async () => undefined),
+  noteFlowTab: vi.fn(),
   startRun: vi.fn(async () => undefined),
   stopRun: vi.fn(async () => undefined),
   handleFlowNotice: vi.fn(async () => undefined),
@@ -99,6 +101,46 @@ describe('run/hero-sheet', () => {
     expect(onMessage(sheet, { id: 'vidflow', url: 'chrome-extension://vidflow/studio.html' }, sendResponse)).toBe(true);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, state: null }));
     expect(startHeroSheetRun).toHaveBeenCalledWith('p1');
+  });
+});
+
+describe('run/make-clips', () => {
+  const clips = { type: 'run/make-clips', projectId: 'p1', limit: 24 };
+
+  it("is refused from VidFlow's content script in a Flow tab and from other extensions", async () => {
+    const { startClipRun } = await import('../../src/runs/coordinator');
+    for (const sender of [
+      { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 4 } },
+      { id: 'other', url: 'chrome-extension://other/studio.html' },
+    ]) {
+      const sendResponse = vi.fn();
+      expect(onMessage(clips, sender, sendResponse)).toBeUndefined();
+      expect(sendResponse).not.toHaveBeenCalled();
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(startClipRun).not.toHaveBeenCalled();
+  });
+
+  it('starts the Motion run with its credit limit for the studio page', async () => {
+    const { startClipRun } = await import('../../src/runs/coordinator');
+    const sendResponse = vi.fn();
+    expect(onMessage(clips, { id: 'vidflow', url: 'chrome-extension://vidflow/studio.html' }, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, state: null }));
+    expect(startClipRun).toHaveBeenCalledWith('p1', 24);
+  });
+
+  it("logs Flow's announcement and panels Flow left open in the run's activity", async () => {
+    const coordinator = await import('../../src/runs/coordinator');
+    const { createFlowPort } = await import('../../src/flow/port');
+    const deps = vi.mocked(createFlowPort).mock.calls.at(-1)![0]!;
+    deps.onAnnouncement!(7);
+    deps.onLeftOpen!(7, 'account');
+    deps.onLeftOpen!(7, 'agent');
+    expect(vi.mocked(coordinator.noteFlowTab).mock.calls).toEqual([
+      ["Closed Flow's announcement"],
+      ["Flow's account panel didn't close"],
+      ["Flow's Agent panel didn't close"],
+    ]);
   });
 });
 

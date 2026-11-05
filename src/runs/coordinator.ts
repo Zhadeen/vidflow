@@ -1,7 +1,8 @@
 /// <reference types="chrome" />
-import { policyDialogMessage, type FlowResultCard, type StartVerb } from '../flow/driver';
+import { policyDialogMessage, type ClipFile, type FlowResultCard, type StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import {
+  CLIP_ASPECT_MESSAGE,
   FlowBlockedError,
   REFERENCE_ATTACH_MESSAGE,
   TEST_WHILE_STARTING_MESSAGE,
@@ -14,18 +15,28 @@ import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { liveView } from '../flow/live';
 import type { LiveView } from '../flow/messages';
 import { detachFlowDebugger } from '../flow/press';
+import type { FlowMotionPort } from '../flow/port';
+import { scenesToClip, startFrameName } from '../motion/clips';
+import { createFlowDownloadGuard } from '../motion/flowDownloads';
+import { mp4Duration } from '../motion/mp4';
+import { useRange } from '../motion/timing';
 import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
-import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
+import { logActivity, sceneNumber, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, updateProject, type Project, type SceneState } from '../store/projects';
 import { getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
 import { autoSaveScene, forgetDownloads } from '../files/downloads';
 import {
+  BALANCE_NOTE,
+  CREDIT_LIMIT_NOTE,
   HERO_SHEET_ID,
+  initClipRun,
   initHeroSheetRun,
   initRun,
+  isClipRun,
   isHeroSheetRun,
   isLive,
+  isSceneRun,
   nextSceneToSubmit,
   normaliseEvent,
   NOT_THIS_SCENES_PICTURE,
@@ -73,6 +84,13 @@ export interface FlowPort {
   acceptNotice(tabId: number): Promise<boolean | null | 'gone'>;
 }
 
+/**
+ * The port the coordinator holds: FlowPort, plus Plan 3's Flow work (clips, Agent questions; src/flow/port.ts makes
+ * both). The motion part is optional so a picture-only port (tests, older fakes) still drives picture runs; a clip run
+ * pauses without it.
+ */
+export type RunPort = FlowPort & Partial<FlowMotionPort>;
+
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
 const notificationIcon = () => chrome.runtime.getURL('icon/128.png');
 const RUN_KEY = 'vidflow.run';
@@ -98,6 +116,8 @@ const timings = {
   backWaitMs: 5_000,
   /** How long a scene whose start VidFlow didn't see may wait on a still-generating tile before it fails. */
   unconfirmedWaitMs: DEADLINE_MINUTES * 60_000,
+  /** A clip run asks the Flow tab for its video tiles this often (the page itself reports picture tiles only). */
+  clipPollMs: 5_000,
 };
 
 /** Tests only: shorter waits, so a test doesn't sit out the real pacing between scenes. */
@@ -150,7 +170,7 @@ interface FlowWindow {
   tabId: number;
 }
 
-let port: FlowPort | null = null;
+let port: RunPort | null = null;
 let state: RunState | null = null;
 let pumping = false;
 let ready: Promise<void> | null = null;
@@ -188,9 +208,17 @@ function withTab<T>(fn: () => Promise<T>): Promise<T> {
   return result;
 }
 
-export function setFlowPort(p: FlowPort): void {
+export function setFlowPort(p: RunPort): void {
   port = p;
   void pump();
+}
+
+/** The port with its clip methods, or null when it has none (a clip run then pauses). */
+function motionPort(): (FlowPort & FlowMotionPort) | null {
+  const p = port;
+  if (!p) return null;
+  const needed: Array<keyof FlowMotionPort> = ['prepareClip', 'uploadStartFrame', 'generateCost', 'creditBalance', 'videoTiles', 'readVideoDetail', 'clipFile'];
+  return needed.every((k) => typeof p[k] === 'function') ? (p as FlowPort & FlowMotionPort) : null;
 }
 
 export function getRunState(): RunState | null {
@@ -235,11 +263,12 @@ const pictures = (n: number) => `${n} picture${n === 1 ? '' : 's'}`;
 
 /** Log lines for what changed between two run states (scene results and the run's own status). */
 function noteChanges(prev: RunState | null, next: RunState, project: Project): void {
+  const clips = isClipRun(next);
   for (const [sceneId, now] of Object.entries(next.sceneStates)) {
     const before = prev?.sceneStates[sceneId]?.status;
     if (before === now.status) continue;
     if (now.status === 'submitted') note(project, sceneId, 'Sent to Flow');
-    else if (now.status === 'done') note(project, sceneId, `✓ Saved ${pictures(now.pictureIds.length)}`);
+    else if (now.status === 'done') note(project, sceneId, clips ? '✓ Saved clip' : `✓ Saved ${pictures(now.pictureIds.length)}`);
     else if (now.status === 'refused' || now.status === 'failed') note(project, sceneId, now.message ?? 'Needs a look');
   }
   if (prev?.status === next.status) return;
@@ -249,13 +278,17 @@ function noteChanges(prev: RunState | null, next: RunState, project: Project): v
   else if (next.status === 'finished') {
     const { done } = runSummary(next);
     if (isHeroSheetRun(next)) note(project, null, done > 0 ? 'Finished: the model sheet is ready' : 'Finished: the model sheet needs a look');
+    else if (clips) note(project, null, `Finished: clips made for ${done} of ${Object.keys(next.sceneStates).length} slides (${next.spent ?? 0} credits used)`);
     else note(project, null, `Finished: pictures ready for ${done} of ${Object.keys(next.sceneStates).length} scenes`);
   }
 }
 
 /** What Flow was (or will be) asked for: a sheet run keeps the outputs and shape it started with. */
-const outputsOf = (run: RunState | null, project: Project) => run?.sheet?.outputs ?? project.outputsPerPrompt;
+const outputsOf = (run: RunState | null, project: Project) => (isClipRun(run) ? 1 : (run?.sheet?.outputs ?? project.outputsPerPrompt));
 const aspectOf = (run: RunState | null, project: Project) => run?.sheet?.aspect ?? project.aspect;
+
+/** Why a live clip run blocks another start: it is making clips, or it is paused. */
+const clipsBlock = (run: RunState) => (run.status === 'paused' ? CLIPS_PAUSED_MESSAGE : CLIPS_BUSY_MESSAGE);
 
 /** Why a live model sheet run blocks another start: it is being made, or it is paused. */
 const sheetBlock = (run: RunState) => (run.status === 'paused' ? HERO_SHEET_PAUSED_MESSAGE : HERO_SHEET_BUSY_MESSAGE);
@@ -414,6 +447,10 @@ function announce(prev: RunState | null, next: RunState): void {
         ? 'The model sheet is ready. Pick the hero reference in VidFlow.'
         : 'The model sheet needs a look — open VidFlow.',
     );
+  } else if (next.status === 'finished' && isClipRun(next)) {
+    const { done } = runSummary(next);
+    const total = Object.keys(next.sceneStates).length;
+    notify(done === total ? `Clips are ready for all ${total} slides.` : `Clips are ready for ${done} of ${total} slides. The others keep their pictures — open VidFlow.`);
   } else if (next.status === 'finished') {
     const { done, refused, failed } = runSummary(next);
     const total = Object.keys(next.sceneStates).length;
@@ -446,6 +483,18 @@ async function commit(next: RunState): Promise<void> {
           ...(next.sheet ? { aspect: next.sheet.aspect } : {}),
         };
       }
+    } else if (isClipRun(next)) {
+      // A clip run's states are the clips' progress: only each slide's clip and its note are saved; the pictures and
+      // their status stay as they are.
+      const states = { ...project.sceneStates };
+      for (const [id, r] of Object.entries(next.sceneStates)) {
+        const saved = states[id];
+        if (!saved) continue;
+        const { clipNote: _old, ...rest } = saved;
+        const clipNote = r.status === 'failed' || r.status === 'refused' ? r.message : undefined;
+        states[id] = { ...rest, ...(r.status === 'done' && r.clip ? { clip: r.clip } : {}), ...(clipNote ? { clipNote } : {}) };
+      }
+      project.sceneStates = states;
     } else project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
   });
   if (project) noteChanges(prev, next, project);
@@ -485,6 +534,7 @@ async function dispatch(event: RunEvent): Promise<void> {
   });
   void pump();
   void processTiles();
+  void clipPoll();
 }
 
 function pauseWith(message: string): Promise<void> {
@@ -614,8 +664,9 @@ function referenceName(flowProjectUrl: string, type: string): string {
  * (hero-sheet runs never have one). Throws FlowBlockedError when the owner must act. Holds the tab.
  */
 async function ensureReference(tabId: number, project: Project): Promise<string | null> {
-  // The model sheet is how a reference is made: its run never uploads or attaches one, even if the hero has one.
-  if (isHeroSheetRun(state)) return null;
+  // The model sheet is how a reference is made: its run never uploads or attaches one, even if the hero has one. A
+  // clip run's start frame is the slide's own picture.
+  if (!isSceneRun(state)) return null;
   const mediaId = project.character?.referenceMediaId;
   const flowProjectUrl = state?.flowProjectUrl;
   if (!mediaId || !state || !flowProjectUrl) return null;
@@ -642,6 +693,227 @@ async function ensureReference(tabId: number, project: Project): Promise<string 
   return name;
 }
 
+// ---- Clips (spec §20, spike S8) ------------------------------------------
+
+export const CLIPS_BUSY_MESSAGE = 'VidFlow is making clips right now. Wait for it to finish, then try again.';
+export const CLIPS_PAUSED_MESSAGE = 'Making clips is paused. Resume or stop it, then try again.';
+/** Make clips can't start while this same video's pictures are being made. */
+export const CLIPS_SCENES_BUSY = 'This video is making pictures right now. Wait for it to finish, then make clips.';
+export const NOTHING_TO_CLIP_MESSAGE = 'No slide needs a clip. Pick slides for clips first.';
+export const CLIP_LIMIT_MESSAGE = 'Set a credit limit of 0 or more for this run.';
+const NO_MOTION_PORT_MESSAGE = "VidFlow can't make clips in Flow yet. Open VidFlow again, then press Resume.";
+const CREDITS_UNREADABLE_MESSAGE = "VidFlow can't read your Flow credits. Check the Flow window, then press Resume.";
+const COST_UNREADABLE_MESSAGE = "VidFlow can't read what this clip costs in Flow. Check the Flow window, then press Resume.";
+const CLIP_PICTURE_MISSING = "VidFlow can't find this slide's picture. Make its pictures again, then make clips.";
+const CLIP_SAVE_FAILED_MESSAGE = "VidFlow couldn't save this slide's clip. Make clips again for it.";
+const CLIP_FILE_MESSAGE = "VidFlow couldn't get this clip's file from Flow. Make clips again for it.";
+const CLIP_LENGTH_MESSAGE = "VidFlow couldn't read this clip's length, so it wasn't saved. Make clips again for it.";
+const CLIP_UNCONFIRMED_MESSAGE = "VidFlow couldn't confirm which clip belongs to this slide. Make clips again for it.";
+const UNTRUSTED_CLIP_MESSAGE = "Flow gave VidFlow a clip from an address it doesn't trust, so it wasn't saved. Make clips again for it.";
+
+/** Verified clip files by result key, until saved (signed addresses: never stored with the run). */
+const clipFiles = new Map<string, ClipFile>();
+/** Result keys whose page verified but gave no file (their give-up message says so). */
+const clipFileMissing = new Set<string>();
+/** A clip run's result key → the Flow tab's own key for that tile now (grid position: changes as tiles are added). */
+let clipTileKeys = new Map<string, string>();
+
+/** Flow's browser download of a clip VidFlow fetched itself (registerCoordinator makes it). */
+let flowDownloads: ReturnType<typeof createFlowDownloadGuard> | null = null;
+
+/** Every clip prompt ends with the fixed line (spec §20): a drawing clip's caption is its prompt, so it shows. */
+const CLIP_CAPTION = /keep the exact same drawing style/i;
+
+/**
+ * A picture tile in a clip run's Flow project: an uploaded start frame (or Auto-pick picture), captioned with its file
+ * name, never a clip. A finished picture tile that isn't captioned with a clip prompt counts as one too; a drawing
+ * clip (captioned with its prompt) never does, even if Flow shows its start frame in it.
+ */
+const isUploadTile = (c: FlowResultCard) =>
+  c.video !== true &&
+  (/\bvidflow-s\d+/i.test(c.caption) ||
+    (c.imageUrl !== null && c.progress === null && c.refusal === null && !c.key.startsWith('pending-') && !CLIP_CAPTION.test(c.caption)));
+
+/**
+ * A clip run's result tiles, uploads left out. Flow gives finished clips no media id and keys them by grid position
+ * (which shifts as tiles are added on top), so each is keyed by its place counted from the oldest instead: new tiles
+ * come in on top, so these keys stay put. The Flow tab's own key is kept to open the tile.
+ */
+function clipCards(cards: FlowResultCard[]): FlowResultCard[] {
+  const kept = [...cards].filter((c) => !isUploadTile(c)).sort((a, b) => a.domIndex - b.domIndex);
+  const keys = new Map<string, string>();
+  const out = kept.map((c, domIndex) => {
+    const age = kept.length - 1 - domIndex;
+    const key = c.video === true ? `clip-${age}` : c.refusal !== null ? `pending-refused-${age}` : `pending-${age}`;
+    keys.set(key, c.key);
+    return { ...c, key, domIndex, imageUrl: c.video === true ? (c.imageUrl ?? 'video') : c.imageUrl };
+  });
+  clipTileKeys = keys;
+  return out;
+}
+
+/** The run's result tiles in the Flow tab now: pictures, or for a clip run its clips. */
+async function runTiles(tabId: number): Promise<FlowResultCard[]> {
+  if (!isClipRun(state)) return port!.tiles(tabId);
+  const m = motionPort();
+  return m ? clipCards(await m.videoTiles(tabId)) : [];
+}
+
+/**
+ * Once per clip run, before its first clip, on the Flow project's grid page: Flow's credit balance (spec §20 settled
+ * 2). Spending is tracked from then on; the balance is never re-read mid-run (Flow updates it late, S8). Holds the tab.
+ */
+async function ensureBalance(tabId: number, project: Project): Promise<boolean> {
+  if (state?.balance !== undefined) return true;
+  const m = motionPort();
+  if (!m) throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: NO_MOTION_PORT_MESSAGE });
+  note(project, null, 'Reading your Flow credits', 'project');
+  const balance = await pastNotice(tabId, project.id, null, () => m.creditBalance(tabId));
+  if (!balance) throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: CREDITS_UNREADABLE_MESSAGE });
+  await dispatch({ type: 'balance', credits: balance.credits });
+  return stillRunning(project.id);
+}
+
+/**
+ * Sets Flow up for one slide's clip: uploads its chosen picture as vidflow-s<NN>.png, sets Video · Frames · aspect ·
+ * 720p · length · x1, attaches the picture to Start and types the motion prompt; then reads what Generate will cost.
+ * 'stop' when the run stopped (or the credits ran out: the run then finishes), 'next' when the slide failed or was
+ * skipped meanwhile. Holds the tab.
+ */
+async function prepareClipFor(
+  tabId: number,
+  project: Project,
+  sceneId: string,
+  prompt: string,
+): Promise<{ at: Point; cost: number } | 'stop' | 'next'> {
+  const projectId = project.id;
+  const job = state?.clips?.[sceneId];
+  const m = motionPort();
+  if (!m) throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: NO_MOTION_PORT_MESSAGE });
+  if (!job) {
+    await dispatch({ type: 'failed', sceneId, message: CLIP_PICTURE_MISSING });
+    return 'next';
+  }
+  const aspect = project.aspect;
+  if (aspect !== '16:9' && aspect !== '9:16') {
+    throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: CLIP_ASPECT_MESSAGE });
+  }
+  const image = await getMediaStore()
+    .get(job.pictureId)
+    .catch(() => undefined);
+  if (!image) {
+    await dispatch({ type: 'failed', sceneId, message: CLIP_PICTURE_MISSING });
+    return 'next';
+  }
+  const name = startFrameName(project, sceneId);
+  note(project, sceneId, 'Adding the picture as the start frame', 'project');
+  await pastNotice(tabId, projectId, sceneId, () => m.uploadStartFrame(tabId, name, image));
+  if (!stillRunning(projectId)) return 'stop';
+  if (!stillPending(sceneId)) return 'next';
+  note(project, null, `Set Flow to Video · Frames · ${aspect} · 720p · ${job.length}s · x1`, 'setting');
+  note(project, sceneId, 'Making clip', 'prompt');
+  const at = await pastNotice(tabId, projectId, sceneId, () =>
+    m.prepareClip(tabId, prompt, { aspect, length: job.length, startFrame: name, verb: PUMP_VERB }),
+  );
+  if (!stillRunning(projectId)) return 'stop';
+  if (!stillPending(sceneId)) return 'next';
+  const cost = await m.generateCost(tabId);
+  if (cost === null) throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: COST_UNREADABLE_MESSAGE });
+  const spent = state?.spent ?? 0;
+  // Stop before a clip that would pass the run's limit or what Flow had left (spec §20 settled 7): the run finishes.
+  const stop = spent + cost > (state?.limit ?? 0) ? CREDIT_LIMIT_NOTE : state?.balance !== undefined && spent + cost > state.balance ? BALANCE_NOTE : null;
+  if (stop) {
+    note(project, sceneId, stop === CREDIT_LIMIT_NOTE ? `Credit limit reached (${spent} of ${state?.limit ?? 0} used)` : `Not enough Flow credits left (${spent} of ${state?.balance ?? 0} used)`);
+    await dispatch({ type: 'outOfCredits', message: stop });
+    return 'stop';
+  }
+  return { at, cost };
+}
+
+/**
+ * On a clip's page: its prompt, and when that is `fileFor` (the slide's prompt) also its file (Download media → 720p
+ * Original size; Flow's own browser download of it is cancelled). null when the page didn't show the clip plainly.
+ */
+async function readClipPage(tabId: number, key: string, fileFor?: string): Promise<string | null> {
+  const m = motionPort();
+  if (!m) return null;
+  const { prompt } = await m.readVideoDetail(tabId);
+  if (!prompt) return null;
+  if (fileFor === undefined || !verifyMatch(fileFor, prompt)) return prompt;
+  flowDownloads?.expect();
+  const file = await m.clipFile(tabId);
+  if (!file) {
+    clipFileMissing.add(key);
+    return null; // unread: tried again on the next tile report, given up after GIVE_UP_AFTER
+  }
+  clipFileMissing.delete(key);
+  clipFiles.set(key, file);
+  return prompt;
+}
+
+/**
+ * Fetches a verified clip's file (signed flow-content.google address, background only), measures its length from its
+ * own mvhd box, stores it as scene-NN-clip.mp4 and records the clip with the part the slide uses.
+ */
+async function saveClip(project: Project, sceneId: string, key: string, file: ClipFile): Promise<void> {
+  const job = state?.clips?.[sceneId];
+  const wanted = () => state?.projectId === project.id && state.inFlight.includes(sceneId);
+  if (!job || !wanted()) return;
+  if (!isFlowPictureUrl(file.url)) {
+    clipFiles.delete(key);
+    await dispatch({ type: 'failed', sceneId, message: UNTRUSTED_CLIP_MESSAGE });
+    return;
+  }
+  // One Flow clip (media id) is never saved for two slides.
+  const taken = Object.entries(state?.sceneStates ?? {}).some(([id, s]) => id !== sceneId && s.clip?.flowMediaId === file.mediaId);
+  if (taken) {
+    clipFiles.delete(key);
+    await dispatch({ type: 'failed', sceneId, message: CLIP_UNCONFIRMED_MESSAGE });
+    return;
+  }
+  let clip;
+  try {
+    const res = await fetch(file.url);
+    if (!res.ok) throw new Error(`clip fetch ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    const length = mp4Duration(bytes);
+    if (length === null || length <= 0) {
+      clipFiles.delete(key);
+      await dispatch({ type: 'failed', sceneId, message: CLIP_LENGTH_MESSAGE });
+      return;
+    }
+    if (!wanted()) return;
+    const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
+    const mediaId = await getMediaStore().put(project.id, `scene-${nn}-clip.mp4`, new Blob([bytes], { type: 'video/mp4' }));
+    clip = { mediaId, sourcePictureId: job.pictureId, length, use: useRange(job.seconds, length), flowMediaId: file.mediaId };
+  } catch {
+    clipFiles.delete(key);
+    await dispatch({ type: 'failed', sceneId, message: CLIP_SAVE_FAILED_MESSAGE });
+    return;
+  }
+  clipFiles.delete(key);
+  await dispatch({ type: 'clip', sceneId, clip, cardKey: key });
+}
+
+let clipPolling = false;
+/**
+ * While a clip run is live, asks the Flow tab for its video tiles every few seconds: the page's own tile reports
+ * describe pictures only, and a drawing clip may change nothing they show.
+ */
+async function clipPoll(): Promise<void> {
+  if (clipPolling) return;
+  clipPolling = true;
+  try {
+    await ready;
+    while (state && isClipRun(state) && (state.status === 'running' || state.status === 'paused')) {
+      if (state.inFlight.length > 0) await pullTiles();
+      await sleep(timings.clipPollMs);
+    }
+  } finally {
+    clipPolling = false;
+  }
+}
+
 /**
  * Sends one scene to Flow. Holds the tab. 'stop' ends this pump round (paused, stopped, or blocked); the scene stays
  * pending unless Flow confirmed the start.
@@ -659,7 +931,9 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
   const projectId = project.id;
   try {
     if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop'; // stopped meanwhile; scene stays pending
-    const reference = await ensureReference(tabId, project);
+    const clips = isClipRun(state);
+    const reference = clips ? null : await ensureReference(tabId, project);
+    if (clips && !(await ensureBalance(tabId, project))) return 'stop';
     if (!stillRunning(projectId)) return 'stop';
     const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
     if (unconfirmed) {
@@ -681,28 +955,38 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
         return 'next';
       }
     }
-    const n = outputsOf(state, project);
-    const aspect = aspectOf(state, project);
-    note(project, null, `Set Flow to Image · ${aspect} · ${pictures(n)}`, 'setting');
-    note(project, sceneId, 'Typing the prompt', 'prompt');
-    const at = await pastNotice(tabId, projectId, sceneId, () =>
-      port!.prepare(tabId, sceneId, prompt, {
-        aspect,
-        outputs: n,
-        verb: PUMP_VERB,
-        ...(reference ? { reference: { name: reference } } : {}),
-      }),
-    );
+    let at: Point;
+    let cost = 0;
+    if (clips) {
+      const clip = await prepareClipFor(tabId, project, sceneId, prompt);
+      if (clip === 'stop' || clip === 'next') return clip;
+      ({ at, cost } = clip);
+    } else {
+      const n = outputsOf(state, project);
+      const aspect = aspectOf(state, project);
+      note(project, null, `Set Flow to Image · ${aspect} · ${pictures(n)}`, 'setting');
+      note(project, sceneId, 'Typing the prompt', 'prompt');
+      at = await pastNotice(tabId, projectId, sceneId, () =>
+        port!.prepare(tabId, sceneId, prompt, {
+          aspect,
+          outputs: n,
+          verb: PUMP_VERB,
+          ...(reference ? { reference: { name: reference } } : {}),
+        }),
+      );
+    }
     // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
     if (!stillRunning(projectId)) return 'stop';
     if (!stillPending(sceneId)) return 'next'; // skipped while it was typed: never pressed
-    const keysBefore = (await port!.tiles(tabId)).filter(isFinished).map((c) => c.key);
+    const keysBefore = (await runTiles(tabId)).filter(isFinished).map((c) => c.key);
     if (!stillRunning(projectId)) return 'stop';
     // Recorded before the press: if the worker is suspended before Flow's start is confirmed, the next pump looks for
     // this scene's tiles before pressing again (no surplus batch). `submitted` clears it.
     await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
     if (!stillRunning(projectId)) return 'stop';
     if (!stillPending(sceneId)) return 'next';
+    // A clip's credits count from the press, whatever Flow then does with it (spec §20 settled 7: no refunds).
+    if (clips) await dispatch({ type: 'spent', credits: cost });
     note(project, sceneId, 'Pressing Generate', 'generate');
     await pressIn(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
@@ -765,7 +1049,7 @@ async function findUnconfirmedStart(
   if (!state) return null;
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
-  const all = (await port!.tiles(tabId)).filter((c) => !claimed.has(c.key) && notReference(state!)(c));
+  const all = (await runTiles(tabId)).filter((c) => !claimed.has(c.key) && notReference(state!)(c));
   const fresh = oldestFirst(all).filter((c) => !before.has(c.key));
   const outputs = outputsOf(state, project);
   // A skipped submission whose tiles were already in the grid before this press owes nothing new: place the in-flight
@@ -813,14 +1097,21 @@ async function findUnconfirmedStart(
  * A card's full prompt: known already, or read from its detail view. 'unread' when the detail didn't show this card
  * plainly (try again later); after GIVE_UP_AFTER such reads it is recorded as '' (never matches). null if the run stopped.
  */
-async function detailOf(tabId: number, projectId: string, key: string, attempt: number): Promise<string | 'unread' | null> {
+async function detailOf(
+  tabId: number,
+  projectId: string,
+  key: string,
+  attempt: number,
+  fileFor?: string,
+): Promise<string | 'unread' | null> {
   const known = state?.detailPrompts?.[key];
-  if (known !== undefined) return known;
+  // A clip whose file is wanted is opened again even when its prompt is known (the file comes from its page).
+  if (known !== undefined && fileFor === undefined) return known;
   if (unreadCount.get(key)?.attempt === attempt) return 'unread'; // already tried on this report
   // While not running, the last strike is left for after Resume: a paused run doesn't keep opening a tile that won't
   // read (each visit changes the tiles, which would bring the next read) and never gives up on a card.
   if (state?.status !== 'running' && (unreadCount.get(key)?.count ?? 0) >= GIVE_UP_AFTER - 1) return null;
-  const read = await readDetailFor(tabId, projectId, key);
+  const read = await readDetailFor(tabId, projectId, key, fileFor);
   if (!stillCollecting(projectId)) return null;
   if (read === SKIPPED) return null; // paused with the tab elsewhere: not read, so not a strike against the card
   if (read === null) {
@@ -843,7 +1134,7 @@ const SKIPPED = Symbol('skipped');
  * run's project. null when anything doesn't line up; SKIPPED when a paused run's tab is off the project (it is never
  * moved then). Holds the tab.
  */
-async function readDetailFor(tabId: number, projectId: string, key: string): Promise<string | null | typeof SKIPPED> {
+async function readDetailFor(tabId: number, projectId: string, key: string, fileFor?: string): Promise<string | null | typeof SKIPPED> {
   const flowUrl = state?.flowProjectUrl;
   if (!flowUrl || !port || !stillCollecting(projectId)) return null;
   const onProject = (u: string) => projectUrlOf(u) === flowUrl && !/\/edit\//.test(u);
@@ -857,10 +1148,16 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
       await chrome.tabs.update(tabId, { url: flowUrl });
       if (!(await waitForUrl(tabId, onProject))) return null;
     }
-    const at = await port.tilePoint(tabId, key);
+    // A clip is opened by its place in the grid as the tab shows it now (VidFlow holds the tab: nothing is added).
+    const clips = isClipRun(state);
+    if (clips) await runTiles(tabId);
+    const tileKey = clips ? clipTileKeys.get(key) : key;
+    if (!tileKey) return null;
+    const at = await port.tilePoint(tabId, tileKey);
     if (!stillCollecting(projectId)) return null;
     await pressIn(tabId, at.x, at.y);
     if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
+    if (clips) return await readClipPage(tabId, key, fileFor);
     const { prompt, mediaId } = await port.readDetail(tabId);
     // Trust the prompt only when the page's one picture is this card; missing or different means unread.
     return mediaId === key ? prompt : null;
@@ -899,6 +1196,8 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
 export async function handleTiles(cards: FlowResultCard[]): Promise<void> {
   await ready;
   if (inDetail) return;
+  // The page reports picture tiles only: for a clip run a report just says something changed, so look at the clips.
+  if (isClipRun(state)) return void pullTiles();
   latestReport = { id: latestReport.id + 1, at: Date.now(), cards };
   void processTiles();
 }
@@ -945,7 +1244,7 @@ async function pullTiles(): Promise<void> {
         await chrome.tabs.update(id, { url: action.url });
         if (!(await waitForUrl(id, (u) => projectUrlOf(u) === action.url))) return;
       } else if (action.kind !== 'ok') return;
-      latestReport = { id: latestReport.id + 1, at: Date.now(), cards: await p.tiles(id) };
+      latestReport = { id: latestReport.id + 1, at: Date.now(), cards: isClipRun(state) ? await runTiles(id) : await p.tiles(id) };
     });
     await processTiles();
   } catch {
@@ -1000,7 +1299,23 @@ async function matchOnce(): Promise<void> {
         if (settled && streak.reportId !== report.id) unconfirmedStreak.set(m.sceneId, { count: streak.count + 1, reportId: report.id });
         if ((unconfirmedStreak.get(m.sceneId)?.count ?? 0) < GIVE_UP_AFTER) continue;
         unconfirmedStreak.delete(m.sceneId);
-        await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
+        await dispatch({ type: 'failed', sceneId: m.sceneId, message: isClipRun(run) ? CLIP_UNCONFIRMED_MESSAGE : UNCONFIRMED_MESSAGE });
+      } else if (isClipRun(run)) {
+        // One clip per slide: opened once to check its prompt and take its file, then saved.
+        const key = m.cardKeys[0]!;
+        const file = clipFiles.get(key);
+        if (!file) {
+          const expected = run.sceneStates[m.sceneId]?.submission?.prompt ?? '';
+          note(project, m.sceneId, `Checking clip ${sceneNumber(project, m.sceneId)} matches its prompt`, 'tile', key);
+          const detail = await detailOf(tabId, run.projectId, key, report.id, expected);
+          if (detail === null || detail === 'unread') return; // stopped, or try again on the next tile report
+          if (detail === '') {
+            await dispatch({ type: 'failed', sceneId: m.sceneId, message: clipFileMissing.has(key) ? CLIP_FILE_MESSAGE : CLIP_UNCONFIRMED_MESSAGE });
+          }
+          changed = true;
+          break; // match again with what the page showed
+        }
+        await saveClip(project, m.sceneId, key, file);
       } else {
         const [key] = unverifiedKeys(m, details);
         if (key !== undefined) {
@@ -1097,9 +1412,12 @@ async function pump(): Promise<void> {
       } catch {
         return void (await pauseWith("VidFlow couldn't open its Flow window. Check Chrome, then press Resume."));
       }
-      const prompt = scene
-        ? buildImagePrompt(scene, projectStyle(project), project.character)
-        : buildModelSheetPrompt(project.character ?? { description: '' }, projectStyle(project));
+      const job = isClipRun(state) ? state.clips?.[sceneId] : undefined;
+      const prompt = job
+        ? job.prompt
+        : scene
+          ? buildImagePrompt(scene, projectStyle(project), project.character)
+          : buildModelSheetPrompt(project.character ?? { description: '' }, projectStyle(project));
       if ((await withTab(() => submitScene(tabId, project, sceneId, prompt))) === 'stop') return;
       await sleep(paceMs());
     }
@@ -1111,7 +1429,7 @@ async function pump(): Promise<void> {
 // ---- Public API ----------------------------------------------------------
 
 /** Which run is about to start: a model sheet only needs the account, the page and the prompt bar. */
-export type StartChecksKind = 'scenes' | 'sheet';
+export type StartChecksKind = 'scenes' | 'sheet' | 'clips';
 /** Runs the Checks before a start: the failing check's plain fix, or null to go ahead. */
 export type StartChecks = (projectId: string, kind: StartChecksKind) => Promise<string | null>;
 let startChecks: StartChecks | null = null;
@@ -1199,6 +1517,7 @@ const NO_PORT_MESSAGE = "VidFlow can't reach the Flow page yet. Try again in a m
 /** Why a run for `projectId` can't start now (another project's run is running, or paused with work left), or null. */
 async function startBlocker(projectId: string): Promise<string | null> {
   if (state && isHeroSheetRun(state) && isLive(state)) return sheetBlock(state);
+  if (state && isClipRun(state) && isLive(state)) return clipsBlock(state);
   if (!state || state.projectId === projectId) return null;
   if (state.status === 'running') return BUSY_MESSAGE;
   const unfinished = Object.values(state.sceneStates).some((s) => s.status === 'pending' || s.status === 'submitted');
@@ -1263,7 +1582,8 @@ export async function discardFinishedRun(projectId: string): Promise<void> {
 /** Try again on one refused or failed scene: re-queue it in this project's run, or start a run for it. */
 export async function retryScene(projectId: string, sceneId: string): Promise<void> {
   await ready;
-  if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) {
+  // Only a pictures run takes the scene back; otherwise (model sheet, clips) it is a new pictures run for it.
+  if (state?.projectId === projectId && state.status !== 'idle' && isSceneRun(state)) {
     // Paused with nothing left to make (not live): ▶ Run is offered, and the scene must then be made, so it resumes.
     const resumeAfter = state.status === 'paused' && !isLive(state);
     if (!(sceneId in state.sceneStates)) {
@@ -1334,11 +1654,66 @@ async function startHeroSheetRunNow(projectId: string): Promise<void> {
         if (state.projectId === projectId && state.status === 'running') return; // already at it
         throw new RunBlockedError(state.status === 'paused' ? HERO_SHEET_PAUSED_MESSAGE : BUSY_MESSAGE);
       }
+      if (isClipRun(state)) throw new RunBlockedError(clipsBlock(state));
       throw new RunBlockedError(state.projectId === projectId ? HERO_SHEET_SCENES_BUSY : BUSY_MESSAGE);
     }
     await commit(reduceRun(initHeroSheetRun(project), { type: 'start' }));
   });
   void pump();
+}
+
+/**
+ * Make clips (spec §20): one clip per slide that needs one (scenesToClip, fixed now) from its chosen picture, in a
+ * fresh Flow project, stopping before a clip that would pass `limit` credits or Flow's balance. Its own run: refused
+ * while any run is live, and for a 1:1 video. The Checks run first, as for every start.
+ */
+export function startClipRun(projectId: string, limit: number): Promise<void> {
+  return asStart(() => startClipRunNow(projectId, limit));
+}
+
+async function startClipRunNow(projectId: string, limit: number): Promise<void> {
+  await ready;
+  postPressNotices.clear();
+  waitingNotices = 0;
+  const project = await getProject(projectId);
+  if (!project) throw new Error('That project is no longer in VidFlow.');
+  if (project.aspect !== '16:9' && project.aspect !== '9:16') throw new Error(CLIP_ASPECT_MESSAGE);
+  if (!Number.isFinite(limit) || limit < 0) throw new Error(CLIP_LIMIT_MESSAGE);
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+  const refusal = (run: RunState | null): string | null => {
+    if (!run || !isLive(run)) return null;
+    if (isHeroSheetRun(run)) return sheetBlock(run);
+    if (isClipRun(run)) return run.projectId === projectId ? clipsBlock(run) : BUSY_MESSAGE;
+    return run.projectId === projectId ? CLIPS_SCENES_BUSY : BUSY_MESSAGE;
+  };
+  const busy = refusal(state);
+  if (busy) throw new RunBlockedError(busy);
+  if (scenesToClip(project, project.sceneStates).length === 0) throw new Error(NOTHING_TO_CLIP_MESSAGE);
+  await passStartChecks(projectId, 'clips');
+  await enqueue(async () => {
+    if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+    const blocked = refusal(state);
+    if (blocked) throw new RunBlockedError(blocked);
+    // The slides, pictures and lengths as they are now (an edit meanwhile doesn't change what this run makes).
+    const fresh = (await getProject(projectId)) ?? project;
+    const ids = scenesToClip(fresh, fresh.sceneStates);
+    if (ids.length === 0) throw new Error(NOTHING_TO_CLIP_MESSAGE);
+    clipFiles.clear();
+    clipFileMissing.clear();
+    await commit(reduceRun(initClipRun(fresh, ids, limit), { type: 'start' }));
+  });
+  void pump();
+  void clipPoll();
+}
+
+/**
+ * A line in the current run's activity about VidFlow's Flow tab ("Closed Flow's announcement", a panel Flow left
+ * open). Nothing when there is no run. Never throws.
+ */
+export function noteFlowTab(text: string): void {
+  const projectId = state?.projectId;
+  if (!projectId) return;
+  logActivity({ at: Date.now(), projectId, sceneId: null, text }).catch((err) => console.warn('[VidFlow] activity write failed', err));
 }
 
 /**
@@ -1349,7 +1724,8 @@ async function startHeroSheetRunNow(projectId: string): Promise<void> {
 export async function chooseScenePicture(projectId: string, sceneId: string, pictureId: string): Promise<void> {
   await ready;
   const option = await enqueue(async () => {
-    const inRun = state?.projectId === projectId && !isHeroSheetRun(state) ? state.sceneStates[sceneId] : undefined;
+    // Only a pictures run holds the scenes' pictures; a clip run's states are its clips' (the choice goes to the project).
+    const inRun = state?.projectId === projectId && isSceneRun(state) ? state.sceneStates[sceneId] : undefined;
     if (state && inRun) {
       if (!inRun.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
       await commit(reduceRun(state, { type: 'choose', sceneId, pictureId }));
@@ -1458,9 +1834,13 @@ async function handleDeadline(sceneId: string): Promise<void> {
         type: 'failed',
         sceneId,
         // A scene VidFlow couldn't match consistently says so, rather than blaming Flow's speed.
-        message: unconfirmedStreak.has(sceneId)
-          ? UNCONFIRMED_MESSAGE
-          : "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
+        message: isClipRun(state)
+          ? unconfirmedStreak.has(sceneId)
+            ? CLIP_UNCONFIRMED_MESSAGE
+            : "Flow didn't finish this clip in 10 minutes. Make clips again for it."
+          : unconfirmedStreak.has(sceneId)
+            ? UNCONFIRMED_MESSAGE
+            : "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
       }),
     );
   });
@@ -1471,6 +1851,12 @@ async function handleDeadline(sceneId: string): Promise<void> {
 /** Register listeners synchronously from the background entry, once. */
 export function registerCoordinator(): void {
   ready = load().catch(() => undefined);
+  // Flow's own browser download of a clip VidFlow fetched itself is cancelled and erased (never any other download).
+  if (chrome.downloads?.onCreated) {
+    flowDownloads = createFlowDownloadGuard(chrome.downloads as never, chrome.runtime.id);
+    const guard = flowDownloads;
+    chrome.downloads.onCreated.addListener((item) => void guard.onCreated(item).catch(() => undefined));
+  }
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === RESUME_ALARM) void resumeRun();
     else if (alarm.name.startsWith(DEADLINE_PREFIX)) void handleDeadline(alarm.name.slice(DEADLINE_PREFIX.length));
@@ -1493,5 +1879,6 @@ export function registerCoordinator(): void {
   void ready.then(() => {
     void pump();
     void pullTiles(); // results that finished while the worker slept
+    void clipPoll();
   });
 }

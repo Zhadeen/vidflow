@@ -1204,6 +1204,16 @@ describe('FlowDriver Generate cost and credit balance (spike S8)', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it('says whether the account panel is still open (it is closed after reading)', async () => {
+    load('prompt-bar.html');
+    fakeAccountPanel();
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 100 });
+    await d.readCreditBalance();
+    expect(d.accountPanelOpen()).toBe(false);
+    load('prompt-bar.html', 'account-panel.html');
+    expect(createFlowDriver().accountPanelOpen()).toBe(true);
+  });
+
   it('reads a balance without a reset date', async () => {
     load('prompt-bar.html');
     fakeAccountPanel({ resets: '' });

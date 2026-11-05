@@ -19,6 +19,7 @@ import {
   RUN_FORGET,
   RUN_CHOOSE,
   RUN_HERO_SHEET,
+  RUN_MAKE_CLIPS,
   RUN_CHECKS,
   RUN_OPEN_FLOW,
   RUN_SHOW_ME,
@@ -44,6 +45,7 @@ import {
   onRunState,
   handleTiles,
   isFlowTab,
+  noteFlowTab,
   pauseRun,
   pillFor,
   registerCoordinator,
@@ -52,6 +54,7 @@ import {
   setFlowPort,
   setStartChecks,
   skipCurrent,
+  startClipRun,
   startHeroSheetRun,
   startRun,
   stopRun,
@@ -88,6 +91,9 @@ async function answerStudio(message: StudioRequest): Promise<RunReply> {
         break;
       case RUN_HERO_SHEET:
         await startHeroSheetRun(message.projectId);
+        break;
+      case RUN_MAKE_CLIPS:
+        await startClipRun(message.projectId, message.limit);
         break;
       case RUN_GET:
         break;
@@ -133,6 +139,7 @@ const STUDIO_TYPES = new Set<string>([
   RUN_FORGET,
   RUN_CHOOSE,
   RUN_HERO_SHEET,
+  RUN_MAKE_CLIPS,
   ...CHECKS_TYPES,
 ]);
 
@@ -143,7 +150,13 @@ export default defineBackground(() => {
     registerE2e(true, chrome.runtime.onMessage as never, chrome.runtime.id);
   }
   // Set synchronously on every worker start, so a plain wake never finds the run "not connected".
-  setFlowPort(createFlowPort());
+  // The Flow tab's housekeeping goes in the run's activity: a closed announcement, a panel Flow left open.
+  setFlowPort(
+    createFlowPort({
+      onAnnouncement: () => noteFlowTab("Closed Flow's announcement"),
+      onLeftOpen: (_tabId, what) => noteFlowTab(what === 'account' ? "Flow's account panel didn't close" : "Flow's Agent panel didn't close"),
+    }),
+  );
   // Every Start runs the Checks first (spec §19), in the e2e build too: its bridge starts through startRun like the
   // studio, so the live check exercises them (cold window: open, wait for load, long read; "still loading" never blocks).
   setStartChecks(startChecks);

@@ -245,7 +245,8 @@ export interface CreditBalanceRequest {
   type: typeof FLOW_CREDIT_BALANCE;
 }
 export type CreditBalanceResponse =
-  | { kind: 'done'; balance: CreditBalance | null }
+  /** panelOpen: the Account details panel was still open afterwards (the background logs it). */
+  | { kind: 'done'; balance: CreditBalance | null; panelOpen?: true }
   | { kind: 'blocked'; event: BlockingEvent; notice?: true }
   | { kind: 'error'; message: string };
 
@@ -450,6 +451,8 @@ export const RUN_FORGET = 'run/forget';
 export const RUN_CHOOSE = 'run/choose';
 /** Make the hero's model sheet in Flow (its own one-prompt run); Try again on a refused sheet sends this too. */
 export const RUN_HERO_SHEET = 'run/hero-sheet';
+/** Make clips (spec §20): a Motion run for the slides that need a clip, within a credit limit. */
+export const RUN_MAKE_CLIPS = 'run/make-clips';
 export const RUN_STATE = 'run/state';
 /** The Checks tab (spec §19): read VidFlow's Flow tab, open Flow, ring its controls, try one prompt without Generate. */
 export const RUN_CHECKS = 'run/checks';
@@ -483,7 +486,8 @@ export type StudioRequest =
   | { type: typeof RUN_FORGET; projectId: string }
   | { type: typeof RUN_RETRY; projectId: string; sceneId: string }
   | { type: typeof RUN_CHOOSE; projectId: string; sceneId: string; pictureId: string }
-  | { type: typeof RUN_HERO_SHEET; projectId: string };
+  | { type: typeof RUN_HERO_SHEET; projectId: string }
+  | { type: typeof RUN_MAKE_CLIPS; projectId: string; limit: number };
 
 /** The run as it is now, or why the request was refused (message is shown to the owner word for word). */
 export type RunReply =

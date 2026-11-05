@@ -168,6 +168,8 @@ export interface FlowDriver {
   readGenerateCost(): Promise<number | null>;
   /** Opens Account details (project grid page), reads the balance and reset date, and always closes it again. */
   readCreditBalance(): Promise<CreditBalance | null>;
+  /** True while Flow's Account details panel is open (it should be closed again after reading the balance). */
+  accountPanelOpen(): boolean;
   /** The grid's tiles in order: drawing clips, finished clips (video: true, no media id) and picture tiles. */
   videoResultCards(): FlowResultCard[];
   readVideoDetail(): VideoDetailRead;
@@ -1109,6 +1111,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     hasStartFrame,
     readGenerateCost,
     readCreditBalance,
+    accountPanelOpen: () => accountPanel() !== null,
     videoResultCards,
     readVideoDetail,
     clipFileUrl,

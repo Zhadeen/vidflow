@@ -106,7 +106,7 @@ function backgroundClient(over: Partial<RunClient> = {}): RunClient {
       await logActivity({ at: Date.now(), projectId, sceneId, text: `Swapped to picture ${s.pictureIds.indexOf(pictureId) + 1}` });
       return { ok: true, state: null };
     }),
-    heroSheet: vi.fn(ok),
+    heroSheet: vi.fn(ok), makeClips: vi.fn(ok),
     checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
     openFlow: vi.fn(async () => ({ ok: true as const })),
     showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),

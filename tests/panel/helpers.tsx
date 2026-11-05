@@ -79,7 +79,7 @@ export function fakeBackground(initial: RunState | null) {
     skip: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     forget: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     choose: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
-    heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
+    heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })), makeClips: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
     openFlow: vi.fn(async () => ({ ok: true as const })),
     showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),

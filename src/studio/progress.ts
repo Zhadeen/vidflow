@@ -1,12 +1,12 @@
-import { isHeroSheetRun, USER_PAUSE_REASON, type RunState } from '../runs/run';
+import { isSceneRun, USER_PAUSE_REASON, type RunState } from '../runs/run';
 import type { Project, SceneState } from '../store/projects';
 
 /**
- * This project's scene run, if the background's current run is this project's. A run making the hero's model sheet
- * isn't one: it never counts in the scenes' states, progress or phase (the Script step's hero section shows it).
+ * This project's scene run, if the background's current run is this project's. A run making the hero's model sheet or
+ * clips isn't one: it never counts in the scenes' picture states, progress or phase.
  */
 export function runFor(project: Project, run: RunState | null): RunState | null {
-  return run && run.projectId === project.id && !isHeroSheetRun(run) ? run : null;
+  return run && run.projectId === project.id && isSceneRun(run) ? run : null;
 }
 
 /**

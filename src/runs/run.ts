@@ -1,3 +1,6 @@
+import { clipPrompt } from '../motion/clips';
+import { clipLengthFor, slideSeconds, type ClipLength, type ClipRecord } from '../motion/timing';
+import { chosenPicture } from '../studio/chosen';
 import type { AspectRatio, Project, SceneState } from '../store/projects';
 
 export type RunEvent =
@@ -28,6 +31,14 @@ export type RunEvent =
   | { type: 'skip'; sceneId: string }
   /** The owner chose which of a scene's pictures it uses (ignored unless it is one of them). */
   | { type: 'choose'; sceneId: string; pictureId: string }
+  /** A clip run saved a slide's clip (from the result tile `cardKey`). */
+  | { type: 'clip'; sceneId: string; clip: ClipRecord; cardKey: string }
+  /** A clip run pressed Generate for a clip costing this many credits (counted whatever Flow does with it). */
+  | { type: 'spent'; credits: number }
+  /** A clip run read Flow's credit balance (once, before its first clip). */
+  | { type: 'balance'; credits: number }
+  /** A clip run reached its credit limit or the balance: slides still waiting aren't made (spec §20 settled 7). */
+  | { type: 'outOfCredits'; message: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
   | {
       type: 'needsOwner';
@@ -57,13 +68,34 @@ export const NOT_THIS_SCENES_PICTURE =
 /** The model sheet's pseudo-scene: the only "scene" of a hero-sheet run, never one of the project's scenes. */
 export const HERO_SHEET_ID = 'hero-sheet';
 
+/** Said on a slide's row when a clip run stopped before making its clip. */
+export const CREDIT_LIMIT_NOTE = 'Not made — credit limit';
+export const BALANCE_NOTE = 'Not made — not enough Flow credits';
+
+/** One slide of a clip run, fixed when the run starts: the picture, lengths and prompt it is made with. */
+export interface ClipJob {
+  pictureId: string;
+  /** How long the slide is on screen (its timecode). */
+  seconds: number;
+  /** The Flow clip length asked for. */
+  length: ClipLength;
+  prompt: string;
+}
+
 export interface RunState {
   projectId: string;
   /**
    * 'hero-sheet': this run makes the hero's model sheet (one prompt, pseudo-scene HERO_SHEET_ID), saved on
-   * project.heroSheet rather than the scenes. Absent for a scene run.
+   * project.heroSheet rather than the scenes. 'clips': a Motion run (spec §20): one clip per slide from its chosen
+   * picture; its scene states are the clips' progress, never the pictures'. Absent for a scene (pictures) run.
    */
-  kind?: 'hero-sheet';
+  kind?: 'hero-sheet' | 'clips';
+  /** A clip run's slides, fixed when it starts. */
+  clips?: Record<string, ClipJob>;
+  /** A clip run's credit limit, what it has pressed Generate for so far, and Flow's balance read before its first clip. */
+  limit?: number;
+  spent?: number;
+  balance?: number;
   /**
    * A hero-sheet run's outputs and shape, fixed when it starts: Flow was asked for these, so matching counts them,
    * whatever the project's settings say later.
@@ -114,7 +146,29 @@ export function initHeroSheetRun(project: Project): RunState {
   };
 }
 
+/**
+ * A Motion run for these slides (scene ids, in project order): each makes a clip from the slide's chosen picture at
+ * the shortest Flow length covering it, within `limit` credits. The pictures themselves are never touched.
+ */
+export function initClipRun(project: Project, sceneIds: string[], limit: number): RunState {
+  const sceneStates: Record<string, SceneState> = {};
+  const clips: Record<string, ClipJob> = {};
+  for (const id of sceneIds) {
+    const scene = project.scenes.find((s) => s.id === id);
+    const saved = project.sceneStates[id];
+    const pictureId = chosenPicture(saved);
+    if (!scene || !pictureId) continue;
+    const seconds = slideSeconds(scene);
+    clips[id] = { pictureId, seconds, length: clipLengthFor(seconds), prompt: clipPrompt(scene) };
+    sceneStates[id] = { sceneId: id, status: 'pending', pictureIds: saved?.pictureIds ?? [] };
+  }
+  return { projectId: project.id, kind: 'clips', clips, limit, spent: 0, status: 'idle', inFlight: [], sceneStates };
+}
+
 export const isHeroSheetRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'hero-sheet';
+export const isClipRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'clips';
+/** A run that makes the project's scene pictures (not the model sheet, not clips). */
+export const isSceneRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => !!run && run.kind === undefined;
 
 /** Running, or paused with something still to make: no other run may start. */
 export function isLive(run: RunState | null | undefined): boolean {
@@ -266,6 +320,22 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       const current = state.sceneStates[event.sceneId];
       if (!current || !current.pictureIds.includes(event.pictureId)) return state;
       return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, chosenPictureId: event.pictureId, choiceSource: 'owner' } } };
+    }
+    case 'clip':
+      if (!state.inFlight.includes(event.sceneId)) return state; // stale (skipped or stopped meanwhile)
+      return settle(setScene(state, event.sceneId, { status: 'done', clip: event.clip, message: undefined, cardKeys: [event.cardKey] }));
+    case 'spent':
+      return { ...state, spent: (state.spent ?? 0) + event.credits };
+    case 'balance':
+      return { ...state, balance: event.credits };
+    case 'outOfCredits': {
+      let sceneStates = state.sceneStates;
+      for (const [id, s] of Object.entries(state.sceneStates)) {
+        if (s.status !== 'pending') continue;
+        const { unconfirmed: _u, ...rest } = s;
+        sceneStates = { ...sceneStates, [id]: { ...rest, status: 'failed', message: event.message } };
+      }
+      return settle({ ...state, sceneStates });
     }
     case 'limit':
       return { ...state, status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };

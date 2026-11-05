@@ -7,6 +7,8 @@ export interface ClipRecord {
   sourcePictureId: string;
   length: number;
   use: [number, number];
+  /** Flow's own id of the clip (from its file address): one Flow clip is never saved for two slides. */
+  flowMediaId?: string;
 }
 
 const MISSING_SECONDS = 3;

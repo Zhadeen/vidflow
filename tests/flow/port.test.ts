@@ -318,6 +318,32 @@ describe("Flow port: Flow's announcements", () => {
   });
 });
 
+describe('Flow port: panels Flow left open (Task 4)', () => {
+  it("tells the background when Flow's account panel stayed open after reading the balance", async () => {
+    const onLeftOpen = vi.fn();
+    const responses: unknown[] = [
+      { kind: 'done', balance: { credits: 5, resets: null }, panelOpen: true },
+      { kind: 'done', balance: { credits: 5, resets: null } },
+    ];
+    const port = createFlowPort({ send: async () => responses.shift(), press: async () => undefined, wait: async () => undefined, getZoom: async () => 1, onLeftOpen });
+    expect(await port.creditBalance(7)).toEqual({ credits: 5, resets: null });
+    await port.creditBalance(7);
+    expect(onLeftOpen.mock.calls).toEqual([[7, 'account']]);
+  });
+
+  it("tells the background when the Agent couldn't be finished after a question", async () => {
+    const onLeftOpen = vi.fn();
+    const responses: unknown[] = [{ kind: 'ready', x: 1, y: 2 }, { kind: 'reply', text: '1' }, { done: false }];
+    const port = createFlowPort({ send: async () => responses.shift(), press: async () => undefined, wait: async () => undefined, getZoom: async () => 1, onLeftOpen });
+    expect(await port.askAgent(7, ['a.png'], 'q', 1_000)).toBe('1');
+    expect(onLeftOpen.mock.calls).toEqual([[7, 'agent']]);
+  });
+
+  it('keeps the default send, press and wait when only hooks are given', () => {
+    expect(() => createFlowPort({ onAnnouncement: () => undefined })).not.toThrow();
+  });
+});
+
 describe('Flow port: review fixes (round 2)', () => {
   it('returns null at once when the tab has lost the question (it reloaded)', async () => {
     const { send, port } = setup([{ kind: 'lost' }]);

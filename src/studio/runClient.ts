@@ -11,6 +11,7 @@ import {
   RUN_FORGET,
   RUN_CHOOSE,
   RUN_HERO_SHEET,
+  RUN_MAKE_CLIPS,
   RUN_CHECKS,
   RUN_OPEN_FLOW,
   RUN_SHOW_ME,
@@ -43,6 +44,8 @@ export interface RunClient {
   choose(projectId: string, sceneId: string, pictureId: string): Promise<RunReply>;
   /** Makes the hero's model sheet in Flow (again); refused while any run is live. */
   heroSheet(projectId: string): Promise<RunReply>;
+  /** Make clips: a Motion run for the slides that need a clip, stopping before `limit` credits; refused while any run is live. */
+  makeClips(projectId: string, limit: number): Promise<RunReply>;
   /** The Checks tab: reads VidFlow's own Flow tab (rows "Not checked yet" when it isn't open). */
   checks(projectId: string): Promise<ChecksReply>;
   /** Opens (or brings forward) VidFlow's Flow window; no Flow project is made. */
@@ -88,6 +91,7 @@ export function chromeRunClient(): RunClient {
     forget: (projectId) => send({ type: RUN_FORGET, projectId }),
     choose: (projectId, sceneId, pictureId) => send({ type: RUN_CHOOSE, projectId, sceneId, pictureId }),
     heroSheet: (projectId) => send({ type: RUN_HERO_SHEET, projectId }),
+    makeClips: (projectId, limit) => send({ type: RUN_MAKE_CLIPS, projectId, limit }),
     checks: (projectId) => ask<ChecksReply>({ type: RUN_CHECKS, projectId }),
     openFlow: () => ask<OpenFlowReply>({ type: RUN_OPEN_FLOW }),
     showMe: () => ask<ShowMeReply>({ type: RUN_SHOW_ME }),

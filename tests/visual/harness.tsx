@@ -90,7 +90,7 @@ const media: MediaStore = {
 };
 
 const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
-const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, skip: ok, forget: ok, choose: ok, heroSheet: ok, checks: async () => ({ ok: true, flowOpen: false, rows: [] }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
+const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, skip: ok, forget: ok, choose: ok, heroSheet: ok, makeClips: ok, checks: async () => ({ ok: true, flowOpen: false, rows: [] }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
 
 const screen = new URLSearchParams(location.search).get('screen') ?? 'running';
 const noop = () => undefined;

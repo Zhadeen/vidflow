@@ -308,7 +308,8 @@ export async function startChecks(projectId: string, kind: StartChecksKind): Pro
   if (cold) await deps.waitForLoad(await deps.openFlowTab());
   const { flowOpen, rows } = await runChecks(projectId, cold ? COLD_WAIT_MS : undefined);
   if (!flowOpen) return FLOW_NOT_OPEN_MESSAGE;
-  const blocks = kind === 'sheet' ? BLOCKS_SHEET : BLOCKS_SCENES;
+  // A clip run starts from the slides' own pictures: like the model sheet, the hero reference isn't needed.
+  const blocks = kind === 'scenes' ? BLOCKS_SCENES : BLOCKS_SHEET;
   // A window VidFlow has only just opened may still be drawing Flow: that isn't the owner's problem to fix. The run's
   // own New-project step checks the account and the page before anything is pressed.
   // Nothing read from such a page counts (a page that isn't drawn shows no account either); the hero still does.
