@@ -33,7 +33,8 @@ export interface Verification {
 
 export const UNCONFIRMED_MESSAGE = "VidFlow couldn't confirm which picture belongs to this scene. Press Try again.";
 
-const normalise = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+// All whitespace is dropped: Flow reads a multi-paragraph prompt back with the paragraphs glued together.
+const normalise = (s: string) => s.replace(/\s+/g, '').toLowerCase();
 
 /** True when the detail view's prompt is the submitted prompt (whitespace and case aside). */
 export function verifyMatch(submittedPrompt: string, detailPrompt: string): boolean {

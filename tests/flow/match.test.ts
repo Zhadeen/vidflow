@@ -137,6 +137,13 @@ describe('matchResults', () => {
 });
 
 describe('verification', () => {
+  it('verifyMatch ignores paragraph breaks that Flow reads back glued together', () => {
+    // Live Flow (5 Nov 2026): a multi-paragraph prompt reads back as "…stickman.Scene: The hero…".
+    const sent = 'STYLE: whiteboard stickman.\n\nScene: The hero waves.\n\nEnforcement: flat lines only.';
+    expect(verifyMatch(sent, 'STYLE: whiteboard stickman.Scene: The hero waves.Enforcement: flat lines only.')).toBe(true);
+    expect(verifyMatch(sent, 'STYLE: whiteboard stickman.Scene: The hero runs.Enforcement: flat lines only.')).toBe(false);
+  });
+
   it('verifyMatch normalises whitespace and case', () => {
     expect(verifyMatch(BIKE, `  ${BIKE.toUpperCase().replace(/ /g, '\n  ')} `)).toBe(true);
     expect(verifyMatch(BIKE, `${BIKE}.`)).toBe(false);

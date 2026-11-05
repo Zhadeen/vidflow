@@ -250,6 +250,22 @@ describe('FlowDriver.prepareSubmit', () => {
     expect($<HTMLButtonElement>(SEL.generate).disabled).toBe(true);
   });
 
+  it('accepts a multi-paragraph prompt that Flow splits into <p> blocks', async () => {
+    // Live Flow (5 Nov 2026): each line becomes a <p>, so textContent glues paragraphs together.
+    load('prompt-bar.html');
+    const exec = vi.fn((cmd: string, _ui?: boolean, value?: string) => {
+      if (cmd === 'insertText') {
+        $(SEL.promptBox).innerHTML = (value ?? '').split('\n').map((l) => (l ? `<p>${l}</p>` : '<p><br></p>')).join('');
+      }
+      return true;
+    });
+    Object.defineProperty(document, 'execCommand', { value: exec, configurable: true });
+    $<HTMLButtonElement>(SEL.generate).removeAttribute('disabled');
+    vi.spyOn($(SEL.generate), 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 10, height: 10 } as DOMRect);
+    const prompt = 'STYLE: whiteboard stickman.\n\nScene: The hero waves.\n\nEnforcement: flat lines only.';
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 200 }).prepareSubmit(prompt)).resolves.toEqual({ x: 5, y: 5 });
+  });
+
   it('fails when the text does not go into the box', async () => {
     load('prompt-bar.html');
     Object.defineProperty(document, 'execCommand', { value: () => false, configurable: true });

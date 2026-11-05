@@ -338,7 +338,9 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       // Spike S5: execCommand insertText is what Flow's editor accepts from the DOM.
       doc.execCommand('selectAll');
       doc.execCommand('insertText', false, prompt);
-      if (squash(box.textContent) !== squash(prompt)) throw new Error("VidFlow couldn't type the prompt into Flow.");
+      // Flow turns each line into a <p>, and textContent glues the paragraphs together, so compare without whitespace.
+      const bare = (s: string | null) => (s ?? '').replace(/\s+/g, '');
+      if (bare(box.textContent) !== bare(prompt)) throw new Error("VidFlow couldn't type the prompt into Flow.");
 
       const button = await until(
         () => {
