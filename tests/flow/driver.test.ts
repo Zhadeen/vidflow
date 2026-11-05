@@ -1732,3 +1732,58 @@ describe("FlowDriver Flow's announcements (spike S8)", () => {
     expect(d.hasStartFrame()).toBe(true);
   });
 });
+
+describe('FlowDriver review fixes (round 2)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('says whether a question is waiting for its reply (none after a reload)', () => {
+    load('prompt-bar.html');
+    expect(createFlowDriver().agentQuestionPending()).toBe(false);
+  });
+
+  it('an answer that starts with "Working…" or "Generating…" counts once it has settled', async () => {
+    load('prompt-bar.html');
+    fakeEditor();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    $('.agent-mode-chip').addEventListener('click', () => $('.agent-mode-chip').setAttribute('aria-pressed', 'true'));
+    document.body.insertAdjacentHTML('beforeend', fixture('agent-panel.html'));
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 300, settleMs: 30 });
+    await d.prepareAgentQuestion([], 'Which one?');
+    expect(d.agentQuestionPending()).toBe(true);
+    $('.messages-list').insertAdjacentHTML(
+      'beforeend',
+      '<div class="message-row agent-row"><div class="markdown-container"><p>Working through both: 2 has the bag</p></div></div>',
+    );
+    await expect(d.readAgentReply(500)).resolves.toBe('Working through both: 2 has the bag');
+  });
+
+  it('closes the ingredients picker before opening the Start frame picker', async () => {
+    load('video-prompt-bar.html');
+    const frames = fakeFramePicker();
+    // The ingredients picker is open (e.g. left from an Agent question): its Upload media must not be used.
+    const overlay = document.querySelector('.cdk-overlay-container')!;
+    overlay.innerHTML = fixture('ingredients-picker.html');
+    const wrongUpload = vi.fn();
+    overlay.querySelector('.upload-media')!.addEventListener('click', wrongUpload);
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
+    await d.uploadStartFrame(new File([new Uint8Array([1])], START_FRAME, { type: 'image/png' }));
+    expect(wrongUpload).not.toHaveBeenCalled();
+    expect(frames.startClicks).toHaveBeenCalledTimes(1);
+    expect(frames.uploaded.map((f) => f.name)).toEqual([START_FRAME]);
+  });
+
+  it('pauses rather than use a picker that will not close', async () => {
+    load('video-prompt-bar.html');
+    const frames = fakeFramePicker();
+    const overlay = document.querySelector('.cdk-overlay-container')!;
+    overlay.innerHTML = fixture('ingredients-picker.html');
+    overlay.addEventListener('keydown', (e) => e.stopPropagation()); // Escape never reaches Flow's handler
+    const err = await createFlowDriver(document, { pollMs: 5, timeoutMs: 100 })
+      .attachStartFrame(START_FRAME)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(START_MESSAGE);
+    expect(frames.startClicks).not.toHaveBeenCalled();
+  });
+});

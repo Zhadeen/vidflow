@@ -202,8 +202,12 @@ export interface TestPromptResponse {
 // ---- Clips (spike S8) -------------------------------------------------------------
 
 /** What a clip's Generate needs: Video · Frames · aspect · 720p · length · x1, and its start frame attached. */
+/** Flow makes clips only in these (spike S8); a 1:1 video gets no clips. */
+export type ClipAspect = Extract<AspectRatio, '16:9' | '9:16'>;
+export const CLIP_ASPECT_MESSAGE = 'Flow makes clips only for 16:9 and 9:16 videos.';
+
 export interface ClipOptions {
-  aspect: AspectRatio;
+  aspect: ClipAspect;
   length: ClipLength;
   /** The start picture already uploaded to this Flow project, by its asset name (vidflow-sNN.png). */
   startFrame: string;
@@ -282,6 +286,8 @@ export interface AgentReplyRequest {
 export type AgentReplyResponse =
   | { kind: 'reply'; text: string }
   | { kind: 'waiting' }
+  /** This page sent no question (it reloaded since): no reply will come. */
+  | { kind: 'lost' }
   | { kind: 'blocked'; event: BlockingEvent; notice?: true }
   | { kind: 'error'; message: string };
 

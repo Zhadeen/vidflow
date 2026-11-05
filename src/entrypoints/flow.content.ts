@@ -37,6 +37,7 @@ import {
   FLOW_VIDEO_DETAIL,
   FLOW_VIDEO_TILES_NOW,
   FlowBlockedError,
+  CLIP_ASPECT_MESSAGE,
   type AgentFinishResponse,
   type AgentPrepareRequest,
   type AgentReplyRequest,
@@ -152,6 +153,7 @@ export default defineContentScript({
 
     /** One clip (spike S8): Video · Frames · aspect · 720p · length · x1, Agent off, start frame attached, prompt typed. */
     async function prepareClip(req: PrepareClipRequest): Promise<PrepareResponse> {
+      if (req.aspect !== '16:9' && req.aspect !== '9:16') return { kind: 'error', message: CLIP_ASPECT_MESSAGE };
       try {
         const stop = await startChecks(req.verb);
         if (stop) return stop;
@@ -212,6 +214,7 @@ export default defineContentScript({
     }
 
     async function agentReply(req: AgentReplyRequest): Promise<AgentReplyResponse> {
+      if (!driver.agentQuestionPending()) return { kind: 'lost' };
       try {
         const text = await driver.readAgentReply(req.waitMs);
         return text === null ? { kind: 'waiting' } : { kind: 'reply', text };

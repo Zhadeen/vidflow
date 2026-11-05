@@ -187,6 +187,8 @@ export interface FlowDriver {
   readAgentReply(waitMs: number): Promise<string | null>;
   /** Closes the Agent panel and turns Agent mode off; never throws. True when both are done. */
   finishAgent(): Promise<boolean>;
+  /** True while a question sent by this helper waits for its reply (false after a page reload). */
+  agentQuestionPending(): boolean;
 }
 
 export interface FlowSettingsRead {
@@ -258,8 +260,8 @@ const CLOSE_WAIT_MS = 1_000;
 const AGENT_OFF_TRIES = 3;
 /** Agent replies may stream in; one unchanged this long is taken as finished. */
 const AGENT_SETTLE_MS = 2_000;
-/** Placeholder text the Agent shows before its answer. */
-const AGENT_THINKING = /^(?:thinking|working|generating|analy[sz]ing)\b[^]{0,40}$/i;
+/** The title of the Start slot's picker (spike S8), telling it apart from the ingredients picker. */
+const FRAME_PICKER_TITLE = /select a frame image/i;
 const CREDIT_BALANCE = /(\d[\d,]*)\s+Google\s+Flow\s+credits?/i;
 const CREDIT_RESETS = /^Resets\s+(?:on\s+)?(.+)$/i;
 const GENERATE_COST = /will\s+use\s+(\d[\d,]*)\s+credits?/i;
@@ -704,10 +706,17 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     return untilOrBlocked(() => frameSlot('Start'), wait, START_FRAME_MESSAGE);
   }
 
+  const framePickerOpen = () => !!pickerOpen() && FRAME_PICKER_TITLE.test(squash((q(SEL.overlay) ?? doc.body).textContent));
+
   async function openFramePicker(): Promise<void> {
-    if (pickerOpen()) return;
+    if (framePickerOpen()) return;
+    // Another picker (the ingredients picker) is open: close it first, never upload or pick through it.
+    if (pickerOpen()) {
+      await closePicker();
+      if (pickerOpen()) throw blocked(START_FRAME_MESSAGE);
+    }
     (await emptyStartSlot()).click();
-    await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS, START_FRAME_MESSAGE);
+    await untilOrBlocked(framePickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS, START_FRAME_MESSAGE);
   }
 
   async function uploadStartFrame(file: File): Promise<void> {
@@ -916,7 +925,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       const row = agentRows().slice(ask.baseline).pop();
       const answer = row ? [...row.querySelectorAll(SEL.agentReplyText)].pop() : undefined;
       const text = answer ? squash(textNodes(answer, true).join(' ')) : '';
-      if (!text || text === ask.question || AGENT_THINKING.test(text)) {
+      // No guessing at "thinking" wording: an answer counts once its text has stayed the same for the settle time.
+      if (!text || text === ask.question) {
         ask.last = '';
         return null;
       }
@@ -1105,6 +1115,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     prepareAgentQuestion,
     readAgentReply,
     finishAgent,
+    agentQuestionPending: () => asked !== null,
   };
 
   async function prepareSubmit(prompt: string, submitOpts: SubmitCheck = {}): Promise<{ x: number; y: number }> {

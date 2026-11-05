@@ -163,10 +163,14 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort & FlowMot
     for (;;) {
       const left = deadline - Date.now();
       if (left <= 0) return null;
-      const reply = settled(
-        (await ask(tabId, { type: FLOW_AGENT_REPLY, waitMs: Math.min(left, AGENT_REPLY_SLICE_MS) })) as AgentReplyResponse | undefined,
-      );
+      const slice = Math.min(left, AGENT_REPLY_SLICE_MS);
+      const started = Date.now();
+      const reply = settled((await ask(tabId, { type: FLOW_AGENT_REPLY, waitMs: slice })) as AgentReplyResponse | undefined);
       if (reply.kind === 'reply') return reply.text;
+      if (reply.kind === 'lost') return null; // the page reloaded: no reply will come
+      // An early "waiting" (e.g. the tab answered at once): wait the slice out rather than ask back to back.
+      const spent = Date.now() - started;
+      if (spent < slice) await deps.wait(slice - spent);
     }
   }
 
@@ -223,9 +227,9 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort & FlowMot
     finishAgent,
 
     async askAgent(tabId, names, question, timeoutMs) {
-      // A blocked or failed prepare has already finished the Agent in the tab.
-      const at = await prepareAgentQuestion(tabId, names, question);
+      // Every way out finishes the Agent, also when preparing failed (no answer, the tab unreachable).
       try {
+        const at = await prepareAgentQuestion(tabId, names, question);
         await press(tabId, at.x, at.y);
         return await readAgentReply(tabId, timeoutMs);
       } finally {

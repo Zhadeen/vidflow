@@ -317,3 +317,42 @@ describe("Flow port: Flow's announcements", () => {
     expect(onAnnouncement).toHaveBeenCalledWith(7);
   });
 });
+
+describe('Flow port: review fixes (round 2)', () => {
+  it('returns null at once when the tab has lost the question (it reloaded)', async () => {
+    const { send, port } = setup([{ kind: 'lost' }]);
+    expect(await port.readAgentReply(7, 90_000)).toBeNull();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits out the slice when the tab answers "waiting" early', async () => {
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const waits: number[] = [];
+    const replies: unknown[] = [{ kind: 'waiting' }, { kind: 'reply', text: '1' }];
+    const port = createFlowPort({
+      send: async () => {
+        now += 100; // the tab answered after only 100 ms
+        return replies.shift();
+      },
+      press: async () => undefined,
+      wait: async (ms) => {
+        waits.push(ms);
+        now += ms;
+      },
+      getZoom: async () => 1,
+    });
+    expect(await port.readAgentReply(7, 90_000)).toBe('1');
+    expect(waits).toEqual([9_900]);
+    vi.restoreAllMocks();
+  });
+
+  it('finishes the Agent when preparing fails in any way', async () => {
+    const noAnswer = setup([undefined, { done: true }]);
+    await expect(noAnswer.port.askAgent(7, ['a.png'], 'q', 1_000)).rejects.toThrow(/no answer/);
+    expect(noAnswer.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
+    const unreachable = setup([new Error('No tab with id: 7'), { done: true }]);
+    await expect(unreachable.port.askAgent(7, ['a.png'], 'q', 1_000)).rejects.toThrow(/No tab/);
+    expect(unreachable.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
+  });
+});

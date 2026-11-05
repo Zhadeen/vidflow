@@ -189,14 +189,14 @@ describe('Flow helper: clips and Agent questions (Plan 3)', () => {
     expect(pressed).not.toHaveBeenCalled();
   });
 
-  it('finishing the Agent turns its mode off; a reply asked for without a question waits', async () => {
+  it('finishing the Agent turns its mode off; a reply asked for without a question is lost', async () => {
     await boot();
     const chip = document.querySelector<HTMLElement>('.agent-mode-chip')!;
     chip.setAttribute('aria-pressed', 'true');
     chip.addEventListener('click', () => chip.setAttribute('aria-pressed', 'false'));
     expect(await ask({ type: 'flow/agent-finish' })).toEqual({ done: true });
     expect(chip.getAttribute('aria-pressed')).toBe('false');
-    expect(await ask({ type: 'flow/agent-reply', waitMs: 10 })).toEqual({ kind: 'waiting' });
+    expect(await ask({ type: 'flow/agent-reply', waitMs: 10 })).toEqual({ kind: 'lost' });
     expect(SEL.agentModeOn).toBe('.agent-mode-chip[aria-pressed="true"]');
   });
 });
@@ -213,5 +213,21 @@ describe("Flow helper: Flow's announcements", () => {
     expect(getStarted).toHaveBeenCalledTimes(1);
     expect(changelogs).not.toHaveBeenCalled();
     expect(await ask({ type: 'flow/generate-cost' })).toEqual({ cost: 14 });
+  });
+});
+
+describe('Flow helper: review fixes (round 2)', () => {
+  it('answers "lost" for a reply when no question was asked in this page', async () => {
+    await boot();
+    expect(await ask({ type: 'flow/agent-reply', waitMs: 10 })).toEqual({ kind: 'lost' });
+  });
+
+  it('refuses a 1:1 clip with a plain message and touches nothing', async () => {
+    await boot({ fixture: 'video-prompt-bar.html' });
+    const radios = vi.fn();
+    document.querySelectorAll('[role="radio"]').forEach((r) => r.addEventListener('click', radios));
+    const reply = await ask({ type: 'flow/prepare-clip', prompt: 'p', aspect: '1:1', length: 4, startFrame: 'vidflow-s01.png' });
+    expect(reply).toEqual({ kind: 'error', message: 'Flow makes clips only for 16:9 and 9:16 videos.' });
+    expect(radios).not.toHaveBeenCalled();
   });
 });
