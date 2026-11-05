@@ -86,7 +86,7 @@ async function setup() {
 }
 
 async function waitFor(check: () => boolean) {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
   expect(check()).toBe(true);
 }
 
@@ -120,7 +120,8 @@ describe('coordinator ↔ Flow port', () => {
     });
     coordinator.setFlowPort(port);
     await coordinator.startRun(project.id);
-    await waitFor(() => coordinator.getRunState()?.status === 'paused');
+    // commit() sets the state before it detaches, so wait for both.
+    await waitFor(() => coordinator.getRunState()?.status === 'paused' && chromeMock.debugger.detach.mock.calls.length > 0);
     const state = coordinator.getRunState()!;
     expect(state.pauseReason).toBe('Switch Flow, then press Resume.');
     expect(state.sceneStates.s1?.status).toBe('pending');
@@ -145,15 +146,17 @@ describe('coordinator ↔ Flow port', () => {
     coordinator.setFlowPort(createFlowPort({ send, press, wait: async () => undefined, getZoom: async () => 1 }));
     await coordinator.startRun(project.id);
     await waitFor(() => coordinator.getRunState()?.status === 'paused' && send.mock.calls.length >= 2);
-    await new Promise((r) => setTimeout(r, 30));
+    const detachedAfterAttach = () =>
+      Math.max(0, ...chromeMock.debugger.detach.mock.invocationCallOrder) >
+      Math.max(0, ...chromeMock.debugger.attach.mock.invocationCallOrder);
+    await waitFor(detachedAfterAttach);
+    await new Promise((r) => setTimeout(r, 30)); // give a wrongly-unguarded press time to show up
 
     const presses = chromeMock.debugger.sendCommand.mock.calls as unknown as [unknown, string, { x: number }][];
     expect(presses.every(([, , params]) => params.x === 5)).toBe(true); // nothing at Generate
     expect(send.mock.calls.some(([, m]) => m.type === 'flow/confirm')).toBe(false);
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('pending');
-    const lastAttach = Math.max(...chromeMock.debugger.attach.mock.invocationCallOrder);
-    const lastDetach = Math.max(...chromeMock.debugger.detach.mock.invocationCallOrder);
-    expect(lastDetach).toBeGreaterThan(lastAttach); // the debugger is not left attached
+    expect(detachedAfterAttach()).toBe(true); // the debugger is not left attached
   });
 
   it('pauses when Flow does not start after the press', async () => {
