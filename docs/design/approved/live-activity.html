@@ -1,0 +1,77 @@
+<h2>VidFlow live activity — so you can see what it's doing</h2>
+<p class="subtitle">Top: the Flow window while VidFlow works (Flow's own dark page, VidFlow's additions in your navy, cream and coral). Bottom: the new Activity panel in the studio. Tell me in the chat what to change.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Flow window — VidFlow is pressing Generate for scene 3</div>
+  <div class="mockup-body" style="padding:0">
+    <div style="position:relative;background:#0b0b0c;height:470px;font:13px/1.4 -apple-system,'Inter',system-ui,sans-serif;color:#e8e8ea;overflow:hidden;border-radius:0 0 10px 10px">
+      <!-- Chrome's own debugging bar -->
+      <div style="background:#2d3a52;color:#dfe6f3;text-align:center;font-size:12px;padding:6px">'VidFlow' started debugging this browser &nbsp;<span style="background:#8ab4f8;color:#0b1a33;border-radius:10px;padding:1px 8px">Cancel</span></div>
+      <!-- Flow sidebar -->
+      <div style="position:absolute;left:0;top:30px;bottom:0;width:150px;padding:14px;color:#aaa;font-size:12px;line-height:2.1">⌂ Nov 05 · Test run 5<br>▦ All media<br>🖼 Images<br>🚶 Characters<br>🎬 Scenes</div>
+      <!-- Flow grid -->
+      <div style="position:absolute;left:160px;right:14px;top:44px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+        <div style="position:relative;border-radius:10px;overflow:hidden;background:#1e1e22;height:120px;display:flex;align-items:center;justify-content:center;color:#888">
+          <span>34%</span><span style="position:absolute;left:8px;bottom:6px;font-size:11px;color:#bbb">The hero jogs along a sidewalk…</span>
+        </div>
+        <div style="position:relative;border-radius:10px;overflow:hidden;height:120px;outline:3px solid #FF6B5B;outline-offset:-3px">
+          <img src="/files/stick2.jpg" style="width:100%;height:100%;object-fit:cover;display:block">
+          <span style="position:absolute;top:8px;left:8px;background:#FF6B5B;color:#14213D;font-weight:700;font-size:11px;padding:3px 8px;border-radius:999px">Checking it matches scene 2…</span>
+        </div>
+        <div style="position:relative;border-radius:10px;overflow:hidden;height:120px">
+          <img src="/files/stick1.jpg" style="width:100%;height:100%;object-fit:cover;display:block">
+          <span style="position:absolute;top:8px;right:8px;background:#14213D;color:#F4EDE0;font-weight:700;font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid #F4EDE0">✓ Saved · scene 1</span>
+        </div>
+        <div style="position:relative;border-radius:10px;overflow:hidden;height:120px">
+          <img src="/files/stick2.jpg" style="width:100%;height:100%;object-fit:cover;display:block;filter:none">
+          <span style="position:absolute;top:8px;right:8px;background:#14213D;color:#F4EDE0;font-weight:700;font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid #F4EDE0">✓ Saved · scene 1</span>
+        </div>
+      </div>
+      <!-- Flow prompt bar with VidFlow ring on Generate -->
+      <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:18px;width:520px;background:#1c1c1f;border-radius:16px;padding:12px 14px">
+        <div style="color:#ddd;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">MANDATORY ART STYLE: classic whiteboard stickman… Scene: The hero jogs along a sidewalk toward a street corner…</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+          <span style="color:#aaa;font-size:11px">Agent</span>
+          <span style="display:flex;align-items:center;gap:10px"><span style="color:#aaa;font-size:11px">🍌 Nano Banana 2.1 ▭ x2</span>
+            <span style="position:relative;display:inline-flex">
+              <span style="width:30px;height:30px;border-radius:50%;background:#e8e8ea;color:#111;display:flex;align-items:center;justify-content:center">→</span>
+              <span style="position:absolute;inset:-7px;border-radius:50%;border:3px solid #FF6B5B;box-shadow:0 0 0 6px rgba(255,107,91,.25)"></span>
+              <span style="position:absolute;bottom:44px;right:-10px;white-space:nowrap;background:#FF6B5B;color:#14213D;font-weight:700;font-size:11px;padding:4px 9px;border-radius:999px">Pressing Generate</span>
+            </span>
+          </span>
+        </div>
+      </div>
+      <!-- VidFlow pill, now with the live step -->
+      <div style="position:absolute;left:14px;bottom:18px;width:250px;background:#14213D;color:#F4EDE0;border:1px solid #2C3D66;border-radius:14px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.4)">
+        <div style="display:flex;justify-content:space-between;align-items:center"><b>VidFlow</b><span style="background:#FF6B5B;color:#14213D;font-weight:700;font-size:11px;padding:3px 10px;border-radius:999px">Pause</span></div>
+        <div style="margin-top:6px;font-size:12px">Scene 3 of 6 · <b>Pressing Generate</b></div>
+        <div style="margin-top:6px;height:5px;background:#24345A;border-radius:3px"><div style="width:42%;height:5px;background:#F4EDE0;border-radius:3px"></div></div>
+        <div style="margin-top:6px;font-size:11px;color:#C9C3B6">2 saved · 2 being drawn · 2 to go</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top:18px">
+  <div class="mockup-header">Studio — new Activity panel (Pictures step, under the scene grid)</div>
+  <div class="mockup-body" style="padding:0">
+    <div style="background:#14213D;color:#F4EDE0;padding:16px;border-radius:0 0 10px 10px;font:13px/1.5 -apple-system,'Inter',system-ui,sans-serif">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b style="font-size:15px">Activity</b>
+        <span style="font-size:12px;color:#C9C3B6">Show live activity in Flow <span style="display:inline-block;width:30px;height:16px;border-radius:9px;background:#FF6B5B;vertical-align:middle;position:relative"><span style="position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:50%;background:#14213D"></span></span></span></div>
+      <div style="display:grid;grid-template-columns:56px 1fr;gap:6px 10px;font-size:13px">
+        <span style="color:#A9B0C2">10:24:51</span><span><b>Scene 3</b> · Pressing Generate</span>
+        <span style="color:#A9B0C2">10:24:49</span><span><b>Scene 3</b> · Typing the prompt into Flow</span>
+        <span style="color:#A9B0C2">10:24:44</span><span><b>Scene 2</b> · Checking picture 1 of 2 matches its prompt</span>
+        <span style="color:#A9B0C2">10:24:40</span><span><b>Scene 1</b> · ✓ Saved 2 pictures</span>
+        <span style="color:#A9B0C2">10:24:12</span><span><b>Scene 2</b> · Sent to Flow</span>
+        <span style="color:#A9B0C2">10:24:03</span><span>Set Flow to Image · 16:9 · 2 pictures</span>
+        <span style="color:#A9B0C2">10:23:58</span><span>Opened a new Flow project “Test run 5”</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Rules</h3>
+  <p class="subtitle">Highlights are look-only — clicks pass straight through, so they never get in VidFlow's or your way. The ring and tag fade as VidFlow moves on. The switch turns all Flow-page highlights off (the pill stays).</p>
+</div>

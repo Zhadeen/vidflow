@@ -242,3 +242,11 @@ Spike notes: `docs/superpowers/spikes/s2-…`, `s3-…`, `s4-…`, `s5-…`.
 6. **Pictures cost 0 credits** (Nano Banana 2.1 on Pro); Flow's default aspect is 9:16, so VidFlow always sets it.
 7. **Export:** WebCodecs + mediabunny in a worker, H.264 8 Mbps / AAC 128k; requires real Chrome's H.264 encoder (check `canEncodeVideo` first); stream output for long videos.
 8. **Picture judging (Gemini Nano):** model download approved and started; result pending (Plan 2).
+
+## 17. Live activity (approved by Hayatudeen, 5 Nov 2026)
+
+On the Flow page, look-only (pointer-events none), switchable ("Show live activity in Flow", on by default):
+- the VidFlow pill shows the current step in plain words ("Scene 3 of 6 · Pressing Generate"), a progress bar and "N saved · N being drawn · N to go";
+- a coral ring + short tag on whatever VidFlow is touching (prompt box, a setting, Generate, a picture being checked); fades as it moves on;
+- a "✓ Saved · scene N" badge on pictures VidFlow has collected.
+In the studio: an Activity list (timestamped, plain words, newest first). Mockup: VidFlint `.superpowers/brainstorm/82712-1793872276/content/live-activity.html` (copy into docs/design/approved/ when built).
