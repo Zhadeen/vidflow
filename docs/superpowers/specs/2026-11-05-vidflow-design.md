@@ -307,3 +307,36 @@ VidFlow also opens in Chrome's own side panel (`chrome.sidePanel`) on the right 
 **§19 known limits (Queue, Skip):**
 - *Phantom tiles from an unconfirmed-then-skipped scene:* if a scene is skipped after Generate was pressed but before VidFlow saw Flow start it, VidFlow doesn't know whether Flow took it, so it keeps no place for it in the order. If Flow did start it, its pictures arrive with no scene owning them. Each picture's detail prompt is still checked before saving, so they are never saved to another scene, but a later scene may wait (or need Try again) while its own pictures are matched around them.
 - A skipped submission keeps its place for one scene deadline (10 minutes); after that, Flow is assumed not to draw it.
+
+## 20. Motion (clips) and Auto-pick (approved by Hayatudeen, 5 Nov 2026)
+
+**Why:** turn each slide's chosen picture into a short moving clip in Flow — optionally, because clips cost Flow credits — and let Flow's own Agent choose the better of each slide's two pictures first. Above all, every slide's picture or clip must last **exactly** its timecode, so voice and visuals never drift ("the voice shouldn't come before the clip or the clip before the voice"). Spike notes: `s2-flow-video.md` (video controls, cost), `s6-flow-agent-judge.md` (Agent passed 4/4 with attached pictures), `s7-flow-ingredient-upload.md` (picker/upload markup).
+
+**Motion choice (per video; in the panel's Setup and the studio's Motion step):**
+- **Stills only** — 0 credits; every slide uses its chosen picture with a gentle zoom/pan (applied at export, Plan 5). **Default** (my call: nothing spends credits until he chooses clips).
+- **Clips for the slides I pick** — recommended for rapid-beat videos; a "Clip" tick on each slide (Queue rows and the studio's Motion grid), plus "pick all / pick none".
+- **Clips for every slide.**
+- Always shown before starting: number of clips, **credits needed** (sum of each clip's cost), **credits left** in Flow (read from Flow's account panel), and a **credit limit for this run** (defaults to the estimate; he can lower it). VidFlow stops before a clip that would pass the limit or the balance; every slide without a clip keeps its still. Nothing spends credits unless he picks clips and presses **Make clips (N credits)** (coral).
+
+**Exact timing:**
+- A slide's length = end − start from its timecode (rapid-beat: 2–3 s). Missing timecode → 3 s (my call).
+- The clip is made at the shortest Flow length that covers it: **4, 6, 8 or 10 s** (4 s = 7 credits, 6 s = 10, 8 s = 12, 10 s = 15). A slide longer than 10 s gets a 10 s clip and the rest is its last frame held (my call).
+- VidFlow stores each clip with its **use range** `[0, slide length]` — e.g. a 3 s slide uses the first 3.000 s of a 4 s clip. Plan 5 (export) plays exactly that range at the slide's start time, so picture/clip and voice stay locked to the timecodes. Nothing in Plan 3 changes timecodes.
+
+**How a clip is made in Flow (S2):**
+- VidFlow's own Flow window, a fresh Flow project per Motion run (as for pictures). Flow settings: **Video · Frames · aspect = the video's aspect · 720p · length per slide · x1** (one clip per slide keeps matching simple). 1:1 videos can't have clips (Flow video is 16:9 / 9:16 only) — the choice is greyed with that reason (my call).
+- Start frame = the slide's **chosen picture**, uploaded as a file named `vidflow-s<NN>.png` (unique) and attached to the **Start** slot; End slot empty.
+- Motion prompt = the slide's Motion Prompt (the rapid-beat prompt has none → the existing default motion prompt from the slide's picture prompt), with the style's motion rules.
+- Before each Generate VidFlow reads Flow's "Generating will use N credits" and checks the limit. Clip sound is ignored (the voiceover is the only voice; per-clip sound can come back in Plan 5).
+- Result matching as for pictures: submission order + media id, verified on the clip's detail page (prompt). Saved as `scene-NN-clip.mp4` in VidFlow's storage with its length. Never guessed.
+- Pause/Resume/Stop/Skip, notices (§19), live activity (§17) and the Queue (§19) all work for Motion runs; a slide's row shows "🎬 clip ✓" when it has one.
+
+**Auto-pick with Flow's Agent:**
+- Switch **"Auto-pick the better picture"** (Checks tab + studio), **on by default**. It runs automatically after a picture run finishes (and can be run on demand: "Auto-pick now").
+- For each slide with 2+ pictures and no choice made by him: upload the slide's pictures as `vidflow-s<NN>-a.png` / `-b.png` (unique names) into VidFlow's Flow project, switch on Agent mode, attach them in that order, and ask: *"Text answer only, don't create anything. Image 1 is the first attachment, image 2 the second. Which better matches this scene: "<picture prompt>"? Answer with just 1 or 2, then a short reason."* (S6). Accept only an answer that starts with the digit of an attached picture; then set that picture as chosen and record the Agent's reason ("Auto-picked: shows the shoulder bag"). Anything else → keep Flow's first and mark the slide **"not auto-checked"**.
+- Never overrides a picture he chose himself. One-click swap still works and wins.
+- Agent mode is switched off and the Agent panel closed after the pass (and if the pass is paused/stopped). Uploaded comparison pictures are kept out of picture and clip matching.
+- Cost: 0 credits (S6: balance unchanged). ~30 s per slide; it shows progress in the Queue ("Auto-picking slide 4 of 24").
+- If the Agent doesn't answer within 90 s for a slide, that slide is "not auto-checked" and the pass moves on; three in a row → the pass stops with a plain message, pictures stay as they are.
+
+**Not in Plan 3:** voice (Plan 4), joining clips/stills with voice into a video and the zoom/pan on stills (Plan 5).
