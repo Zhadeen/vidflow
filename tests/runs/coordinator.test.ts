@@ -829,3 +829,74 @@ describe('final review fixes', () => {
     expect(coordinator.getRunState()!.detailPrompts?.k1).toBeUndefined(); // not given up on while paused
   });
 });
+
+describe('live step and activity log', () => {
+  const activityOf = (chromeMock: ReturnType<typeof mockChrome>, projectId: string) =>
+    ((chromeMock.storage.local.data['vidflow.activity'] ?? []) as { projectId: string; sceneId: string | null; text: string }[])
+      .filter((e) => e.projectId === projectId)
+      .map((e) => e.text);
+
+  it("logs the run's activity in order", async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup(1);
+    const fetchMock = vi.fn(async (url: string) => ({ ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const port = fakePort();
+    let opened = '';
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ((opened = key), { x: TILE_X, y: 300 }));
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    await coordinator.settledForTests();
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt, mediaId: opened }));
+    await coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 done');
+    await coordinator.settledForTests();
+
+    const texts = activityOf(chromeMock, project.id);
+    expect(texts.slice(0, 7)).toEqual([
+      'Opened a new Flow project',
+      'Set Flow to Image · 9:16 · 1 picture',
+      'Typing the prompt into Flow',
+      'Pressing Generate',
+      'Sent to Flow',
+      'Checking picture 1 of 1 matches its prompt',
+      '✓ Saved 1 picture',
+    ]);
+    expect(texts[7]).toMatch(/^Finished/);
+    // A finished run isn't doing anything: no current step.
+    expect(chromeMock.storage.local.data['vidflow.step']).toBeUndefined();
+  });
+
+  it('shows the step while running and clears it when paused', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup(1);
+    let release = () => undefined as void;
+    const gate = new Promise<void>((r) => (release = r));
+    const port = fakePort({ confirmStarted: vi.fn(async () => (await gate, true)) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => (chromeMock.storage.local.data['vidflow.step'] as { text?: string } | undefined)?.text === 'Pressing Generate');
+    expect(chromeMock.storage.local.data['vidflow.step']).toMatchObject({ projectId: project.id, sceneId: 's1', target: 'generate' });
+    await coordinator.pauseRun();
+    await waitFor(() => chromeMock.storage.local.data['vidflow.step'] === undefined, 'the step to clear');
+    expect(activityOf(chromeMock, project.id)).toContain('Paused by you');
+    release();
+    await coordinator.settledForTests();
+    await coordinator.resumeRun();
+    await coordinator.settledForTests();
+    expect(activityOf(chromeMock, project.id)).toContain('Resumed');
+  });
+
+  it('a failing or slow storage never breaks the run', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup(1);
+    const realSet = chromeMock.storage.local.set.getMockImplementation()!;
+    chromeMock.storage.local.set.mockImplementation(async (items: Record<string, unknown>) => {
+      if ('vidflow.activity' in items || 'vidflow.step' in items) throw new Error('quota');
+      return realSet(items);
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+  });
+});
