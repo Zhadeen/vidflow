@@ -1,6 +1,6 @@
 import type { StepTarget } from '../runs/activity';
 import { CORAL, FONT, NAVY, OVERLAY_Z } from './colors';
-import { findNewProjectButton } from './driver';
+import { findNewProjectButton, tileContainer, tileImage } from './driver';
 import { SEL } from './selectors';
 
 /** The short tag beside the ring, by what VidFlow is touching. "N" is the scene number (see tagFor). */
@@ -29,10 +29,8 @@ export function findTarget(doc: Document, target: Exclude<StepTarget, null>, key
     case 'generate':
       return doc.querySelector(SEL.generate);
     case 'tile': {
-      if (!key) return null;
-      const img = [...doc.querySelectorAll<HTMLElement>(SEL.tileImage)].find((i) => i.dataset.mediaId === key);
-      if (!img) return null;
-      return img.closest(SEL.tile) ?? img.closest(`${SEL.tileList} > *`) ?? img;
+      const img = key ? tileImage(doc, key) : null;
+      return img ? tileContainer(img) : null;
     }
   }
 }

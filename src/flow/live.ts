@@ -13,8 +13,10 @@ import { placePill, pillView, renderPill } from './pill';
  */
 export function liveView(state: RunState | null, step: Step | null, project: Pick<Project, 'scenes'> | null): LiveView | null {
   const current = state && step && step.projectId === state.projectId && state.status === 'running' ? step : null;
+  // The tag and badges name the scene as the studio does (its slide); the pill counts "Scene 2 of 3" within the run.
   const scene = current && project ? sceneNumber(project, current.sceneId) : null;
-  const pill = pillView(state, current ? { text: current.text, scene } : null);
+  const place = current && project && state ? placeInRun(project, state, current.sceneId) : null;
+  const pill = pillView(state, current ? { text: current.text, scene: place } : null);
   if (!pill || !state) return null;
   const savedCards: Array<[string, number]> = [];
   for (const [sceneId, s] of Object.entries(state.sceneStates)) {
@@ -24,6 +26,33 @@ export function liveView(state: RunState | null, step: Step | null, project: Pic
   }
   const highlight = current?.target ? { target: current.target, ...(current.key ? { key: current.key } : {}), scene } : null;
   return { ...pill, highlight, savedCards };
+}
+
+/** A scene's place among the run's scenes (1-based, project order), or null when it isn't one of them. */
+function placeInRun(project: Pick<Project, 'scenes'>, state: RunState, sceneId: string | null): number | null {
+  if (!sceneId) return null;
+  const i = project.scenes.filter((s) => s.id in state.sceneStates).findIndex((s) => s.id === sceneId);
+  return i < 0 ? null : i + 1;
+}
+
+/**
+ * Asks the background for the live view and reads the switch, then draws. Replies can arrive out of order (a refresh
+ * runs on every step); only the newest refresh draws, older replies are dropped. A failed ask counts as no run.
+ */
+export function createRefresher(
+  ask: () => Promise<LiveView | null>,
+  liveSetting: () => Promise<boolean>,
+  apply: (view: LiveView | null, liveOn: boolean) => void,
+): () => Promise<void> {
+  let latest = 0;
+  return async () => {
+    const mine = ++latest;
+    const view = await ask().catch(() => null);
+    if (mine !== latest) return;
+    const liveOn = await liveSetting().catch(() => true);
+    if (mine !== latest) return;
+    apply(view, liveOn);
+  };
 }
 
 /** Ring and badges only (cheap; call on scroll, resize and page changes). Off, or no run: both are removed. */

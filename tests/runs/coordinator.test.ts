@@ -302,6 +302,15 @@ describe('coordinator ↔ Flow port', () => {
     expect(await coordinator.isFlowTab(undefined)).toBe(false);
   });
 
+  it("answers another tab's pill request without reading the step or the project", async () => {
+    const { chromeMock, coordinator } = await setup();
+    chromeMock.storage.local.data['vidflow.flowWindow'] = { windowId: 3, tabId: 7 };
+    chromeMock.storage.local.get.mockClear();
+    expect(await coordinator.pillFor(8)).toBeNull();
+    const keys = chromeMock.storage.local.get.mock.calls.map((c) => c[0]);
+    expect(keys).not.toContain('vidflow.step');
+  });
+
 });
 
 describe('studio controls', () => {

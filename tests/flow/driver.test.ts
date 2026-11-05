@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { checkCanStart, createFlowDriver, type FlowPageState } from '../../src/flow/driver';
+import { checkCanStart, createFlowDriver, tileContainer, tileImage, type FlowPageState } from '../../src/flow/driver';
 import { SEL } from '../../src/flow/selectors';
 
 const fixture = (name: string) => readFileSync(resolve(__dirname, '../fixtures/flow', name), 'utf8');
@@ -435,5 +435,25 @@ describe('FlowDriver.attachReference', () => {
     await expect(createFlowDriver().attachReference(new Blob(['x']))).rejects.toThrow(
       "Adding a reference picture isn't available yet.",
     );
+  });
+});
+
+describe('tile helpers', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('find a picture by its media id and the tile around it', () => {
+    document.body.innerHTML = `<flow-grid-tile-container><div><img data-media-id="k1"></div></flow-grid-tile-container>`;
+    const img = tileImage(document, 'k1')!;
+    expect(img.dataset.mediaId).toBe('k1');
+    expect(tileContainer(img).tagName).toBe('FLOW-GRID-TILE-CONTAINER');
+    expect(tileImage(document, 'k1"], body, [x="')).toBeNull(); // the key is compared, never put in a selector
+  });
+
+  it('fall back to the tile list child (fixture layout)', () => {
+    load('tiles.html');
+    const img = tileImage(document, '4ca91b00-de41-44e5-ab6c-85c484c751ab')!;
+    expect(tileContainer(img).classList.contains('tile')).toBe(true);
   });
 });

@@ -22,7 +22,7 @@ import {
   type TilesNowResponse,
   type ToBackground,
 } from '../flow/messages';
-import { placeLive, renderLive } from '../flow/live';
+import { createRefresher, placeLive, renderLive } from '../flow/live';
 import { LIMIT_PATTERN, POLICY_DIALOG_PATTERN, SEL } from '../flow/selectors';
 import type { RunEvent } from '../runs/run';
 import { STEP_KEY } from '../runs/activity';
@@ -141,17 +141,17 @@ export default defineContentScript({
     // ---- Pill and live activity (ring, tags, saved badges) ------------------
     let view: PillResponse = null;
     let liveOn = true;
-    async function refreshPill(): Promise<void> {
-      try {
-        view = (await chrome.runtime.sendMessage({ type: FLOW_PILL } satisfies ToBackground)) as PillResponse;
-      } catch {
-        view = null;
-      }
-      active = view !== null;
-      liveOn = active ? await getLiveActivity().catch(() => true) : liveOn;
-      renderLive(document, view, liveOn, (action) => send({ type: FLOW_PILL_TOGGLE, action }));
-      if (active) observe();
-    }
+    const refreshPill = createRefresher(
+      async () => (await chrome.runtime.sendMessage({ type: FLOW_PILL } satisfies ToBackground)) as PillResponse,
+      getLiveActivity,
+      (next, on) => {
+        view = next;
+        active = view !== null;
+        if (active) liveOn = on;
+        renderLive(document, view, liveOn, (action) => send({ type: FLOW_PILL_TOGGLE, action }));
+        if (active) observe();
+      },
+    );
     /** Keeps the ring and badges on their targets: at most once a frame, only while this tab is VidFlow's. */
     let placing = false;
     function placeSoon(): void {
@@ -162,9 +162,12 @@ export default defineContentScript({
         placeLive(document, view, liveOn);
       });
     }
-    const WATCHED = ['vidflow.run', 'vidflow.flowWindow', STEP_KEY, LIVE_ACTIVITY_KEY];
+    // The run and the Flow window decide whether this is VidFlow's tab; the step and the switch only matter if it is.
+    const RUN_KEYS = ['vidflow.run', 'vidflow.flowWindow'];
+    const LIVE_KEYS = [STEP_KEY, LIVE_ACTIVITY_KEY];
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && WATCHED.some((key) => key in changes)) void refreshPill();
+      if (area !== 'local') return;
+      if (RUN_KEYS.some((key) => key in changes) || (active && LIVE_KEYS.some((key) => key in changes))) void refreshPill();
     });
     window.addEventListener('resize', placeSoon);
     window.addEventListener('scroll', placeSoon, { capture: true, passive: true }); // Flow scrolls inner lists

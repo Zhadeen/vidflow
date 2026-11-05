@@ -8,7 +8,7 @@ export interface PillView {
   paused: boolean;
   /** What VidFlow is doing now, in plain words ("Pressing Generate"); null between steps and while paused. */
   step: string | null;
-  /** The scene the step is about (its slide number), or null for a step that isn't about one scene. */
+  /** The scene the step is about, as its place in the run ("Scene 2 of 3"), or null for a step not about one scene. */
   scene: number | null;
   saved: number;
   drawing: number;

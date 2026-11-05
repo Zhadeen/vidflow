@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { liveView, renderLive } from '../../src/flow/live';
+import { createRefresher, liveView, renderLive } from '../../src/flow/live';
 import type { LiveView } from '../../src/flow/messages';
 import type { Step } from '../../src/runs/activity';
 import type { RunState } from '../../src/runs/run';
@@ -41,7 +41,7 @@ describe('liveView', () => {
       total: 3,
       paused: false,
       step: 'Pressing Generate',
-      scene: 5,
+      scene: 3, // its place in the run ("Scene 3 of 3"), not its slide number (5)
       saved: 1,
       drawing: 1,
       toGo: 1,
@@ -57,6 +57,15 @@ describe('liveView', () => {
       highlight: { target: 'setting', scene: null },
     });
     expect(liveView(state, step({ target: 'tile', key: 'k9' }), project)?.highlight).toEqual({ target: 'tile', key: 'k9', scene: 5 });
+  });
+
+  it('numbers the pill by place in the run when slide numbers skip (never "Scene 9 of 3")', () => {
+    const skipping = { scenes: [{ id: 's1', slide: 1 }, { id: 'gone', slide: 2 }, { id: 's2', slide: 4 }, { id: 's3', slide: 9 }] } as unknown as Project;
+    const view = liveView(state, step({ sceneId: 's3' }), skipping)!;
+    expect(view.scene).toBe(3);
+    expect(view.total).toBe(3);
+    const second = liveView(state, step({ sceneId: 's2' }), skipping)!;
+    expect(second.scene).toBe(2);
   });
 
   it("ignores another project's step, and the step while paused", () => {
@@ -97,5 +106,53 @@ describe('renderLive', () => {
     renderLive(document, null, true, vi.fn());
     expect(document.getElementById('vidflow-pill')).toBeNull();
     vi.useRealTimers();
+  });
+});
+
+describe('createRefresher', () => {
+  const deferred = <T>() => {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+  const pill = (n: number) => ({ n }) as unknown as LiveView;
+
+  it('ignores a reply that arrives after a newer one', async () => {
+    const asks = [deferred<LiveView | null>(), deferred<LiveView | null>()];
+    let i = 0;
+    const apply = vi.fn();
+    const refresh = createRefresher(() => asks[i++]!.promise, async () => true, apply);
+    const first = refresh();
+    const second = refresh();
+    asks[1]!.resolve(pill(2));
+    await second;
+    asks[0]!.resolve(pill(1)); // the older reply comes in last
+    await first;
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveBeenCalledWith(pill(2), true);
+  });
+
+  it('ignores an older reply whose switch read finishes last', async () => {
+    const settings = [deferred<boolean>(), deferred<boolean>()];
+    let i = 0;
+    const apply = vi.fn();
+    const refresh = createRefresher(async () => pill(1), () => settings[i++]!.promise, apply);
+    const first = refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = refresh();
+    await Promise.resolve();
+    await Promise.resolve();
+    settings[1]!.resolve(false);
+    await second;
+    settings[0]!.resolve(true);
+    await first;
+    expect(apply.mock.calls).toEqual([[pill(1), false]]);
+  });
+
+  it('a failed ask counts as no run', async () => {
+    const apply = vi.fn();
+    await createRefresher(async () => Promise.reject(new Error('reloaded')), async () => true, apply)();
+    expect(apply).toHaveBeenCalledWith(null, true);
   });
 });

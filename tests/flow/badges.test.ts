@@ -48,4 +48,33 @@ describe('renderSavedBadges', () => {
     renderSavedBadges(document, new Map());
     expect(host()).toBeNull();
   });
+
+  it('makes no DOM change when none of the saved pictures are on the page (no redraw loop)', async () => {
+    document.body.innerHTML = '<div class="detail-page"></div>'; // e.g. a picture's detail page: no tiles
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((r) => records.push(...r));
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    const saved = new Map([['not-on-the-page', 1]]);
+    renderSavedBadges(document, saved);
+    renderSavedBadges(document, saved);
+    await Promise.resolve();
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+    expect(host()).toBeNull();
+    expect(records).toHaveLength(0);
+  });
+
+  it('makes no DOM change when it draws the same badges again', async () => {
+    document.body.innerHTML = fixture('tiles.html');
+    const saved = new Map([['4ca91b00-de41-44e5-ab6c-85c484c751ab', 2]]);
+    renderSavedBadges(document, saved);
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((r) => records.push(...r));
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    renderSavedBadges(document, saved);
+    await Promise.resolve();
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+    expect(records).toHaveLength(0);
+  });
 });

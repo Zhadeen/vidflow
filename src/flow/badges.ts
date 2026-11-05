@@ -1,12 +1,9 @@
 import { CREAM, FONT, NAVY, OVERLAY_Z } from './colors';
+import { tileContainer } from './driver';
 import { SEL } from './selectors';
 
 const HOST_ID = 'vidflow-badges';
 const INSET = 8;
-
-function tileOf(img: Element): Element {
-  return img.closest(SEL.tile) ?? img.closest(`${SEL.tileList} > *`) ?? img;
-}
 
 /** The scrolling box a tile is shown in (Flow's virtual-scroll viewport), so badges never float outside it. */
 function clipOf(tile: Element): { top: number; bottom: number } | null {
@@ -21,8 +18,21 @@ function clipOf(tile: Element): { top: number; bottom: number } | null {
  * key (Flow media id) to its scene number; an empty map removes every badge.
  */
 export function renderSavedBadges(doc: Document, saved: Map<string, number>): void {
+  // Find the saved pictures on the page first: with none here (a detail page, home, scrolled away) nothing is written,
+  // so the page observer that calls this is not woken again (no redraw loop).
+  const found: Array<{ key: string; scene: number; img: HTMLElement }> = [];
+  const seen = new Set<string>();
+  if (saved.size > 0) {
+    for (const img of doc.querySelectorAll<HTMLElement>(SEL.tileImage)) {
+      const key = img.dataset.mediaId;
+      const scene = key ? saved.get(key) : undefined;
+      if (!key || scene === undefined || seen.has(key)) continue;
+      seen.add(key);
+      found.push({ key, scene, img });
+    }
+  }
   let host = doc.getElementById(HOST_ID);
-  if (saved.size === 0) {
+  if (found.length === 0) {
     host?.remove();
     return;
   }
@@ -37,13 +47,8 @@ export function renderSavedBadges(doc: Document, saved: Map<string, number>): vo
   const vw = doc.defaultView?.innerWidth ?? 0;
   const vh = doc.defaultView?.innerHeight ?? 0;
   const existing = new Map([...root.querySelectorAll<HTMLElement>('.badge')].map((b) => [b.dataset.key!, b]));
-  const keep = new Set<string>();
 
-  for (const img of doc.querySelectorAll<HTMLElement>(SEL.tileImage)) {
-    const key = img.dataset.mediaId;
-    const scene = key ? saved.get(key) : undefined;
-    if (!key || scene === undefined || keep.has(key)) continue;
-    keep.add(key);
+  for (const { key, scene, img } of found) {
     let badge = existing.get(key);
     if (!badge) {
       badge = doc.createElement('div');
@@ -66,7 +71,7 @@ export function renderSavedBadges(doc: Document, saved: Map<string, number>): vo
     const text = `✓ Saved · scene ${scene}`;
     if (badge.textContent !== text) badge.textContent = text;
 
-    const tile = tileOf(img);
+    const tile = tileContainer(img);
     const r = tile.getBoundingClientRect();
     const top = r.top + INSET;
     const clip = clipOf(tile) ?? { top: 0, bottom: vh || Infinity };
@@ -80,6 +85,5 @@ export function renderSavedBadges(doc: Document, saved: Map<string, number>): vo
       if ((badge.style as unknown as Record<string, string>)[k] !== v) (badge.style as unknown as Record<string, string>)[k] = v;
     }
   }
-  for (const [key, badge] of existing) if (!keep.has(key)) badge.remove();
-  if (!root.querySelector('.badge')) host.remove();
+  for (const [key, badge] of existing) if (!seen.has(key)) badge.remove();
 }
