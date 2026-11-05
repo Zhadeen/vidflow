@@ -1,0 +1,89 @@
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import type { Scene } from '../scenes/types';
+import type { StyleId } from '../prompts/styles';
+import type { CharacterSpec } from '../prompts/build';
+import { opfsMediaStore, type MediaStore } from './media';
+
+export type AspectRatio = '16:9' | '9:16' | '1:1';
+export type SceneStatus = 'pending' | 'submitted' | 'done' | 'refused' | 'failed';
+export interface SceneState {
+  sceneId: string;
+  status: SceneStatus;
+  message?: string;
+  pictureIds: string[];
+  chosenPictureId?: string;
+}
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  scenes: Scene[];
+  style: StyleId;
+  customStyle?: string;
+  character: CharacterSpec | null;
+  aspect: AspectRatio;
+  outputsPerPrompt: 1 | 2 | 4;
+  sceneStates: Record<string, SceneState>;
+}
+
+interface VidflowDB extends DBSchema {
+  projects: { key: string; value: Project };
+}
+
+let dbPromise: Promise<IDBPDatabase<VidflowDB>> | undefined;
+function db() {
+  dbPromise ??= openDB<VidflowDB>('vidflow', 1, {
+    upgrade(d) {
+      d.createObjectStore('projects', { keyPath: 'id' });
+    },
+  });
+  return dbPromise;
+}
+
+let media: MediaStore | undefined;
+export function setMediaStore(store: MediaStore): void {
+  media = store;
+}
+function mediaStore(): MediaStore {
+  return (media ??= opfsMediaStore());
+}
+
+export async function createProject(name: string): Promise<Project> {
+  const now = Date.now();
+  const p: Project = {
+    id: crypto.randomUUID(),
+    name,
+    createdAt: now,
+    updatedAt: now,
+    scenes: [],
+    style: 'stickman-whiteboard',
+    character: null,
+    aspect: '16:9',
+    outputsPerPrompt: 2,
+    sceneStates: {},
+  };
+  await (await db()).put('projects', p);
+  return p;
+}
+
+export async function getProject(id: string): Promise<Project | undefined> {
+  return (await db()).get('projects', id);
+}
+
+export async function saveProject(p: Project): Promise<void> {
+  p.updatedAt = Date.now();
+  await (await db()).put('projects', p);
+}
+
+export async function listProjects(): Promise<Pick<Project, 'id' | 'name' | 'updatedAt'>[]> {
+  const all = await (await db()).getAll('projects');
+  return all
+    .map(({ id, name, updatedAt }) => ({ id, name, updatedAt }))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function deleteProject(id: string): Promise<void> {
+  await mediaStore().removeProject(id);
+  await (await db()).delete('projects', id);
+}
