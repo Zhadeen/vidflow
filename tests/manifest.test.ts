@@ -13,14 +13,17 @@ describe('manifest', () => {
       'https://flow.google.com/*',
       'https://labs.google/*',
       'https://aistudio.google.com/*',
+      'https://flow-content.google/*',
     ]);
   });
 
-  it('asks for the needed permissions and not debugger or cookies', () => {
+  it('asks for the needed permissions and not cookies', () => {
+    // debugger: Flow's Generate ignores synthetic clicks, so VidFlow presses it with trusted input (spike S5).
     expect(manifest.permissions).toEqual(
-      expect.arrayContaining(['storage', 'unlimitedStorage', 'downloads', 'notifications', 'power', 'tabs', 'alarms']),
+      expect.arrayContaining([
+        'storage', 'unlimitedStorage', 'downloads', 'notifications', 'power', 'tabs', 'alarms', 'debugger',
+      ]),
     );
-    expect(manifest.permissions).not.toContain('debugger');
     expect(manifest.permissions).not.toContain('cookies');
   });
 });

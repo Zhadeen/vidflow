@@ -1,4 +1,7 @@
 /// <reference types="chrome" />
+import { FlowBlockedError, type SubmitOptions } from '../flow/messages';
+import { pillView, type PillView } from '../flow/pill';
+import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { getProject, saveProject, type Project } from '../store/projects';
@@ -13,9 +16,9 @@ import {
   type RunState,
 } from './run';
 
-/** How the coordinator talks to Flow. The content-script messaging (Task 7) implements this. */
+/** How the coordinator talks to Flow; src/flow/port.ts implements it. Throws FlowBlockedError when the run must pause. */
 export interface FlowPort {
-  submit(tabId: number, sceneId: string, prompt: string): Promise<void>;
+  submit(tabId: number, sceneId: string, prompt: string, options?: SubmitOptions): Promise<void>;
 }
 
 // Plain dark square; the extension has no icon files yet (chrome requires an iconUrl on basic notifications).
@@ -72,8 +75,17 @@ function projectStyle(project: Project) {
 
 // ---- Flow window ---------------------------------------------------------
 
+async function savedFlowWindow(): Promise<FlowWindow | undefined> {
+  return (await chrome.storage.local.get(WINDOW_KEY))[WINDOW_KEY] as FlowWindow | undefined;
+}
+
 async function forgetFlowWindow(): Promise<void> {
   await chrome.storage.local.remove(WINDOW_KEY);
+}
+
+/** True only for the tab VidFlow opened as its own Flow tab. */
+export async function isFlowTab(tabId: number | undefined): Promise<boolean> {
+  return tabId !== undefined && (await savedFlowWindow())?.tabId === tabId;
 }
 
 function isFlowUrl(url: string | undefined): boolean {
@@ -82,7 +94,7 @@ function isFlowUrl(url: string | undefined): boolean {
 
 /** Returns the tab id of VidFlow's own Flow tab, opening a dedicated window if needed. */
 async function ensureFlowTab(): Promise<number> {
-  const saved = (await chrome.storage.local.get(WINDOW_KEY))[WINDOW_KEY] as FlowWindow | undefined;
+  const saved = await savedFlowWindow();
   if (saved) {
     try {
       const tab = await chrome.tabs.get(saved.tabId);
@@ -140,7 +152,12 @@ async function commit(next: RunState): Promise<void> {
   }
 
   if (next.status === 'running') chrome.power.requestKeepAwake('system');
-  else chrome.power.releaseKeepAwake();
+  else {
+    chrome.power.releaseKeepAwake();
+    // Drop the debugger (and Chrome's "started debugging" bar) whenever the run is not pressing Generate.
+    const flow = await savedFlowWindow();
+    if (flow) await detachFlowDebugger(flow.tabId);
+  }
 
   if (next.status === 'paused' && typeof next.resumeAt === 'number') {
     await chrome.alarms.create(RESUME_ALARM, { when: next.resumeAt });
@@ -188,9 +205,14 @@ async function pump(): Promise<void> {
         return void (await pauseWith("VidFlow couldn't open its Flow window. Check Chrome, then press Resume."));
       }
       try {
-        await port.submit(tabId, sceneId, buildImagePrompt(scene, projectStyle(project), project.character));
+        await port.submit(tabId, sceneId, buildImagePrompt(scene, projectStyle(project), project.character), {
+          aspect: project.aspect,
+          outputs: project.outputsPerPrompt,
+        });
         await dispatch({ type: 'submitted', sceneId });
-      } catch {
+      } catch (err) {
+        // The page needs the owner (wrong account, limit, policy dialog…): pause, and leave the scene queued.
+        if (err instanceof FlowBlockedError) return void (await dispatch(err.event));
         await dispatch({
           type: 'failed',
           sceneId,
@@ -217,8 +239,21 @@ export async function startRun(projectId: string): Promise<void> {
 export const pauseRun = () => dispatch({ type: 'pause' });
 export const resumeRun = () => dispatch({ type: 'resume' });
 
-/** The background calls this when the Flow helper reports something. Waits for state to load; never drops events. */
-export const handleFlowEvent = (event: RunEvent) => dispatch(event);
+/**
+ * The background calls this when the Flow helper reports something. Waits for state to load; never drops scene events.
+ * Page-level events (limit, needs-owner) only matter to a running run: they must not turn a finished run into a paused one.
+ */
+export async function handleFlowEvent(event: RunEvent): Promise<void> {
+  await ready;
+  if ((event.type === 'limit' || event.type === 'needsOwner') && state?.status !== 'running') return;
+  await dispatch(event);
+}
+
+/** What the pill in a Flow tab should show: only VidFlow's own Flow tab, only while a run is going. */
+export async function pillFor(tabId: number | undefined): Promise<PillView | null> {
+  await ready;
+  return (await isFlowTab(tabId)) ? pillView(state) : null;
+}
 
 async function load(): Promise<void> {
   const saved = (await chrome.storage.local.get(RUN_KEY))[RUN_KEY] as RunState | undefined;
@@ -261,7 +296,7 @@ export function registerCoordinator(): void {
     }
   });
   chrome.windows.onRemoved.addListener(async (windowId) => {
-    const saved = (await chrome.storage.local.get(WINDOW_KEY))[WINDOW_KEY] as FlowWindow | undefined;
+    const saved = await savedFlowWindow();
     if (saved?.windowId === windowId) await forgetFlowWindow();
   });
   chrome.runtime.onStartup.addListener(() => void forgetFlowWindow());
