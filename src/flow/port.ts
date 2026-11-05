@@ -3,6 +3,7 @@ import type { FlowPort } from '../runs/coordinator';
 import type { StartVerb } from './driver';
 import {
   FlowBlockedError,
+  FLOW_ACCEPT_NOTICE,
   FLOW_CONFIRM,
   FLOW_DETAIL,
   FLOW_NEW_PROJECT,
@@ -11,6 +12,7 @@ import {
   FLOW_TILES_NOW,
   FLOW_UPLOAD_REFERENCE,
   encodeBytes,
+  type AcceptNoticeResponse,
   type ConfirmResponse,
   type UploadReferenceResponse,
   type DetailResponse,
@@ -73,7 +75,7 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
   async function point(tabId: number, message: ToFlowTab): Promise<Point> {
     const reply = (await ask(tabId, message)) as PrepareResponse | undefined;
     if (!reply) throw new Error('The Flow page gave no answer.');
-    if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event);
+    if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event, reply.notice === true);
     if (reply.kind === 'error') throw new Error(reply.message);
     return { x: reply.x, y: reply.y };
   }
@@ -116,6 +118,15 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
     async readDetail(tabId) {
       const reply = (await ask(tabId, { type: FLOW_DETAIL })) as DetailResponse | undefined;
       return { prompt: reply?.prompt ?? null, mediaId: reply?.mediaId ?? null };
+    },
+
+    async acceptNotice(tabId) {
+      try {
+        const reply = (await ask(tabId, { type: FLOW_ACCEPT_NOTICE })) as AcceptNoticeResponse | undefined;
+        return reply?.accepted === true;
+      } catch {
+        return false;
+      }
     },
 
     async confirmStarted(tabId) {

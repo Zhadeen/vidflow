@@ -16,6 +16,7 @@ export const FLOW_DETAIL = 'flow/detail';
 export const FLOW_PILL = 'flow/pill';
 export const FLOW_PILL_TOGGLE = 'flow/pill-toggle';
 export const FLOW_UPLOAD_REFERENCE = 'flow/upload-reference';
+export const FLOW_ACCEPT_NOTICE = 'flow/accept-notice';
 
 /** Said whenever VidFlow can't upload or attach the hero reference: a prompt that names it is never sent without it. */
 export const REFERENCE_ATTACH_MESSAGE =
@@ -102,6 +103,17 @@ export type UploadReferenceResponse =
   | { kind: 'blocked'; event: BlockingEvent }
   | { kind: 'error'; message: string };
 
+/**
+ * background → VidFlow's own Flow tab, when prepare/newProject was blocked by Flow's usage-policy / rights notice and
+ * "Accept Flow's notices automatically" is on: tick the notice's boxes and press its accept button. Never a billing dialog.
+ */
+export interface AcceptNoticeRequest {
+  type: typeof FLOW_ACCEPT_NOTICE;
+}
+export interface AcceptNoticeResponse {
+  accepted: boolean;
+}
+
 const CHUNK = 0x8000;
 
 /** Bytes → base64, a chunk at a time (spreading 10 MB into one String.fromCharCode call overflows the stack). */
@@ -125,14 +137,18 @@ export type ToFlowTab =
   | TilesNowRequest
   | TilePointRequest
   | DetailRequest
-  | UploadReferenceRequest;
+  | UploadReferenceRequest
+  | AcceptNoticeRequest;
 
 export type BlockingEvent = Extract<RunEvent, { type: 'needsOwner' } | { type: 'limit' }>;
 
-/** Answer to PrepareRequest, NewProjectRequest and TilePointRequest. */
+/**
+ * Answer to PrepareRequest, NewProjectRequest and TilePointRequest. `notice`: the block is Flow's usage-policy / rights
+ * notice (never billing), which VidFlow may accept itself when the switch is on.
+ */
 export type PrepareResponse =
   | { kind: 'ready'; x: number; y: number }
-  | { kind: 'blocked'; event: BlockingEvent }
+  | { kind: 'blocked'; event: BlockingEvent; notice?: true }
   | { kind: 'error'; message: string };
 
 /**
@@ -180,7 +196,11 @@ export type ToBackground = FlowEventMessage | FlowTilesMessage | PillRequest | P
 
 /** The Flow page needs the owner (or a wait) before VidFlow can submit; the run pauses instead of failing the scene. */
 export class FlowBlockedError extends Error {
-  constructor(readonly event: BlockingEvent) {
+  /** `notice`: blocked by Flow's usage-policy / rights notice only (never billing), which VidFlow may accept. */
+  constructor(
+    readonly event: BlockingEvent,
+    readonly notice = false,
+  ) {
     super(event.message);
     this.name = 'FlowBlockedError';
   }

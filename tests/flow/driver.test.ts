@@ -47,7 +47,8 @@ const idle: FlowPageState = {
   signedInEmail: 'unscripted4ce@gmail.com',
   generating: false,
   limitMessage: null,
-  policyDialog: false,
+  noticeDialog: false,
+  billingDialog: false,
 };
 
 afterEach(() => {
@@ -63,7 +64,8 @@ describe('FlowDriver.read', () => {
       signedInEmail: 'owner@example.com',
       generating: false,
       limitMessage: null,
-      policyDialog: false,
+      noticeDialog: false,
+      billingDialog: false,
     });
   });
 
@@ -79,11 +81,18 @@ describe('FlowDriver.read', () => {
     );
   });
 
-  it('reads a policy or billing dialog', () => {
+  it('reads a usage notice and a billing dialog apart', () => {
+    load('prompt-bar.html', 'usage-notice.html');
+    expect(createFlowDriver().read()).toMatchObject({ noticeDialog: true, billingDialog: false, limitMessage: null });
+    load('prompt-bar.html', 'billing-dialog.html');
+    expect(createFlowDriver().read()).toMatchObject({ noticeDialog: false, billingDialog: true, limitMessage: null });
+    // Billing wording wins: a dialog that also names the usage policy is never treated as a notice.
     load('prompt-bar.html', 'policy-dialog.html');
-    const state = createFlowDriver().read();
-    expect(state.policyDialog).toBe(true);
-    expect(state.limitMessage).toBeNull();
+    expect(createFlowDriver().read()).toMatchObject({ noticeDialog: false, billingDialog: true });
+    // An unknown dialog is neither.
+    load('prompt-bar.html');
+    document.body.insertAdjacentHTML('beforeend', '<div role="dialog"><p>Welcome to Flow</p><button>Got it</button></div>');
+    expect(createFlowDriver().read()).toMatchObject({ noticeDialog: false, billingDialog: false });
   });
 
   it('reads a page without the prompt box as not ready', () => {
@@ -115,11 +124,14 @@ describe('checkCanStart', () => {
     });
   });
 
-  it('blocks start while a policy dialog shows', () => {
-    expect(checkCanStart({ ...idle, policyDialog: true }, 'unscripted4ce@gmail.com')).toMatchObject({
-      ok: false,
-      reason: 'policy-dialog',
-    });
+  it('blocks start while a usage notice or a billing dialog shows, with the same message', () => {
+    for (const s of [{ ...idle, noticeDialog: true }, { ...idle, billingDialog: true }]) {
+      expect(checkCanStart(s, 'unscripted4ce@gmail.com')).toEqual({
+        ok: false,
+        reason: 'policy-dialog',
+        message: 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Start again.',
+      });
+    }
   });
 
   it('names Resume when asked to, keeping the wording otherwise', () => {
@@ -129,7 +141,7 @@ describe('checkCanStart', () => {
       message:
         'Flow is signed in to someone@example.com, but VidFlow is set to use unscripted4ce@gmail.com. Switch Flow to unscripted4ce@gmail.com, then press Resume.',
     });
-    for (const s of [{ ...idle, signedInEmail: null }, { ...idle, policyDialog: true }, { ...idle, ready: false }]) {
+    for (const s of [{ ...idle, signedInEmail: null }, { ...idle, noticeDialog: true }, { ...idle, billingDialog: true }, { ...idle, ready: false }]) {
       const check = checkCanStart(s, 'unscripted4ce@gmail.com', 'Resume');
       expect(check.ok ? '' : check.message).toMatch(/then press Resume\.$/);
     }
@@ -765,6 +777,54 @@ describe('FlowDriver Agent mode', () => {
     const err = await createFlowDriver(document, { pollMs: 5, timeoutMs: 100 }).turnOffAgentMode().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(FlowBlockedError);
     expect((err as Error).message).toMatch(/Agent/);
+  });
+});
+
+describe('FlowDriver.acceptNotice', () => {
+  it('acceptNotice ticks the box and clicks I agree', async () => {
+    load('prompt-bar.html', 'usage-notice.html');
+    const box = $<HTMLInputElement>('#rights');
+    const agree = $<HTMLButtonElement>('button.agree');
+    const cancel = $<HTMLButtonElement>('button.cancel');
+    // Flow enables "I agree" once the box is ticked; pressing it closes the notice.
+    box.addEventListener('change', () => (agree.disabled = !box.checked));
+    const agreed = vi.fn(() => $('mat-dialog-container').remove());
+    agree.addEventListener('click', agreed);
+    const cancelled = vi.fn();
+    cancel.addEventListener('click', cancelled);
+
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 200 }).acceptNotice()).toBe(true);
+    expect(box.checked).toBe(true);
+    expect(agreed).toHaveBeenCalledTimes(1);
+    expect(cancelled).not.toHaveBeenCalled();
+    expect(createFlowDriver().read().noticeDialog).toBe(false);
+  });
+
+  it('accepts an "I understand" notice without a checkbox', async () => {
+    load('prompt-bar.html');
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div role="dialog"><p>You must have the necessary rights to upload this media.</p><button>I understand</button></div>',
+    );
+    const understood = vi.fn();
+    document.querySelector('[role="dialog"] button')!.addEventListener('click', understood);
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(true);
+    expect(understood).toHaveBeenCalledTimes(1);
+  });
+
+  it('never presses anything in a billing or upgrade dialog', async () => {
+    load('prompt-bar.html', 'billing-dialog.html');
+    const pressed = vi.fn();
+    document.querySelectorAll('[role="dialog"] button').forEach((b) => b.addEventListener('click', pressed));
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(false);
+    expect(pressed).not.toHaveBeenCalled();
+  });
+
+  it('answers false when there is no notice, or it has no accept button', async () => {
+    load('prompt-bar.html');
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(false);
+    document.body.insertAdjacentHTML('beforeend', '<div role="dialog"><p>Prohibited Use Policy</p><button>Read more</button></div>');
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(false);
   });
 });
 

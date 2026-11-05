@@ -245,7 +245,7 @@ describe('studio', () => {
 
   it('wrong account message is shown before starting', async () => {
     const { message } = checkCanStart(
-      { ready: true, signedInEmail: 'someone.else@gmail.com', generating: false, limitMessage: null, policyDialog: false },
+      { ready: true, signedInEmail: 'someone.else@gmail.com', generating: false, limitMessage: null, noticeDialog: false, billingDialog: false },
       'unscripted4ce@gmail.com',
     ) as { message: string };
     const client = fakeClient({ start: vi.fn(async (): Promise<RunReply> => ({ ok: false, reason: 'wrong-account', message })) });

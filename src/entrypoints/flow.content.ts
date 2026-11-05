@@ -1,7 +1,16 @@
 /// <reference types="chrome" />
 import { installPageBridge } from '../e2e/page-bridge';
-import { checkCanStart, createFlowDriver, type FlowResultCard, type FlowSnapshot } from '../flow/driver';
 import {
+  checkCanStart,
+  createFlowDriver,
+  policyDialogMessage,
+  type FlowPageState,
+  type FlowResultCard,
+  type FlowSnapshot,
+  type StartCheck,
+} from '../flow/driver';
+import {
+  FLOW_ACCEPT_NOTICE,
   FLOW_CONFIRM,
   FLOW_DETAIL,
   FLOW_EVENT,
@@ -15,6 +24,7 @@ import {
   FLOW_UPLOAD_REFERENCE,
   FlowBlockedError,
   decodeBytes,
+  type AcceptNoticeResponse,
   type ConfirmResponse,
   type UploadReferenceRequest,
   type UploadReferenceResponse,
@@ -28,10 +38,10 @@ import {
   type ToBackground,
 } from '../flow/messages';
 import { createRefresher, placeLive, renderLive } from '../flow/live';
-import { LIMIT_PATTERN, POLICY_DIALOG_PATTERN, SEL } from '../flow/selectors';
+import { BILLING_PATTERN, LIMIT_PATTERN, SEL, USAGE_NOTICE_PATTERN } from '../flow/selectors';
 import type { RunEvent } from '../runs/run';
 import { STEP_KEY } from '../runs/activity';
-import { getExpectedAccount, getLiveActivity, LIVE_ACTIVITY_KEY } from '../settings';
+import { getAcceptNotices, getExpectedAccount, getLiveActivity, LIVE_ACTIVITY_KEY } from '../settings';
 
 const OBSERVE_THROTTLE_MS = 1_000;
 const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
@@ -62,12 +72,22 @@ export default defineContentScript({
         ? { kind: 'blocked', event: err.event }
         : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
 
+    /**
+     * A failed start check, as the answer to the background. Blocked only by Flow's usage notice (no billing dialog):
+     * marked `notice`, so the background may accept it (switch on) and ask again.
+     */
+    const blockedBy = (check: Extract<StartCheck, { ok: false }>, state: FlowPageState): PrepareResponse => ({
+      kind: 'blocked',
+      event: { type: 'needsOwner', reason: check.reason, message: check.message },
+      ...(check.reason === 'policy-dialog' && state.noticeDialog && !state.billingDialog ? { notice: true as const } : {}),
+    });
+
     async function prepare(req: PrepareRequest): Promise<PrepareResponse> {
       try {
         await driver.waitUntilReady(READY_WAIT_MS);
         const state = driver.read();
         const check = checkCanStart(state, await getExpectedAccount(), req.verb ?? 'Start');
-        if (!check.ok) return { kind: 'blocked', event: { type: 'needsOwner', reason: check.reason, message: check.message } };
+        if (!check.ok) return blockedBy(check, state);
         if (state.limitMessage) return { kind: 'blocked', event: { type: 'limit', message: state.limitMessage, resumeAt: null } };
         await driver.setImageMode();
         if (req.aspect) await driver.setAspect(req.aspect);
@@ -88,8 +108,9 @@ export default defineContentScript({
         const deadline = Date.now() + READY_WAIT_MS;
         while (!driver.newProjectButton() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
         // The home page has no prompt bar, so only the account and dialog checks apply here.
-        const check = checkCanStart({ ...driver.read(), ready: true }, await getExpectedAccount(), req.verb);
-        if (!check.ok) return { kind: 'blocked', event: { type: 'needsOwner', reason: check.reason, message: check.message } };
+        const state = { ...driver.read(), ready: true };
+        const check = checkCanStart(state, await getExpectedAccount(), req.verb);
+        if (!check.ok) return blockedBy(check, state);
         const at = driver.newProjectButton();
         if (!at) {
           const message = `VidFlow can't find Flow's New project button. Open Flow's home page in the VidFlow window, then press ${req.verb}.`;
@@ -108,6 +129,16 @@ export default defineContentScript({
         return { kind: 'done', mediaId: await driver.uploadReference(file) };
       } catch (err) {
         return failure(err) as UploadReferenceResponse;
+      }
+    }
+
+    /** Only on VidFlow's own Flow tab, and only while the switch is on; the driver never touches a billing dialog. */
+    async function acceptNotice(): Promise<AcceptNoticeResponse> {
+      if (!active || !(await getAcceptNotices())) return { accepted: false };
+      try {
+        return { accepted: await driver.acceptNotice() };
+      } catch {
+        return { accepted: false };
       }
     }
 
@@ -151,6 +182,7 @@ export default defineContentScript({
         [FLOW_TILE_POINT]: () => tilePoint(message as TilePointRequest),
         [FLOW_DETAIL]: () => detail(),
         [FLOW_UPLOAD_REFERENCE]: () => uploadReference(message as UploadReferenceRequest),
+        [FLOW_ACCEPT_NOTICE]: () => acceptNotice(),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;
@@ -201,7 +233,8 @@ export default defineContentScript({
     // ---- Observing the page ------------------------------------------------
     let lastTiles = '';
     let lastLimit: string | null = null;
-    let lastPolicy = false;
+    let lastBilling = false;
+    let lastNotice = false;
     const seenNotices = new Set<string>();
 
     function check(): void {
@@ -217,18 +250,21 @@ export default defineContentScript({
         report({ type: 'limit', message: state.limitMessage, resumeAt: null });
       }
       lastLimit = state.limitMessage;
-      if (state.policyDialog && !lastPolicy) {
-        report({
-          type: 'needsOwner',
-          reason: 'policy-dialog',
-          message: 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Resume.',
+      const policy = { type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage('Resume') } as const;
+      // A billing dialog always stops the run. A usage notice does only with the switch off: with it on, the next
+      // prepare finds the notice and the background accepts it.
+      if (state.billingDialog && !lastBilling) report(policy);
+      else if (state.noticeDialog && !lastNotice) {
+        void getAcceptNotices().then((on) => {
+          if (!on) report(policy);
         });
       }
-      lastPolicy = state.policyDialog;
+      lastBilling = state.billingDialog;
+      lastNotice = state.noticeDialog;
       // Spike S5 never saw Flow's limit or refusal wording: log anything new so the patterns can be completed.
       for (const el of document.querySelectorAll(`${SEL.notice}, ${SEL.dialog}`)) {
         const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
-        if (!text || seenNotices.has(text) || LIMIT_PATTERN.test(text) || POLICY_DIALOG_PATTERN.test(text)) continue;
+        if (!text || seenNotices.has(text) || LIMIT_PATTERN.test(text) || USAGE_NOTICE_PATTERN.test(text) || BILLING_PATTERN.test(text)) continue;
         seenNotices.add(text);
         console.info('[VidFlow] Flow message not recognised:', text);
       }

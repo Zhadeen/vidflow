@@ -36,5 +36,13 @@ export const ASPECT_ICON = { '16:9': 'crop_16_9', '9:16': 'crop_9_16', '1:1': 'c
 // Flow's limit/refusal wording was not seen in spike S5; these are Flow Flash's patterns. Unknown notices are logged.
 export const LIMIT_PATTERN = /rate limit|quota|daily limit|limit reached|reached your limit|try again later|out of credits|not enough credits|run out of credits/i;
 export const REFUSAL_PATTERN = /content polic|might violate|violat(?:es|ed|ion)|couldn't generate|could not generate|unable to generate|safety (?:filter|guideline|reason|polic)/i;
-export const POLICY_DIALOG_PATTERN = /usage polic|use policy|paid tier|billing/i;
+/**
+ * Flow's usage-policy / rights notices: the only dialogs VidFlow may accept itself (switch "Accept Flow's notices
+ * automatically"). Known wording: "necessary rights", "Prohibited Use Policy". Kept narrow on purpose.
+ */
+export const USAGE_NOTICE_PATTERN = /usage polic|use policy|prohibited use|necessary rights|rights to/i;
+/** Billing / payment / upgrade dialogs: never accepted or pressed; the run stops with a plain message. Wins over a notice. */
+export const BILLING_PATTERN = /paid tier|billing|payment|upgrade|subscribe/i;
+/** The accept button of a usage notice. */
+export const NOTICE_ACCEPT_PATTERN = /i understand|agree|accept|continue|confirm/i;
 export const PROGRESS_PATTERN = /\b(\d{1,3})\s?%/;

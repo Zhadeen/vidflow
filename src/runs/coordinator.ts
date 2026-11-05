@@ -11,6 +11,7 @@ import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
+import { getAcceptNotices, getKeepAwake } from '../settings';
 import {
   HERO_SHEET_ID,
   initHeroSheetRun,
@@ -51,6 +52,11 @@ export interface FlowPort {
    * answers with the media id of the grid tile it makes, or null when that didn't show.
    */
   uploadReference(tabId: number, name: string, image: Blob): Promise<string | null>;
+  /**
+   * Ticks and accepts Flow's open usage-policy / rights notice in VidFlow's own Flow tab (never a billing dialog).
+   * False when it couldn't.
+   */
+  acceptNotice(tabId: number): Promise<boolean>;
 }
 
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
@@ -412,8 +418,9 @@ async function commit(next: RunState): Promise<void> {
   }
   if (next.status !== 'running') setStep(null).catch((err) => console.warn('[VidFlow] step clear failed', err));
 
-  if (next.status === 'running') chrome.power.requestKeepAwake('system');
-  else {
+  if (next.status === 'running') {
+    if (await getKeepAwake()) chrome.power.requestKeepAwake('system');
+  } else {
     chrome.power.releaseKeepAwake();
     // Drop the debugger (and Chrome's "started debugging" bar) whenever the run is not pressing Generate.
     const flow = await savedFlowWindow();
@@ -462,6 +469,27 @@ function stillCollecting(projectId: string): boolean {
   return (state?.status === 'running' || state?.status === 'paused') && state.projectId === projectId;
 }
 
+export const ACCEPTED_NOTICE_TEXT = "Accepted Flow's notice";
+
+/**
+ * Runs a Flow step (prepare, or finding New project). When Flow's usage-policy / rights notice blocked it and "Accept
+ * Flow's notices automatically" is on, accepts the notice, logs it, and runs the step once more. Anything else (a
+ * billing dialog, the switch off, a notice that couldn't be accepted or is still there) throws as before, so the run
+ * pauses with the existing message.
+ */
+async function pastNotice<T>(tabId: number, projectId: string, sceneId: string | null, step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    if (!(err instanceof FlowBlockedError) || !err.notice || !(await getAcceptNotices())) throw err;
+    if (!(await port!.acceptNotice(tabId).catch(() => false))) throw err;
+    logActivity({ at: Date.now(), projectId, sceneId, text: ACCEPTED_NOTICE_TEXT }).catch((e) =>
+      console.warn('[VidFlow] activity write failed', e),
+    );
+    return step();
+  }
+}
+
 /**
  * Puts the Flow tab on this run's own project, creating a fresh one on the run's first scene (spec §16.5).
  * Returns false when the run stopped meanwhile (no Generate press follows). Throws FlowBlockedError when the owner must act.
@@ -480,7 +508,7 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
     await chrome.tabs.update(tabId, { url: FLOW_URL });
     await waitForUrl(tabId, isFlowHome);
   }
-  const at = await port!.findNewProject(tabId, PUMP_VERB);
+  const at = await pastNotice(tabId, projectId, null, () => port!.findNewProject(tabId, PUMP_VERB));
   if (!stillRunning(projectId)) return false;
   await pressIn(tabId, at.x, at.y);
   if (!stillRunning(projectId)) await detachFlowDebugger(tabId); // paused or stopped during the press
@@ -585,12 +613,14 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     const aspect = aspectOf(state, project);
     note(project, null, `Set Flow to Image · ${aspect} · ${pictures(n)}`, 'setting');
     note(project, sceneId, 'Typing the prompt', 'prompt');
-    const at = await port!.prepare(tabId, sceneId, prompt, {
-      aspect,
-      outputs: n,
-      verb: PUMP_VERB,
-      ...(reference ? { reference: { name: reference } } : {}),
-    });
+    const at = await pastNotice(tabId, projectId, sceneId, () =>
+      port!.prepare(tabId, sceneId, prompt, {
+        aspect,
+        outputs: n,
+        verb: PUMP_VERB,
+        ...(reference ? { reference: { name: reference } } : {}),
+      }),
+    );
     // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
     if (!stillRunning(projectId)) return 'stop';
     const keysBefore = (await port!.tiles(tabId)).filter(isFinished).map((c) => c.key);
@@ -1087,7 +1117,7 @@ async function load(): Promise<void> {
       }
       await commit(next);
     });
-  } else if (saved.status === 'running') {
+  } else if (saved.status === 'running' && (await getKeepAwake())) {
     chrome.power.requestKeepAwake('system');
   }
 }

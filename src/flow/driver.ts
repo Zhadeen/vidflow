@@ -2,10 +2,12 @@ import type { AspectRatio } from '../store/projects';
 import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, STRAY_INGREDIENT_MESSAGE } from './messages';
 import {
   ASPECT_ICON,
+  BILLING_PATTERN,
   LIMIT_PATTERN,
-  POLICY_DIALOG_PATTERN,
+  NOTICE_ACCEPT_PATTERN,
   REFUSAL_PATTERN,
   SEL,
+  USAGE_NOTICE_PATTERN,
 } from './selectors';
 
 export interface FlowPageState {
@@ -13,7 +15,10 @@ export interface FlowPageState {
   signedInEmail: string | null;
   generating: boolean;
   limitMessage: string | null;
-  policyDialog: boolean;
+  /** Flow's usage-policy / rights notice is open (and no billing dialog wording): VidFlow may accept it. */
+  noticeDialog: boolean;
+  /** A billing / payment / upgrade dialog is open: never accepted; the run stops with a plain message. */
+  billingDialog: boolean;
 }
 
 export interface FlowResultCard {
@@ -79,21 +84,30 @@ export interface FlowDriver {
    * one element carrying data-media-id (the opened picture). Either is null when the page doesn't show it plainly.
    */
   readDetailPrompt(): DetailRead;
+  /**
+   * Accepts Flow's open usage-policy / rights notice: ticks its unticked boxes, waits for its accept button ("I
+   * understand", "I agree"…) to be ready and presses it. Never touches a billing dialog. False when there is no such
+   * notice or no ready accept button.
+   */
+  acceptNotice(): Promise<boolean>;
 }
 
 export type StartCheck =
   | { ok: true }
   | { ok: false; reason: 'wrong-account' | 'signed-out' | 'policy-dialog' | 'page-not-recognised'; message: string };
 
+const pressWord = (verb: StartVerb) => (verb === 'Start' ? 'press Start again' : 'press Resume');
+
+/** Said when Flow's usage notice (switch off, or it couldn't be accepted) or a billing dialog stops VidFlow. */
+export function policyDialogMessage(verb: StartVerb): string {
+  return `Flow is showing a message about its usage policy or billing. Read it in the Flow window, then ${pressWord(verb)}.`;
+}
+
 /** `verb` names the button the owner will see: Start before a run, Resume for a paused one. */
 export function checkCanStart(s: FlowPageState, expectedEmail: string, verb: StartVerb = 'Start'): StartCheck {
-  const press = verb === 'Start' ? 'press Start again' : 'press Resume';
-  if (s.policyDialog) {
-    return {
-      ok: false,
-      reason: 'policy-dialog',
-      message: `Flow is showing a message about its usage policy or billing. Read it in the Flow window, then ${press}.`,
-    };
+  const press = pressWord(verb);
+  if (s.billingDialog || s.noticeDialog) {
+    return { ok: false, reason: 'policy-dialog', message: policyDialogMessage(verb) };
   }
   if (!s.signedInEmail) {
     return {
@@ -279,21 +293,56 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const email = /\(([^()\s]+@[^()\s]+)\)/.exec(accountLabel)?.[1] ?? null;
 
     let limitMessage: string | null = null;
-    let policyDialog = false;
     for (const el of doc.querySelectorAll(`${SEL.notice}, ${SEL.dialog}`)) {
       if (!isShown(el)) continue;
       const text = squash(el.textContent);
-      if (el.matches(SEL.dialog) && POLICY_DIALOG_PATTERN.test(text)) policyDialog = true;
       if (limitMessage === null && LIMIT_PATTERN.test(text)) limitMessage = text;
     }
+    const dialogs = shownDialogs();
 
     return {
       ready: !!q(SEL.promptBox) && !!q(SEL.generate),
       signedInEmail: email,
       generating: resultCards().some((c) => c.progress !== null),
       limitMessage,
-      policyDialog,
+      noticeDialog: dialogs.some(isUsageNotice),
+      billingDialog: dialogs.some(isBilling),
     };
+  }
+
+  // ---- Flow's notices -------------------------------------------------------
+  const shownDialogs = () => [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].filter(isShown);
+  const isBilling = (dialog: Element) => BILLING_PATTERN.test(squash(dialog.textContent));
+  /** A usage-policy / rights notice; billing wording anywhere in it makes it a billing dialog instead. */
+  const isUsageNotice = (dialog: Element) => !isBilling(dialog) && USAGE_NOTICE_PATTERN.test(squash(dialog.textContent));
+  const enabled = (b: HTMLElement) => !(b as HTMLButtonElement).disabled && b.getAttribute('aria-disabled') !== 'true';
+
+  async function acceptNotice(): Promise<boolean> {
+    // Never act while any billing dialog is open, even next to a notice.
+    if (shownDialogs().some(isBilling)) return false;
+    const notice = shownDialogs().find(isUsageNotice);
+    if (!notice) return false;
+    const acceptButton = () =>
+      [...notice.querySelectorAll<HTMLElement>('button, [role="button"]')].find((b) =>
+        NOTICE_ACCEPT_PATTERN.test(squash(b.textContent)),
+      ) ?? null;
+    if (!acceptButton()) return false;
+    for (const box of notice.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) {
+      if (!box.checked && !box.disabled) box.click();
+    }
+    for (const box of notice.querySelectorAll<HTMLElement>('[role="checkbox"][aria-checked="false"]')) box.click();
+    let button: HTMLElement;
+    try {
+      button = await until(() => {
+        const b = acceptButton();
+        return b && enabled(b) ? b : null;
+      }, opts.timeoutMs ?? SETTINGS_TIMEOUT_MS, 'not ready');
+    } catch {
+      return false;
+    }
+    button.click();
+    await until(() => !notice.isConnected || !isShown(notice), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+    return true;
   }
 
   // ---- Hero reference (spike S7) ---------------------------------------------
@@ -477,6 +526,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     readDetailPrompt,
+    acceptNotice,
 
     tilePoint(key) {
       const img = tileImage(doc, key);

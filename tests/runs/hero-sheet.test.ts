@@ -106,6 +106,7 @@ async function setup(outputs: 1 | 2 | 4 = 4) {
     tilePoint: vi.fn(async () => ({ x: TILE_X, y: 300 })),
     readDetail: vi.fn(async () => ({ prompt: null as string | null, mediaId: null as string | null })),
     uploadReference: vi.fn(async (_tabId: number, _name: string, _image: Blob): Promise<string | null> => 'ref-media-1'),
+    acceptNotice: vi.fn(async (_tabId: number) => true),
     ...over,
   });
   return { chromeMock, coordinator, project, media, FlowBlockedError, createFlowPort, pressAt, fakePort };
