@@ -250,3 +250,12 @@ On the Flow page, look-only (pointer-events none), switchable ("Show live activi
 - a coral ring + short tag on whatever VidFlow is touching (prompt box, a setting, Generate, a picture being checked); fades as it moves on;
 - a "✓ Saved · scene N" badge on pictures VidFlow has collected.
 In the studio: an Activity list (timestamped, plain words, newest first). Mockup: VidFlint `.superpowers/brainstorm/82712-1793872276/content/live-activity.html` (copy into docs/design/approved/ when built).
+
+## 18. Side panel beside Flow (approved by Hayatudeen, 5 Nov 2026)
+
+VidFlow also opens in Chrome's own side panel (`chrome.sidePanel`) on the right of the Flow window — never on top of Flow. Mockup: `docs/design/approved/side-panel.html`.
+- **Before starting:** pick/create the video; paste Claude's reply (live "✓ N scenes found" / plain issues; applied only on an explicit action, as in the studio); choose aspect (16:9 / 9:16 / 1:1), pictures per scene, style, hero description; summary line (pictures · 0 Flow credits · Chrome debugging bar note); coral "Start making pictures".
+- **While running:** project name, current step in plain words, progress bar, "N saved · N being drawn · N to go", a strip of scene boxes (saved = cream ✓, current = coral outline, upcoming = navy), the Activity list (§17), coral Pause + outlined Stop (Resume when paused).
+- "Open full studio ↗" in both states. Panel and studio show the same project and stay in sync (same run state and project store).
+- Same look as the studio (navy + coral glow, cream text, one coral primary at a time).
+- §7.1 changes: the Flow window may show VidFlow's side panel; the full studio tab remains for editing/reviewing.
