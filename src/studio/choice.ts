@@ -1,13 +1,8 @@
 import { NOT_THIS_SCENES_PICTURE } from '../runs/run';
-import { getProject, type SceneState } from '../store/projects';
+import { getProject } from '../store/projects';
 import { chromeRunClient, type RunClient } from './runClient';
 
-/** The picture a scene uses: the owner's choice if it is still one of the scene's pictures, else Flow's first. */
-export function chosenPicture(state: SceneState | undefined): string | undefined {
-  if (!state) return undefined;
-  const chosen = state.chosenPictureId;
-  return chosen && state.pictureIds.includes(chosen) ? chosen : state.pictureIds[0];
-}
+export { chosenPicture, hasChoice } from './chosen';
 
 /**
  * Saves the owner's choice (must be one of the scene's pictureIds); works while a run is live. The background is the

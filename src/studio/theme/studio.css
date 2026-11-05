@@ -643,21 +643,38 @@ textarea.vf-input {
   overflow: hidden;
 }
 
-/* Plan 2: the chosen card gets data-best="true" — coral border + coral badge. */
+/* The picture in use: coral border + the coral "★ Using this" pill (a label, not a button; approved look). */
 .vf-option[data-best='true'] {
   border: 2px solid var(--vf-coral);
 }
 
 .vf-best {
   position: absolute;
+  z-index: 1;
   top: var(--vf-space-3);
   left: var(--vf-space-3);
   background: var(--vf-coral);
   color: var(--vf-on-coral);
+  /* The approved pill (visual-style-v2.html: 11px/700, 3px 9px on 13px text) at the studio's 16px scale. */
   font-size: var(--vf-text-sm);
   font-weight: 700;
   padding: 3px 12px;
   border-radius: var(--vf-radius-pill);
+  pointer-events: none;
+}
+
+/* Another picture of the scene: one click anywhere on the card uses it. */
+.vf-option[data-swap='true'] {
+  cursor: pointer;
+  transition: border-color 160ms var(--vf-ease);
+}
+
+.vf-option[data-swap='true']:hover {
+  border-color: var(--vf-cream-muted);
+}
+
+.vf-option-use {
+  margin-top: var(--vf-space-3);
 }
 
 .vf-option-frame {

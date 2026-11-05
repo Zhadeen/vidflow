@@ -887,23 +887,30 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
 
 /**
  * The owner chose one of a scene's pictures. While this project has a run (live or finished) the run's state takes it,
- * so the choice is saved with the project and survives every later broadcast; otherwise the stored project takes it.
+ * so the choice is saved with the project and survives every later broadcast; otherwise the stored project takes it
+ * (and nothing is broadcast: the studio re-reads the project). Either way the activity log says "Swapped to picture K".
  */
 export async function chooseScenePicture(projectId: string, sceneId: string, pictureId: string): Promise<void> {
   await ready;
-  await enqueue(async () => {
+  const option = await enqueue(async () => {
     const inRun = state?.projectId === projectId ? state.sceneStates[sceneId] : undefined;
     if (state && inRun) {
       if (!inRun.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
       await commit(reduceRun(state, { type: 'choose', sceneId, pictureId }));
-      return;
+      return inRun.pictureIds.indexOf(pictureId) + 1;
     }
     const project = await getProject(projectId);
     const scene = project?.sceneStates[sceneId];
     if (!project || !scene || !scene.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
     project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
     await saveProject(project);
+    return scene.pictureIds.indexOf(pictureId) + 1;
   });
+  // Written before the studio hears back, so its activity list shows the line with the swap. A log failure never
+  // undoes the choice.
+  await logActivity({ at: Date.now(), projectId, sceneId, text: `Swapped to picture ${option}` }).catch((err) =>
+    console.warn('[VidFlow] activity write failed', err),
+  );
 }
 
 export const pauseRun = () => dispatch({ type: 'pause' });

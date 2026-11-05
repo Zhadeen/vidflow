@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
-import type { Project } from '../store/projects';
+import type { Project, SceneState } from '../store/projects';
 import { PicturesStep } from './PicturesStep';
 import { pictureProgress, runPhase } from './progress';
 import type { RunClient } from './runClient';
@@ -18,9 +18,11 @@ interface Props {
   onHome(): void;
   /** The run as the background reported it after a request from this screen. */
   onRunState?(state: RunState | null): void;
+  /** The project's scene states as saved, read back after the owner swaps a picture. */
+  onSceneStates?(sceneStates: Record<string, SceneState>): void;
 }
 
-export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome, onRunState }: Props) {
+export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome, onRunState, onSceneStates }: Props) {
   const [step, setStep] = useState<'script' | 'pictures'>(initialStep ?? (project.scenes.length > 0 ? 'pictures' : 'script'));
   const [run, setRun] = useState(runProp);
   useEffect(() => setRun(runProp), [runProp]);
@@ -76,7 +78,7 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
           onContinue={() => setStep('pictures')}
         />
       ) : (
-        <PicturesStep project={project} run={run} client={client} media={media} onRunState={reportRun} />
+        <PicturesStep project={project} run={run} client={client} media={media} onRunState={reportRun} onSceneStates={onSceneStates} />
       )}
     </div>
   );

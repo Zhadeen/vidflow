@@ -995,6 +995,51 @@ describe("the scene's chosen picture", () => {
     expect(coordinator.getRunState()).toBeNull();
   });
 
+  it('choosing on a project that is not the live run\'s saves it to that project and leaves the run alone', async () => {
+    const { coordinator, project, fakePort } = await setup(2);
+    const store = await import('../../src/store/projects');
+    const other = await store.createProject('Other');
+    other.scenes = [{ ...project.scenes[0]! }];
+    other.sceneStates = { s1: { sceneId: 's1', status: 'done', pictureIds: ['o/a', 'o/b'] } };
+    await store.saveProject(other);
+    const heard: import('../../src/runs/run').RunState[] = [];
+    coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'running');
+    const before = coordinator.getRunState()!;
+    coordinator.onRunState((s) => heard.push(s));
+
+    // Same scene id as the live run's scene, but the other project's picture: it must not touch the run.
+    await coordinator.chooseScenePicture(other.id, 's1', 'o/b');
+    expect((await store.getProject(other.id))!.sceneStates.s1?.chosenPictureId).toBe('o/b');
+    expect(coordinator.getRunState()!.projectId).toBe(project.id);
+    expect(coordinator.getRunState()!.sceneStates).toEqual(before.sceneStates);
+    // Nothing broadcast carries the choice (the studio re-reads the other project itself).
+    expect(heard.some((s) => s.projectId !== project.id || Object.values(s.sceneStates).some((x) => x.chosenPictureId))).toBe(false);
+    expect((await store.getProject(project.id))!.sceneStates.s1?.chosenPictureId).toBeUndefined();
+    // A picture of the live run's project is not one of the other project's.
+    await expect(coordinator.chooseScenePicture(other.id, 's1', 'm/a')).rejects.toThrow();
+  });
+
+  it('a swap is logged as "Swapped to picture K" for that scene', async () => {
+    const { coordinator, project, chromeMock } = await setup(2);
+    const store = await import('../../src/store/projects');
+    const { ACTIVITY_KEY } = await import('../../src/runs/activity');
+    const saved = (await store.getProject(project.id))!;
+    saved.sceneStates = { s1: { sceneId: 's1', status: 'done', pictureIds: ['m/a', 'm/b'] } };
+    await store.saveProject(saved);
+    await coordinator.chooseScenePicture(project.id, 's1', 'm/b');
+    await coordinator.chooseScenePicture(project.id, 's1', 'm/a');
+    const log = chromeMock.storage.local.data[ACTIVITY_KEY] as import('../../src/runs/activity').ActivityEntry[];
+    expect(log.map((e) => [e.projectId, e.sceneId, e.text])).toEqual([
+      [project.id, 's1', 'Swapped to picture 2'],
+      [project.id, 's1', 'Swapped to picture 1'],
+    ]);
+    // A refused choice logs nothing.
+    await expect(coordinator.chooseScenePicture(project.id, 's1', 'm/zz')).rejects.toThrow();
+    expect((chromeMock.storage.local.data[ACTIVITY_KEY] as unknown[]).length).toBe(2);
+  });
+
   it('try again clears the choice', async () => {
     const { reduceRun } = await import('../../src/runs/run');
     // A finished run whose scene failed after an earlier batch of pictures, one of them chosen.

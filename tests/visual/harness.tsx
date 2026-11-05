@@ -71,6 +71,7 @@ const T = Date.now();
                 { at: T - 40000, projectId: 'p1', sceneId: id(1), text: '✓ Saved 2 pictures' },
                 { at: T - 20000, projectId: 'p1', sceneId: id(2), text: 'Typing the prompt' },
                 { at: T - 5000, projectId: 'p1', sceneId: id(2), text: 'Pressing Generate' },
+                ...(screen === 'swap' ? [{ at: T - 1000, projectId: 'p1', sceneId: id(38), text: 'Swapped to picture 2' }] : []),
               ],
             }
           : {},
@@ -142,6 +143,16 @@ function view() {
       });
       const p = { ...project, sceneStates: run.sceneStates };
       return <ProjectScreen project={p} run={run} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
+    }
+    case 'swap': {
+      // The owner swapped scene 38 to its second picture during the run: pill and coral border on option 2.
+      const run = runWith(38, (s) =>
+        reduceRun(reduceRun(reduceRun(s, { type: 'choose', sceneId: id(38), pictureId: 'stick2' }), { type: 'submitted', sceneId: id(39) }), {
+          type: 'submitted',
+          sceneId: id(40),
+        }),
+      );
+      return <ProjectScreen project={project} run={run} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
     }
     default: {
       const run = runWith(38, (s) => reduceRun(reduceRun(s, { type: 'submitted', sceneId: id(39) }), { type: 'submitted', sceneId: id(40) }));

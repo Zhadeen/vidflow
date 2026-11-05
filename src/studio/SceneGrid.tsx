@@ -1,6 +1,6 @@
 import type { Scene } from '../scenes/types';
 import type { AspectRatio, SceneState } from '../store/projects';
-import { chosenPicture } from './choice';
+import { chosenPicture } from './chosen';
 
 const STATUS_WORD: Record<SceneState['status'], string> = {
   pending: 'Waiting',
