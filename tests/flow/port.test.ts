@@ -148,6 +148,16 @@ describe('Flow port', () => {
     expect((billing as FlowBlockedError).notice).toBe(false);
     expect(await port.acceptNotice(7)).toBe(true);
     expect(send).toHaveBeenLastCalledWith(7, { type: FLOW_ACCEPT_NOTICE });
-    expect(await port.acceptNotice(7)).toBe(false); // no answer
+    expect(await port.acceptNotice(7)).toBeNull(); // no answer (e.g. the page reloaded)
+  });
+
+  it('carries the notice flag on upload and confirm answers', async () => {
+    const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' };
+    const { port } = setup([{ kind: 'blocked', event, notice: true }, { started: false, notice: true }, { started: true }, { started: false }]);
+    const err = await port.uploadReference(7, 'ref.png', new Blob([new Uint8Array([1])], { type: 'image/png' })).catch((e: unknown) => e);
+    expect((err as FlowBlockedError).notice).toBe(true);
+    expect(await port.confirmStarted(7)).toBe('notice');
+    expect(await port.confirmStarted(7)).toBe(true);
+    expect(await port.confirmStarted(7)).toBe(false);
   });
 });

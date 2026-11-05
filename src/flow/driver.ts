@@ -317,6 +317,17 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   const isUsageNotice = (dialog: Element) => !isBilling(dialog) && USAGE_NOTICE_PATTERN.test(squash(dialog.textContent));
   const enabled = (b: HTMLElement) => !(b as HTMLButtonElement).disabled && b.getAttribute('aria-disabled') !== 'true';
 
+  /**
+   * Stops a step that is waiting on Flow when a dialog covers the page: a usage notice (no billing dialog) as a
+   * notice the background may accept, a billing dialog as a plain stop. Unknown dialogs: the step's own wait decides.
+   */
+  function stopForDialog(): void {
+    const dialogs = shownDialogs();
+    const billing = dialogs.some(isBilling);
+    if (!billing && !dialogs.some(isUsageNotice)) return;
+    throw new FlowBlockedError({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage('Resume') }, !billing);
+  }
+
   async function acceptNotice(): Promise<boolean> {
     // Never act while any billing dialog is open, even next to a notice.
     if (shownDialogs().some(isBilling)) return false;
@@ -330,7 +341,10 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     for (const box of notice.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) {
       if (!box.checked && !box.disabled) box.click();
     }
-    for (const box of notice.querySelectorAll<HTMLElement>('[role="checkbox"][aria-checked="false"]')) box.click();
+    // A role=checkbox wrapper around a native box was ticked through that box: clicking it too would untick it.
+    for (const box of notice.querySelectorAll<HTMLElement>('[role="checkbox"][aria-checked="false"]')) {
+      if (!box.querySelector('input[type="checkbox"]')) box.click();
+    }
     let button: HTMLElement;
     try {
       button = await until(() => {
@@ -352,8 +366,9 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   /** Like until(), but a timeout pauses the run with `message` instead of failing the scene. */
   async function untilOrBlocked<T>(probe: () => T | null | false | undefined, timeoutMs: number, message?: string): Promise<T> {
     try {
-      return await until(probe, timeoutMs, 'timed out');
-    } catch {
+      return await until(() => (stopForDialog(), probe()), timeoutMs, 'timed out');
+    } catch (err) {
+      if (err instanceof FlowBlockedError) throw err;
       throw blocked(message);
     }
   }
@@ -408,6 +423,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
 
 
   async function uploadReference(file: File): Promise<string | null> {
+    stopForDialog();
     const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     await openPicker();
     // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
@@ -454,6 +470,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   }
 
   async function attachReference(name: string): Promise<void> {
+    stopForDialog();
     const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     if (chips() > 0) {
       // A chip left from an earlier attempt: start from an empty bar so exactly one ingredient remains.

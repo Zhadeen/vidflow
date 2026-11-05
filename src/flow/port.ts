@@ -105,7 +105,7 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
         | UploadReferenceResponse
         | undefined;
       if (!reply) throw new Error('The Flow page gave no answer.');
-      if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event);
+      if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event, reply.notice === true);
       if (reply.kind === 'error') throw new Error(reply.message);
       return reply.mediaId;
     },
@@ -123,16 +123,17 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
     async acceptNotice(tabId) {
       try {
         const reply = (await ask(tabId, { type: FLOW_ACCEPT_NOTICE })) as AcceptNoticeResponse | undefined;
-        return reply?.accepted === true;
+        return reply ? reply.accepted === true : null;
       } catch {
-        return false;
+        return null; // no answer: the page may have reloaded after accepting
       }
     },
 
     async confirmStarted(tabId) {
       try {
         const reply = (await ask(tabId, { type: FLOW_CONFIRM })) as ConfirmResponse | undefined;
-        return reply?.started === true;
+        if (reply?.started === true) return true;
+        return reply?.notice === true ? 'notice' : false;
       } catch {
         return false;
       }

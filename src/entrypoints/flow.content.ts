@@ -69,7 +69,7 @@ export default defineContentScript({
     // A FlowBlockedError (e.g. the hero reference wouldn't attach) pauses the run; anything else fails the scene.
     const failure = (err: unknown): PrepareResponse =>
       err instanceof FlowBlockedError
-        ? { kind: 'blocked', event: err.event }
+        ? { kind: 'blocked', event: err.event, ...(err.notice ? { notice: true as const } : {}) }
         : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
 
     /**
@@ -146,6 +146,11 @@ export default defineContentScript({
       if (!beforePress) return { started: false };
       const started = await driver.waitForStart(beforePress, CONFIRM_WAIT_MS);
       beforePress = null;
+      if (!started) {
+        // Flow may have answered Generate with its usage notice: say so, so the background can accept it.
+        const state = driver.read();
+        if (state.noticeDialog && !state.billingDialog) return { started, notice: true };
+      }
       return { started };
     }
 

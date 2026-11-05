@@ -40,9 +40,9 @@ export const REFUSAL_PATTERN = /content polic|might violate|violat(?:es|ed|ion)|
  * Flow's usage-policy / rights notices: the only dialogs VidFlow may accept itself (switch "Accept Flow's notices
  * automatically"). Known wording: "necessary rights", "Prohibited Use Policy". Kept narrow on purpose.
  */
-export const USAGE_NOTICE_PATTERN = /usage polic|use policy|prohibited use|necessary rights|rights to/i;
+export const USAGE_NOTICE_PATTERN = /usage polic(?:y|ies)|use policy|prohibited use|necessary rights/i;
 /** Billing / payment / upgrade dialogs: never accepted or pressed; the run stops with a plain message. Wins over a notice. */
 export const BILLING_PATTERN = /paid tier|billing|payment|upgrade|subscribe/i;
-/** The accept button of a usage notice. */
-export const NOTICE_ACCEPT_PATTERN = /i understand|agree|accept|continue|confirm/i;
+/** The accept button of a usage notice: its whole label, so "OK", "Edit prompt" or "Confirm" never match. */
+export const NOTICE_ACCEPT_PATTERN = /^\s*(?:i understand|i agree|agree|accept|agree and continue|continue)\s*$/i;
 export const PROGRESS_PATTERN = /\b(\d{1,3})\s?%/;

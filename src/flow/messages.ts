@@ -59,8 +59,10 @@ export interface NewProjectRequest {
 export interface ConfirmRequest {
   type: typeof FLOW_CONFIRM;
 }
+/** `notice`: Flow didn't start and its usage-policy / rights notice (no billing dialog) is showing. */
 export interface ConfirmResponse {
   started: boolean;
+  notice?: true;
 }
 
 /** background → Flow tab: the result tiles in the DOM right now. */
@@ -100,7 +102,7 @@ export interface UploadReferenceRequest {
 /** mediaId: the uploaded picture's own grid tile (never a scene's picture), or null when it didn't show in time. */
 export type UploadReferenceResponse =
   | { kind: 'done'; mediaId: string | null }
-  | { kind: 'blocked'; event: BlockingEvent }
+  | { kind: 'blocked'; event: BlockingEvent; notice?: true }
   | { kind: 'error'; message: string };
 
 /**

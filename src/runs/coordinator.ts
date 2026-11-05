@@ -1,5 +1,5 @@
 /// <reference types="chrome" />
-import type { FlowResultCard, StartVerb } from '../flow/driver';
+import { policyDialogMessage, type FlowResultCard, type StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, type Point, type SubmitOptions } from '../flow/messages';
 import { isFlowUrl } from '../flow/hosts';
@@ -11,7 +11,7 @@ import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
-import { getAcceptNotices, getKeepAwake } from '../settings';
+import { getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
 import {
   HERO_SHEET_ID,
   initHeroSheetRun,
@@ -39,8 +39,11 @@ export interface FlowPort {
   findNewProject(tabId: number, verb: StartVerb): Promise<Point>;
   /** Trusted press at a point in the tab. */
   press(tabId: number, x: number, y: number): Promise<void>;
-  /** After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s). */
-  confirmStarted(tabId: number): Promise<boolean>;
+  /**
+   * After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s); 'notice' when it
+   * didn't start and Flow's usage-policy / rights notice is showing instead.
+   */
+  confirmStarted(tabId: number): Promise<boolean | 'notice'>;
   /** The result tiles in the Flow tab's DOM right now. */
   tiles(tabId: number): Promise<FlowResultCard[]>;
   /** Where the finished tile with this media id is (scrolled into view), to open its detail view. */
@@ -54,9 +57,9 @@ export interface FlowPort {
   uploadReference(tabId: number, name: string, image: Blob): Promise<string | null>;
   /**
    * Ticks and accepts Flow's open usage-policy / rights notice in VidFlow's own Flow tab (never a billing dialog).
-   * False when it couldn't.
+   * False when it couldn't; null when the page gave no answer (e.g. it reloaded after accepting).
    */
-  acceptNotice(tabId: number): Promise<boolean>;
+  acceptNotice(tabId: number): Promise<boolean | null>;
 }
 
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
@@ -420,6 +423,7 @@ async function commit(next: RunState): Promise<void> {
 
   if (next.status === 'running') {
     if (await getKeepAwake()) chrome.power.requestKeepAwake('system');
+    else chrome.power.releaseKeepAwake();
   } else {
     chrome.power.releaseKeepAwake();
     // Drop the debugger (and Chrome's "started debugging" bar) whenever the run is not pressing Generate.
@@ -471,6 +475,12 @@ function stillCollecting(projectId: string): boolean {
 
 export const ACCEPTED_NOTICE_TEXT = "Accepted Flow's notice";
 
+function logAcceptedNotice(projectId: string, sceneId: string | null): void {
+  logActivity({ at: Date.now(), projectId, sceneId, text: ACCEPTED_NOTICE_TEXT }).catch((e) =>
+    console.warn('[VidFlow] activity write failed', e),
+  );
+}
+
 /**
  * Runs a Flow step (prepare, or finding New project). When Flow's usage-policy / rights notice blocked it and "Accept
  * Flow's notices automatically" is on, accepts the notice, logs it, and runs the step once more. Anything else (a
@@ -482,10 +492,10 @@ async function pastNotice<T>(tabId: number, projectId: string, sceneId: string |
     return await step();
   } catch (err) {
     if (!(err instanceof FlowBlockedError) || !err.notice || !(await getAcceptNotices())) throw err;
-    if (!(await port!.acceptNotice(tabId).catch(() => false))) throw err;
-    logActivity({ at: Date.now(), projectId, sceneId, text: ACCEPTED_NOTICE_TEXT }).catch((e) =>
-      console.warn('[VidFlow] activity write failed', e),
-    );
+    const accepted = await port!.acceptNotice(tabId).catch(() => null);
+    if (accepted === false) throw err;
+    // No answer (the page reloaded) still gets its one retry: if the notice is there, the retry pauses as before.
+    if (accepted) logAcceptedNotice(projectId, sceneId);
     return step();
   }
 }
@@ -567,7 +577,7 @@ async function ensureReference(tabId: number, project: Project): Promise<string 
   note(project, null, 'Adding the hero reference picture to Flow', 'project');
   let key: string | null;
   try {
-    key = await port!.uploadReference(tabId, name, image);
+    key = await pastNotice(tabId, project.id, null, () => port!.uploadReference(tabId, name, image));
   } catch (err) {
     // Without the reference no scene may be sent (its prompt names it): pause, never fail the scene.
     if (err instanceof FlowBlockedError) throw err;
@@ -632,7 +642,18 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     note(project, sceneId, 'Pressing Generate', 'generate');
     await pressIn(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
-    if (!(await port!.confirmStarted(tabId))) {
+    const started = await port!.confirmStarted(tabId);
+    if (started === 'notice') {
+      // Flow answered Generate with its usage notice. Accepted: the scene stays unconfirmed, so the next round looks
+      // for its tiles before pressing again (findUnconfirmedStart). Otherwise the pause names the notice.
+      if ((await getAcceptNotices()) && (await port!.acceptNotice(tabId).catch(() => null)) === true) {
+        logAcceptedNotice(projectId, sceneId);
+        return 'next';
+      }
+      await dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
+      return 'stop';
+    }
+    if (!started) {
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
       return 'stop';
     }
@@ -1162,6 +1183,12 @@ export function registerCoordinator(): void {
     if (state?.status === 'running') await pauseWith(WINDOW_CLOSED_MESSAGE);
   });
   chrome.runtime.onStartup.addListener(() => void forgetFlowWindow());
+  // The keep-awake switch takes effect at once on a running run.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !(KEEP_AWAKE_KEY in changes) || state?.status !== 'running') return;
+    if (changes[KEEP_AWAKE_KEY]!.newValue === false) chrome.power.releaseKeepAwake();
+    else chrome.power.requestKeepAwake('system');
+  });
   void ready.then(() => {
     void pump();
     void pullTiles(); // results that finished while the worker slept

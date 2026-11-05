@@ -32,7 +32,7 @@ function mockChrome() {
   const tab = { id: 7, windowId: 3, url: 'https://flow.google.com/', active: true };
   const chromeMock = {
     tab,
-    storage: { local: area(), session: area() },
+    storage: { local: area(), session: area(), onChanged: listener() },
     alarms: { create: vi.fn(async (_name: string, _info: unknown) => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
     power: { requestKeepAwake: vi.fn(), releaseKeepAwake: vi.fn() },
     notifications: { create: vi.fn(async () => '') },
@@ -101,12 +101,12 @@ async function setup(outputs: 1 | 2 | 4 = 4) {
       if (x === 5) chromeMock.tab.url = PROJECT_URL;
       if (x === TILE_X) chromeMock.tab.url = `${PROJECT_URL}/edit/generation-1`; // a tile opens its detail page
     }),
-    confirmStarted: vi.fn(async () => true),
+    confirmStarted: vi.fn(async (): Promise<boolean | 'notice'> => true),
     tiles: vi.fn(async (): Promise<FlowResultCard[]> => []),
     tilePoint: vi.fn(async () => ({ x: TILE_X, y: 300 })),
     readDetail: vi.fn(async () => ({ prompt: null as string | null, mediaId: null as string | null })),
     uploadReference: vi.fn(async (_tabId: number, _name: string, _image: Blob): Promise<string | null> => 'ref-media-1'),
-    acceptNotice: vi.fn(async (_tabId: number) => true),
+    acceptNotice: vi.fn(async (_tabId: number): Promise<boolean | null> => true),
     ...over,
   });
   return { chromeMock, coordinator, project, media, FlowBlockedError, createFlowPort, pressAt, fakePort };
@@ -1310,6 +1310,98 @@ describe("Flow's notices", () => {
   });
 });
 
+describe("Flow's notices (review fixes)", () => {
+  const POLICY_MESSAGE = 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Resume.';
+  const activityOf = (chromeMock: ReturnType<typeof mockChrome>, projectId: string) =>
+    ((chromeMock.storage.local.data['vidflow.activity'] ?? []) as { projectId: string; text: string }[])
+      .filter((e) => e.projectId === projectId)
+      .map((e) => e.text);
+
+  it('a notice mid-upload is accepted, logged, the upload retried, and the run carries on', async () => {
+    const ctx = await setup(1);
+    const { chromeMock, coordinator, project, FlowBlockedError, fakePort, media } = ctx;
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(project.id))!;
+    await media.put(saved.id, 'hero-reference', new Blob(['png-bytes'], { type: 'image/png' }));
+    saved.character = { description: 'A stickman', referenceMediaId: `${saved.id}/hero-reference` };
+    await store.saveProject(saved);
+    const notice = new FlowBlockedError({ type: 'needsOwner', reason: 'policy-dialog', message: POLICY_MESSAGE }, true);
+    const port = fakePort({
+      uploadReference: vi.fn().mockRejectedValueOnce(notice).mockResolvedValue('ref-media-1'),
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    await coordinator.settledForTests();
+    expect(port.uploadReference).toHaveBeenCalledTimes(2);
+    expect(port.acceptNotice).toHaveBeenCalledTimes(1);
+    expect(activityOf(chromeMock, project.id)).toContain("Accepted Flow's notice");
+    expect(coordinator.getRunState()!.status).toBe('running');
+  });
+
+  it('a notice after Generate is accepted and the scene left unconfirmed, not paused as "didn\'t start"', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    const port = fakePort({ confirmStarted: vi.fn<() => Promise<boolean | 'notice'>>().mockResolvedValueOnce('notice').mockResolvedValue(true) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    // Left unconfirmed: the next round looks for its tiles (none here), then presses again and Flow starts.
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    await coordinator.settledForTests();
+    expect(port.acceptNotice).toHaveBeenCalledTimes(1);
+    expect(port.confirmStarted).toHaveBeenCalledTimes(2);
+    expect(port.tiles).toHaveBeenCalled(); // findUnconfirmedStart looked before the second press
+    expect(coordinator.getRunState()!.status).toBe('running');
+    expect(coordinator.getRunState()!.pauseReason ?? null).toBeNull();
+    expect(activityOf(chromeMock, project.id)).toContain("Accepted Flow's notice");
+    expect(activityOf(chromeMock, project.id).some((t) => t.includes("didn't start"))).toBe(false);
+  });
+
+  it('a notice after Generate that cannot be accepted pauses with the usage-policy message', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const port = fakePort({ confirmStarted: vi.fn(async (): Promise<boolean | 'notice'> => 'notice'), acceptNotice: vi.fn(async () => false) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused');
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+  });
+
+  it('a notice after Generate with the switch off pauses with the usage-policy message', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    chromeMock.storage.local.data['vidflow.acceptNotices'] = false;
+    const port = fakePort({ confirmStarted: vi.fn(async (): Promise<boolean | 'notice'> => 'notice') });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused');
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+    expect(port.acceptNotice).not.toHaveBeenCalled();
+  });
+
+  it('retries the step once when accepting got no answer (the page reloaded)', async () => {
+    const { coordinator, project, FlowBlockedError, fakePort } = await setup();
+    const notice = () => new FlowBlockedError({ type: 'needsOwner', reason: 'policy-dialog', message: POLICY_MESSAGE }, true);
+    const port = fakePort({
+      prepare: vi.fn().mockRejectedValueOnce(notice()).mockResolvedValue({ x: 120, y: 620 }),
+      acceptNotice: vi.fn(async () => null),
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    expect(port.prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepting with no answer still retries only once, then pauses with the usage-policy message', async () => {
+    const again = await setup();
+    const notice = () =>
+      new again.FlowBlockedError({ type: 'needsOwner', reason: 'policy-dialog', message: POLICY_MESSAGE }, true);
+    const stuck = again.fakePort({ prepare: vi.fn(async () => Promise.reject(notice())), acceptNotice: vi.fn(async () => null) });
+    again.coordinator.setFlowPort(stuck);
+    await again.coordinator.startRun(again.project.id);
+    await waitFor(() => again.coordinator.getRunState()?.status === 'paused', 'paused');
+    expect(stuck.prepare).toHaveBeenCalledTimes(2); // still capped at one retry
+    expect(again.coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+  });
+});
+
 describe('keep-awake switch', () => {
   it('keep-awake follows the switch', async () => {
     const on = await setup();
@@ -1328,5 +1420,20 @@ describe('keep-awake switch', () => {
     expect(off.chromeMock.power.requestKeepAwake).not.toHaveBeenCalled();
     await off.coordinator.stopRun();
     expect(off.chromeMock.power.releaseKeepAwake).toHaveBeenCalled(); // releasing is unchanged
+  });
+
+  it('turning keep-awake off mid-run releases it, and on again asks again', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    await coordinator.settledForTests();
+    chromeMock.power.releaseKeepAwake.mockClear();
+    chromeMock.power.requestKeepAwake.mockClear();
+    const changed = listenerOf<(changes: Record<string, { newValue?: unknown }>, area: string) => void>(chromeMock.storage.onChanged);
+    changed({ 'vidflow.keepAwake': { newValue: false } }, 'local');
+    await waitFor(() => chromeMock.power.releaseKeepAwake.mock.calls.length === 1, 'released');
+    changed({ 'vidflow.keepAwake': { newValue: true } }, 'local');
+    await waitFor(() => chromeMock.power.requestKeepAwake.mock.calls.length === 1, 'requested again');
   });
 });

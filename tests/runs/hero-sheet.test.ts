@@ -32,7 +32,7 @@ function mockChrome() {
   const tab = { id: 7, windowId: 3, url: 'https://flow.google.com/', active: true };
   const chromeMock = {
     tab,
-    storage: { local: area(), session: area() },
+    storage: { local: area(), session: area(), onChanged: listener() },
     alarms: { create: vi.fn(async (_name: string, _info: unknown) => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
     power: { requestKeepAwake: vi.fn(), releaseKeepAwake: vi.fn() },
     notifications: { create: vi.fn(async () => '') },
@@ -101,12 +101,12 @@ async function setup(outputs: 1 | 2 | 4 = 4) {
       if (x === 5) chromeMock.tab.url = PROJECT_URL;
       if (x === TILE_X) chromeMock.tab.url = `${PROJECT_URL}/edit/generation-1`; // a tile opens its detail page
     }),
-    confirmStarted: vi.fn(async () => true),
+    confirmStarted: vi.fn(async (): Promise<boolean | 'notice'> => true),
     tiles: vi.fn(async (): Promise<FlowResultCard[]> => []),
     tilePoint: vi.fn(async () => ({ x: TILE_X, y: 300 })),
     readDetail: vi.fn(async () => ({ prompt: null as string | null, mediaId: null as string | null })),
     uploadReference: vi.fn(async (_tabId: number, _name: string, _image: Blob): Promise<string | null> => 'ref-media-1'),
-    acceptNotice: vi.fn(async (_tabId: number) => true),
+    acceptNotice: vi.fn(async (_tabId: number): Promise<boolean | null> => true),
     ...over,
   });
   return { chromeMock, coordinator, project, media, FlowBlockedError, createFlowPort, pressAt, fakePort };

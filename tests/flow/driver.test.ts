@@ -643,6 +643,31 @@ describe('FlowDriver hero reference', () => {
     expect(document.querySelector('[role="listbox"]')).toBeNull(); // Add to prompt closed the picker
   });
 
+  const NOTICE_HTML =
+    '<div role="dialog" class="notice"><p>Confirm you have the necessary rights to upload this media.</p><button>I agree</button></div>';
+
+  it('a usage notice mid-upload stops the upload as a notice', async () => {
+    load('prompt-bar.html');
+    fakePicker({ neverFinishes: true });
+    setTimeout(() => document.body.insertAdjacentHTML('beforeend', NOTICE_HTML), 20);
+    const err = await driver().uploadReference(png()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as FlowBlockedError).notice).toBe(true);
+    expect((err as FlowBlockedError).event).toEqual({ type: 'needsOwner', reason: 'policy-dialog', message: 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Resume.' });
+  });
+
+  it('a usage notice blocks attaching the reference as a notice; a billing dialog never counts as one', async () => {
+    load('prompt-bar.html');
+    fakePicker();
+    document.body.insertAdjacentHTML('beforeend', NOTICE_HTML);
+    const notice = await driver().attachReference(REFERENCE).catch((e: unknown) => e);
+    expect((notice as FlowBlockedError).notice).toBe(true);
+    document.body.insertAdjacentHTML('beforeend', fixture('billing-dialog.html'));
+    const billing = await driver().attachReference(REFERENCE).catch((e: unknown) => e);
+    expect(billing).toBeInstanceOf(FlowBlockedError);
+    expect((billing as FlowBlockedError).notice).toBe(false);
+  });
+
   it("doesn't upload twice when it's already in the project's assets", async () => {
     load('prompt-bar.html');
     const picker = fakePicker();
@@ -818,6 +843,47 @@ describe('FlowDriver.acceptNotice', () => {
     document.querySelectorAll('[role="dialog"] button').forEach((b) => b.addEventListener('click', pressed));
     expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(false);
     expect(pressed).not.toHaveBeenCalled();
+  });
+
+  it('never accepts a refusal-style dialog that only offers OK or Edit prompt', async () => {
+    load('prompt-bar.html');
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div role="dialog"><p>This prompt may violate our usage policy.</p><button>OK</button><button>Edit prompt</button><button>Confirm</button></div>',
+    );
+    const pressed = vi.fn();
+    document.querySelectorAll('[role="dialog"] button').forEach((b) => b.addEventListener('click', pressed));
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(false);
+    expect(pressed).not.toHaveBeenCalled();
+  });
+
+  it('only matches the whole accept label, and not a broad "rights to" mention', async () => {
+    load('prompt-bar.html');
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div role="dialog"><p>Prohibited Use Policy</p><button>I agree to pay</button><button>Accept all cookies and upgrades later</button></div>',
+    );
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(false);
+    document.body.innerHTML = '';
+    load('prompt-bar.html');
+    document.body.insertAdjacentHTML('beforeend', '<div role="dialog"><p>You have the rights to edit this project.</p><button>Continue</button></div>');
+    expect(createFlowDriver().read().noticeDialog).toBe(false);
+  });
+
+  it('ticks a native checkbox inside a role=checkbox wrapper once, without toggling the wrapper again', async () => {
+    load('prompt-bar.html');
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div role="dialog"><p>Prohibited Use Policy</p><div role="checkbox" aria-checked="false" class="wrap"><input type="checkbox" /></div><button>I agree</button></div>',
+    );
+    const wrap = $('.wrap');
+    const box = wrap.querySelector('input')!;
+    box.addEventListener('change', () => wrap.setAttribute('aria-checked', String(box.checked)));
+    const wrapperClicks = vi.fn();
+    wrap.addEventListener('click', (e) => e.target === wrap && wrapperClicks());
+    expect(await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).acceptNotice()).toBe(true);
+    expect(box.checked).toBe(true);
+    expect(wrapperClicks).not.toHaveBeenCalled();
   });
 
   it('answers false when there is no notice, or it has no accept button', async () => {
