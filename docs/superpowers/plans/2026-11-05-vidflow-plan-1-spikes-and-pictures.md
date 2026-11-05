@@ -38,7 +38,7 @@
 1. **Two scenes with identical image prompts** — each still gets its own picture under its own scene number (Task 8 test `matches duplicate prompts by submission order`).
 2. **Flow refuses one scene mid-run** — that scene is marked refused with Flow's message and the run continues to the next (Task 6 test `refusal marks scene and advances`).
 3. **Chrome closed mid-run** — on reopen, finished scenes stay finished and the run resumes from the first unfinished scene (Task 6 test `restores persisted run and resumes at first unfinished`).
-4. **Flow tab signed in to the VidFlint account `unscripted4ce@gmail.com`** — the run refuses to start and says which account to switch to (Task 7 test `blocks start when signed in as protected account`).
+4. **Flow tab signed in to a different Google account than the one set in VidFlow** — the run refuses to start and says which account to switch to (Task 7 test `blocks start when signed in to a different account`).
 5. **Scene file with quotes, commas, emoji, and a non-English sentence** — parsed intact, no row dropped (Task 2 test `keeps quoted commas emoji and non-English text`).
 
 ---
