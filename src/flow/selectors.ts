@@ -8,6 +8,7 @@ export const SEL = {
   ingredients: '[aria-label="Add ingredients to the prompt box"]',
   account: '[aria-label^="Google Account:"]',
   tileList: '.cdk-virtual-scroll-content-wrapper',
+  tile: 'flow-grid-tile-container',
   tileImage: 'img[data-media-id]',
   promptBar: 'flow-base-prompt-box',
   /** Picture detail page (/project/<p>/edit/<id>), checked live: each history step and its full prompt text. */

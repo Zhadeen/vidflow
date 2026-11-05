@@ -123,10 +123,12 @@ function isShown(el: Element): boolean {
     : true;
 }
 
-function textNodes(root: Element): string[] {
+function textNodes(root: Element, skipIcons = false): string[] {
   const out: string[] = [];
   const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    // Material icon ligatures ("image", "add") are text too; they aren't part of a caption.
+    if (skipIcons && n.parentElement?.closest('mat-icon')) continue;
     const t = squash(n.textContent);
     if (t) out.push(t);
   }
@@ -192,10 +194,12 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   }
 
   function resultCards(): FlowResultCard[] {
-    const tiles = [...doc.querySelectorAll(SEL.tileList)].flatMap((list) => [...list.children]);
+    // Live Flow puts every tile in one row div, each picture in its own flow-grid-tile-container.
+    const live = [...doc.querySelectorAll(SEL.tile)];
+    const tiles = live.length ? live : [...doc.querySelectorAll(SEL.tileList)].flatMap((list) => [...list.children]);
     return tiles.map((tile, domIndex) => {
       const img = tile.querySelector<HTMLImageElement>(SEL.tileImage);
-      const texts = textNodes(tile);
+      const texts = textNodes(tile, true);
       let progress: number | null = null;
       let refusal: string | null = null;
       const captionParts: string[] = [];

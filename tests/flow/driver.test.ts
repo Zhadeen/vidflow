@@ -334,6 +334,22 @@ describe('FlowDriver home page', () => {
 });
 
 describe('FlowDriver.resultCards', () => {
+  it('reads the live grid: one flow-grid-tile-container per picture, icon text left out of captions', () => {
+    // Live Flow (5 Nov 2026): the scroll wrapper has ONE row div holding every tile container.
+    const tile = (inner: string) =>
+      `<flow-grid-tile-container class="mat-context-menu-trigger"><div>${inner}<div><mat-icon aria-hidden="true">image</mat-icon><span>${'{c}'}</span></div></div></flow-grid-tile-container>`;
+    const done = (id: string, caption: string) =>
+      tile(`<img data-media-id="${id}" src="https://flow-content.google/image/${id}">`).replace('{c}', caption);
+    const pending = (pct: string, caption: string) => tile(`<div>${pct}</div>`).replace('{c}', caption);
+    document.body.innerHTML = `<div class="cdk-virtual-scroll-content-wrapper"><div class="virtual-scroll-container"><div>
+      ${pending('26%', 'The hero waves')}${done('id-a', 'Hero pointing at bill lines')}${done('id-b', 'Hero reading bill')}
+    </div></div><div></div></div>`;
+    const cards = createFlowDriver().resultCards();
+    expect(cards.map((c) => c.key)).toEqual(['pending-0', 'id-a', 'id-b']);
+    expect(cards[0]).toMatchObject({ caption: 'The hero waves', progress: 26, imageUrl: null });
+    expect(cards[1]).toMatchObject({ caption: 'Hero pointing at bill lines', progress: null, domIndex: 1 });
+  });
+
   it('lists each card with caption and image', () => {
     load('tiles.html');
     const cards = createFlowDriver().resultCards();
