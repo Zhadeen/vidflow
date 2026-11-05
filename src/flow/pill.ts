@@ -42,7 +42,7 @@ export function pillView(
 }
 
 /** Progress for the bar: saved pictures, plus half for those being drawn. */
-function progress(view: PillView): number {
+export function pillProgress(view: Pick<PillView, 'saved' | 'drawing' | 'total'>): number {
   return view.total > 0 ? Math.round(((view.saved + view.drawing / 2) / view.total) * 100) : 0;
 }
 
@@ -129,7 +129,7 @@ export function renderPill(
   } else line.textContent = `Picture ${view.n} of ${view.total}`;
 
   const track = el('div', 'track', { marginTop: '6px', height: '5px', borderRadius: '3px', background: NAVY_TRACK });
-  track.append(el('div', 'fill', { width: `${progress(view)}%`, height: '5px', borderRadius: '3px', background: CREAM }));
+  track.append(el('div', 'fill', { width: `${pillProgress(view)}%`, height: '5px', borderRadius: '3px', background: CREAM }));
 
   const counts = el(
     'div',

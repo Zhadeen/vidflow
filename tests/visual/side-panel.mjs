@@ -1,0 +1,49 @@
+// Screenshots the side panel (before starting, while it runs) at the approved 320px width with installed Chrome,
+// plus the approved mockup's panels for comparison.
+// Usage: node tests/visual/side-panel.mjs [outDir] [mockupOutDir]   (playwright-core from the global @playwright/cli install)
+import { createServer } from 'vite';
+import react from '@vitejs/plugin-react';
+import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repo = path.resolve(here, '../..');
+const out = path.resolve(process.argv[2] ?? path.join(repo, 'docs/design/build-check'));
+const mockOut = process.argv[3] ? path.resolve(process.argv[3]) : null;
+const globalRoot = execSync('npm root -g').toString().trim();
+const { chromium } = await import(path.join(globalRoot, '@playwright/cli/node_modules/playwright-core/index.mjs'));
+
+const server = await createServer({ root: here, configFile: false, plugins: [react()], server: { port: 5197, fs: { allow: [repo] } }, logLevel: 'error' });
+await server.listen();
+const browser = await chromium.launch({ channel: 'chrome' });
+
+for (const screen of ['setup', 'running']) {
+  const page = await browser.newPage({ viewport: { width: 320, height: 560 }, deviceScaleFactor: 2 });
+  await page.goto(`http://localhost:5197/side-panel.html?screen=${screen}`);
+  await page.waitForFunction(() => window.ready === true);
+  if (screen === 'setup') {
+    // Paste Claude's reply, then use the scenes: the mockup's "before starting" state.
+    const REPLY = await page.evaluate(() => window.REPLY);
+    await page.getByRole('textbox', { name: "Paste Claude's reply" }).fill(REPLY);
+    await page.getByRole('button', { name: 'Use these scenes' }).click();
+    await page.getByRole('button', { name: 'Start making pictures' }).waitFor();
+  } else {
+    await page.getByRole('button', { name: 'Pause' }).waitFor();
+  }
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(out, `side-panel-${screen}.png`) });
+  await page.close();
+}
+
+if (mockOut) {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 800 }, deviceScaleFactor: 2 });
+  await page.goto(`http://localhost:5197/@fs${path.join(repo, 'docs/design/approved/side-panel.html')}`);
+  const panels = page.locator('div[style*="width:320px"]');
+  for (const [i, name] of ['setup', 'running'].entries()) await panels.nth(i).screenshot({ path: path.join(mockOut, `mock-${name}.png`) });
+  await page.close();
+}
+
+await browser.close();
+await server.close();
+console.log(`saved to ${out}`);

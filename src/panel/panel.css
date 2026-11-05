@@ -1,0 +1,369 @@
+/*
+ * The side panel beside Flow (docs/design/approved/side-panel.html): a narrow column on navy with the coral glow,
+ * cream text, one coral primary. Uses the studio's tokens; sizes follow the approved mockup (13px body, 12px captions).
+ */
+
+.vf-pn {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--vf-glow), var(--vf-navy);
+  background-attachment: fixed;
+  color: var(--vf-cream);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.vf-pn-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--vf-space-2);
+}
+
+.vf-pn-mark {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.vf-pn-link {
+  padding: 2px 4px;
+  margin-right: -4px;
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: none;
+  color: var(--vf-cream-muted);
+  font: inherit;
+  font-size: var(--vf-text-xs);
+  cursor: pointer;
+}
+
+.vf-pn-link:hover {
+  color: var(--vf-cream);
+}
+
+.vf-pn-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.vf-pn-label {
+  margin: 0;
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream-muted);
+}
+
+/* Fields: raised navy boxes (video, paste, style, hero) */
+.vf-pn-field {
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-sm);
+  color: var(--vf-cream);
+  font: inherit;
+}
+
+.vf-pn-field:hover {
+  border-color: var(--vf-muted);
+}
+
+.vf-pn-field::placeholder,
+.vf-pn-field input::placeholder {
+  color: var(--vf-muted);
+}
+
+.vf-pn-hero {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vf-pn-hero input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+/* Empty hero: the whole line reads as the hint, as in the mockup */
+.vf-pn-hero:has(input:placeholder-shown) > span {
+  color: var(--vf-muted);
+}
+
+/* The visible line is a span; the native select covers the whole box (invisible), so any click opens it */
+.vf-pn-select {
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.vf-pn-select > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vf-pn-select select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.vf-pn-select option {
+  background: var(--vf-navy-raised);
+  color: var(--vf-cream);
+}
+
+.vf-pn-select:focus-within,
+.vf-pn-hero:focus-within,
+.vf-pn-field:focus-visible,
+.vf-pn-chip:focus-within,
+.vf-pn-chip-select:focus-visible,
+.vf-pn-link:focus-visible {
+  outline: none;
+  box-shadow: var(--vf-focus);
+}
+
+.vf-pn-paste {
+  height: 86px;
+  padding: 10px;
+  resize: vertical;
+  color: var(--vf-muted);
+  font-size: var(--vf-text-xs);
+  line-height: 1.45;
+}
+
+.vf-pn-custom {
+  resize: vertical;
+}
+
+.vf-pn-new {
+  display: flex;
+  gap: var(--vf-space-2);
+}
+
+.vf-pn-new .vf-pn-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.vf-pn-new .vf-btn-small {
+  min-height: 36px;
+  font-size: var(--vf-text-xs);
+}
+
+.vf-pn-found {
+  margin: 0;
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream);
+}
+
+.vf-pn-issues {
+  margin: 4px 0 0;
+  padding-left: var(--vf-space-4);
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream-soft);
+}
+
+/* Choice chips: selected = cream with navy text; others outlined */
+.vf-pn-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.vf-pn-chipset {
+  display: contents;
+}
+
+.vf-pn-chip {
+  position: relative;
+  cursor: pointer;
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-pn-chip input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.vf-pn-chip span,
+.vf-pn-chip-select {
+  display: block;
+  padding: 5px 10px;
+  border-radius: var(--vf-radius-pill);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-pn-chip span {
+  border: 1px solid var(--vf-navy-line-strong);
+}
+
+.vf-pn-chip:hover span {
+  border-color: var(--vf-muted);
+}
+
+.vf-pn-chip:has(input:checked) span,
+.vf-pn-chip-select {
+  border-color: var(--vf-cream);
+  background: var(--vf-cream);
+  color: var(--vf-navy);
+  font-weight: 600;
+}
+
+.vf-pn-chip-select {
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  appearance: none;
+  cursor: pointer;
+}
+
+.vf-pn-summary {
+  margin: auto 0 0;
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream-muted);
+}
+
+.vf-pn-notice {
+  padding: var(--vf-space-2) var(--vf-space-3);
+  font-size: var(--vf-text-xs);
+}
+
+/* Actions: the one coral primary fills the row; the outlined secondary sits beside it */
+.vf-pn-actions {
+  display: flex;
+  gap: var(--vf-space-2);
+}
+
+.vf-pn .vf-btn {
+  min-height: 44px;
+  padding: 10px 16px;
+  font-size: var(--vf-text-sm);
+}
+
+.vf-pn .vf-btn[data-variant='primary'] {
+  min-height: 44px;
+}
+
+.vf-pn .vf-btn[data-variant='secondary'] {
+  flex: none;
+}
+
+/* ---- While it runs ---- */
+
+.vf-pn-name {
+  font-weight: 700;
+}
+
+.vf-pn-sub {
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream-muted);
+}
+
+.vf-pn-track {
+  height: 6px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-navy-line);
+  overflow: hidden;
+}
+
+.vf-pn-fill {
+  height: 100%;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-cream);
+  transition: width 300ms var(--vf-ease);
+}
+
+/* Scene strip: saved = cream with ✓, the one being worked on = coral outline, the rest navy */
+.vf-pn-strip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.vf-pn-strip li {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-navy-line);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-pn-strip li[data-state='saved'] {
+  background: var(--vf-cream);
+  color: var(--vf-navy);
+  font-weight: 700;
+}
+
+.vf-pn-strip li[data-state='current'] {
+  background: none;
+  border: 2px solid var(--vf-coral);
+}
+
+.vf-pn-strip li[data-state='attention'] {
+  background: var(--vf-navy-pill);
+  box-shadow: inset 0 0 0 1.5px var(--vf-cream-muted);
+}
+
+/* The studio's activity list, at the panel's size */
+.vf-pn-activity {
+  margin-top: 4px;
+}
+
+.vf-pn-activity .vf-activity {
+  gap: 6px;
+}
+
+.vf-pn-activity .vf-h2 {
+  margin: 0;
+  font-size: var(--vf-text-xs);
+  font-weight: 400;
+  color: var(--vf-cream-muted);
+}
+
+.vf-pn-activity .vf-switch-row {
+  font-size: var(--vf-text-xs);
+}
+
+.vf-pn-activity .vf-hint {
+  font-size: var(--vf-text-xs);
+}
+
+.vf-pn-activity .vf-activity-list {
+  gap: 4px;
+  font-size: var(--vf-text-xs);
+}
+
+.vf-pn-activity .vf-activity-list li {
+  grid-template-columns: 52px 1fr;
+  gap: 8px;
+}
+
+.vf-pn-end {
+  margin-top: auto;
+}

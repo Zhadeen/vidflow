@@ -2,6 +2,7 @@
 import type { FlowResultCard, StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import { FlowBlockedError, type Point, type SubmitOptions } from '../flow/messages';
+import { isFlowUrl } from '../flow/hosts';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { liveView } from '../flow/live';
 import type { LiveView } from '../flow/messages';
@@ -224,10 +225,6 @@ async function forgetFlowWindow(): Promise<void> {
 /** True only for the tab VidFlow opened as its own Flow tab. */
 export async function isFlowTab(tabId: number | undefined): Promise<boolean> {
   return tabId !== undefined && (await savedFlowWindow())?.tabId === tabId;
-}
-
-function isFlowUrl(url: string | undefined): boolean {
-  return !!url && (url.startsWith('https://flow.google.com/') || url.startsWith('https://labs.google/'));
 }
 
 let openingFlowTab: Promise<number> | null = null;
