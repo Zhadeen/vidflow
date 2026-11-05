@@ -33,3 +33,51 @@ Now write the CSV for this script.`;
 export function buildClaudePrompt(script: string): string {
   return `${INSTRUCTIONS}\n\nSCRIPT:\n${script}`;
 }
+
+/**
+ * The "rapid-beat" variant: a new picture roughly every 6 spoken words (2 to 3
+ * seconds). It asks for a single Prompt column; parseSceneFile reads that as the
+ * picture prompt and fills in a default motion prompt.
+ */
+const RAPID_INSTRUCTIONS = `You are an AI Storyboard and Prompt Generator for high-retention video production.
+
+TASK: Analyze the provided video script, break down sentences into rapid micro-beats of approximately every 6 words (roughly 2–3 seconds per beat), and generate a complete visual storyboard in CSV format ready for direct batch generation.
+
+STRICT PRODUCTION RULES:
+
+STRICT ~6-WORD PACING & SCRIPT CHUNKING:
+- NEVER skip any word, sentence, or thought from the script.
+- Break every sentence down into sequential visual beats of roughly 6 words (typically 5 to 7 words per slide):
+  - A 6-word sentence = 1 slide (~6 words)
+  - A 12-word sentence = 2 slides (~6 words each)
+  - An 18-word sentence = 3 slides (~6 words each)
+  - A 24-word sentence = 4 slides (~6 words each)
+- Each 6-word micro-beat must have its own dedicated visual transition, camera angle, action, or visual metaphor to maintain maximum viewer retention.
+- In the "Sentence" column, output the EXACT ~6-word segment/phrase spoken during that slide (preserving full script continuity word-for-word).
+
+TIMECODE & PACING CALCULATION:
+- Spoken voiceover rate is ~2.2 to 2.5 words per second, meaning each 6-word chunk lasts roughly 2 to 3 seconds.
+- Continuous, sequential timecodes. Format: "MM:SS - MM:SS" (e.g., "00:00 - 00:03", "00:03 - 00:05", "00:05 - 00:08").
+- Seamless continuity: the end time of one slide must be the exact start time of the next slide with no gaps or overlaps.
+
+STYLE-NEUTRAL & HERO-READY PROMPTS:
+- DO NOT include art style, render engine, or medium keywords (NO "2D cartoon", NO "cel shading", NO "3D Pixar CGI", NO "vector outlines", NO "--ar 16:9"). Visual style is injected separately.
+- DO NOT specify fixed physical character features (hair color, clothing, face details). Character consistency is handled separately.
+- Whenever the main character appears, strictly refer to them as "the hero protagonist" (e.g., "The hero protagonist opening a vintage lockbox with intense curiosity").
+- Detail each prompt using: subject, micro-action, camera framing (extreme close-up, Dutch angle, wide shot, macro shot), environment, lighting mood, props, and visual metaphors.
+
+EXACT CSV OUTPUT FORMAT:
+- Output MUST be ONE single, valid RFC-4180 compliant CSV code block.
+- All column values MUST be wrapped in double quotes ("...").
+- Header row must be EXACTLY: Slide,Timecode,Sentence,Concept,Text Overlay,Prompt
+- Columns:
+  - Slide: "Slide 01", "Slide 02", "Slide 03"... (zero-padded, sequential)
+  - Timecode: "MM:SS - MM:SS" (approx. 2–3s intervals matching the ~6 words)
+  - Sentence: The exact ~6-word spoken segment from the script.
+  - Concept: A 3-5 word summary of the shot's core visual idea.
+  - Text Overlay: 1-3 punchy, high-impact uppercase words (e.g., "THE SECRET", "HIDDEN TRAP", "STEP ONE").
+  - Prompt: Style-neutral, vivid cinematic description of the 6-word beat.`;
+
+export function buildRapidBeatPrompt(script: string): string {
+  return `${RAPID_INSTRUCTIONS}\n\nSCRIPT:\n${script}`;
+}
