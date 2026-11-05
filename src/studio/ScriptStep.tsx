@@ -1,6 +1,7 @@
 import { useId, useState, type DragEvent } from 'react';
 import type { CharacterSpec } from '../prompts/build';
 import { buildClaudePrompt } from '../prompts/claude';
+import { RESEARCH_PROMPTS, buildResearchPrompt, type ResearchPromptId } from '../prompts/research';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
@@ -36,6 +37,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
   const ids = useId();
   const [script, setScript] = useState(project.script ?? '');
   const [copy, setCopy] = useState<CopyState>({ kind: 'idle' });
+  const [researchCopy, setResearchCopy] = useState<{ id: ResearchPromptId; ok: boolean } | null>(null);
   const [over, setOver] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   /** The pasted reply: its scenes replace the project's only on "Use these scenes". */
@@ -50,6 +52,15 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
       setCopy({ kind: 'copied' });
     } catch {
       setCopy({ kind: 'failed' });
+    }
+  }
+
+  async function copyResearch(id: ResearchPromptId) {
+    try {
+      await navigator.clipboard.writeText(buildResearchPrompt(id, script));
+      setResearchCopy({ id, ok: true });
+    } catch {
+      setResearchCopy({ id, ok: false });
     }
   }
 
@@ -80,6 +91,31 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
     <div className="vf-stack">
       <div className="vf-script-grid">
         <div className="vf-stack">
+          <section className="vf-panel" aria-labelledby={`${ids}-research`}>
+            <h2 className="vf-h2" id={`${ids}-research`}>
+              Research prompts <span className="vf-choice-sub">(optional)</span>
+            </h2>
+            <p className="vf-hint">
+              Remaking a video that already works? Run these in Gemini or claude.ai, in order, to make an original script. Fill in the [brackets].
+            </p>
+            <ul className="vf-stack" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              {RESEARCH_PROMPTS.map((p) => (
+                <li key={p.id} className="vf-row">
+                  <Button small onClick={() => void copyResearch(p.id)}>
+                    {p.label}
+                  </Button>
+                  <p className="vf-hint" style={{ margin: 0 }} aria-live="polite">
+                    {researchCopy?.id === p.id
+                      ? researchCopy.ok
+                        ? 'Copied. Paste it into Gemini or claude.ai.'
+                        : "Chrome didn't let VidFlow copy. Click anywhere on this page and try again."
+                      : p.hint}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+
           <section className="vf-panel">
             <h2 className="vf-h2" id={`${ids}-script`}>
               Your script
