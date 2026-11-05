@@ -106,7 +106,7 @@ Rules carried into the Mother Prompt: never skip a sentence; split long sentence
 Also on this step: **style** (stickman preset or custom), **hero character** (describe and/or upload a reference picture; option to generate a model sheet in Flow first), **aspect ratio** (16:9 / 9:16 / 1:1), **pictures per prompt** (Flow's setting; default 2 so auto-pick has a choice).
 
 **Step 2 — Voice.** Two choices; **Generate is the default** (my call — he didn't answer which should open first):
-- **Generate:** pick a voice from AI Studio's library or describe one. VidFlow has AI Studio speak each scene's Sentence separately (Gemini TTS, his Pro plan), saves one audio file per scene, and sets each scene's real length from its audio. "Regenerate" per scene.
+- **Generate:** pick one of AI Studio's built-in speakers (see §16). VidFlow has AI Studio speak each scene's Sentence separately (Gemini TTS, his Pro plan), saves one audio file per scene, and sets each scene's real length from its audio. "Regenerate" per scene.
 - **Upload:** one audio file. Scenes are laid across it using the file's timecodes, scaled to the audio's length; the owner drags scene edges on the timeline to line up the rest.
 
 **Step 3 — Pictures.** Shows how many pictures the run needs. Start → Flow helper works through all scenes. For each scene: wrap the Image Prompt (style + character + scene + enforcement), set Flow's aspect ratio/outputs, submit, collect both results, judge which better matches, keep the winner (★ Best match) and the runner-up as a one-click alternative. Scenes fill in on the grid live. Refused or failed scenes are marked with Flow's reason and a "Try again" / "Edit prompt" action; the run continues.
@@ -229,3 +229,16 @@ Each stage is usable and tested before the next.
 - Chrome notifications for finished/paused runs.
 - Separate repo at `~/Developer/VidFlow`.
 - 1080p MP4 default export.
+
+## 16. Changes from the spikes (approved by Hayatudeen, 5 Nov 2026)
+
+Spike notes: `docs/superpowers/spikes/s2-…`, `s3-…`, `s4-…`, `s5-…`.
+
+1. **Debugger input for Generate.** Flow's Generate button ignores synthetic clicks; VidFlow presses it with Chrome debugger input on its own Flow tab only (typing and settings stay plain DOM). Adds the `debugger` permission; Chrome shows its "started debugging" bar during runs; detach when a run pauses or finishes. Still waits for the button to be enabled.
+2. **Voices: AI Studio built-in speakers only.** Voice library personas and Voice Design need a paid API key with billing; VidFlow never opens them and stops with a plain message if any billing/paid-tier dialog appears. §7.2 "pick one of AI Studio's built-in speakers (see §16)" becomes "pick one of AI Studio's built-in speakers".
+3. **Credit limit, not credit pools.** Flow shows one credit total (e.g. "1,043 Google Flow credits · Resets on 13 Nov") with no split between free/plan/bought. The §10 credit-source option becomes a **per-run credit limit VidFlow tracks itself** (default: the estimate shown before the run).
+4. **Clips at x1 with an uploaded start frame** (Frames mode). Costs: 4 s = 7, 6 s = 10, 8 s = 12, 10 s = 15 credits; resolution doesn't change cost.
+5. **A fresh Flow project per run**, so result matching never sees foreign tiles.
+6. **Pictures cost 0 credits** (Nano Banana 2.1 on Pro); Flow's default aspect is 9:16, so VidFlow always sets it.
+7. **Export:** WebCodecs + mediabunny in a worker, H.264 8 Mbps / AAC 128k; requires real Chrome's H.264 encoder (check `canEncodeVideo` first); stream output for long videos.
+8. **Picture judging (Gemini Nano):** model download approved and started; result pending (Plan 2).
