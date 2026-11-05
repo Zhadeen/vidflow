@@ -277,6 +277,22 @@ function ensureFlowTab(): Promise<number> {
   return openingFlowTab;
 }
 
+/** VidFlow's own Flow tab and its address, only if it is open now (never opens one). */
+export async function currentFlowTab(): Promise<{ tabId: number; url: string } | null> {
+  const saved = await savedFlowWindow();
+  if (!saved) return null;
+  try {
+    const tab = await chrome.tabs.get(saved.tabId);
+    const url = tab.pendingUrl ?? tab.url;
+    return tab.windowId === saved.windowId && isFlowUrl(url) ? { tabId: saved.tabId, url: url! } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** VidFlow's own Flow tab, opening its window on Flow's home page if there is none (no Flow project is made). */
+export const openFlowTab = (): Promise<number> => ensureFlowTab();
+
 async function findOrOpenFlowTab(): Promise<number> {
   const saved = await savedFlowWindow();
   if (saved) {
@@ -1006,6 +1022,57 @@ async function pump(): Promise<void> {
 
 // ---- Public API ----------------------------------------------------------
 
+/** Which run is about to start: a model sheet only needs the account, the page, the prompt bar and Agent mode off. */
+export type StartChecksKind = 'scenes' | 'sheet';
+/** Runs the Checks before a start: the failing check's plain fix, or null to go ahead. */
+export type StartChecks = (projectId: string, kind: StartChecksKind) => Promise<string | null>;
+let startChecks: StartChecks | null = null;
+
+/**
+ * The background sets this to the Checks (src/runs/checks.ts) so every Start runs them first. Unset (tests, the e2e
+ * build), a start goes straight ahead as before.
+ */
+export function setStartChecks(fn: StartChecks | null): void {
+  startChecks = fn;
+}
+
+/** Throws RunBlockedError with the failing check's fix; nothing is started or committed. */
+async function passStartChecks(projectId: string, kind: StartChecksKind): Promise<void> {
+  if (!startChecks) return;
+  const problem = await startChecks(projectId, kind);
+  if (problem) throw new RunBlockedError(problem);
+}
+
+/**
+ * Test one prompt: puts VidFlow's Flow tab on a fresh Flow project (pressing Flow's own New project on its home page)
+ * unless it is on one already. Never while a run is live, and never touches the run's state. Throws FlowBlockedError
+ * (wrong account, a notice) or Error with a plain message.
+ */
+export async function openTestFlowProject(tabId: number): Promise<void> {
+  await ready;
+  if (isLive(state)) throw new RunBlockedError(TEST_WHILE_RUNNING_MESSAGE);
+  if (!port) throw new Error(NO_PORT_MESSAGE);
+  await withTab(async () => {
+    if (projectUrlOf(await tabUrl(tabId))) return;
+    if (!isFlowHome(await tabUrl(tabId))) {
+      await chrome.tabs.update(tabId, { url: FLOW_URL });
+      await waitForUrl(tabId, isFlowHome);
+    }
+    const at = await port!.findNewProject(tabId, 'Start');
+    if (isLive(state)) throw new RunBlockedError(TEST_WHILE_RUNNING_MESSAGE);
+    try {
+      await pressIn(tabId, at.x, at.y);
+    } finally {
+      await detachFlowDebugger(tabId); // no run is pressing Generate: drop Chrome's debugging bar at once
+    }
+    if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) !== null))) throw new Error(TEST_NO_PROJECT_MESSAGE);
+  });
+}
+
+export const TEST_WHILE_RUNNING_MESSAGE = 'VidFlow is making pictures right now. Test one prompt when the run has finished or stopped.';
+const TEST_NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then try again.";
+const NO_PORT_MESSAGE = "VidFlow can't reach the Flow page yet. Try again in a moment.";
+
 /** Why a run for `projectId` can't start now (another project's run is running, or paused with work left), or null. */
 async function startBlocker(projectId: string): Promise<string | null> {
   if (state && isHeroSheetRun(state) && isLive(state)) return sheetBlock(state);
@@ -1024,6 +1091,13 @@ export async function startRun(projectId: string, retrySceneId?: string): Promis
   postPressNotices.clear();
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
+  // The Checks run first (spec §19), but only for a start that would happen: a busy refusal or a run already going
+  // never touches Flow. They talk to Flow, so they run outside the queue; the queue re-checks the blockers.
+  if (!(state?.projectId === projectId && state.status === 'running')) {
+    const blocked = await startBlocker(projectId);
+    if (blocked) throw new RunBlockedError(blocked);
+    await passStartChecks(projectId, 'scenes');
+  }
   await enqueue(async () => {
     const blocked = await startBlocker(projectId);
     if (blocked) throw new RunBlockedError(blocked);
@@ -1067,6 +1141,7 @@ export async function startHeroSheetRun(projectId: string): Promise<void> {
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
   if (!project.character?.description.trim()) throw new Error(HERO_SHEET_NEEDS_HERO);
+  if (!(state && isLive(state))) await passStartChecks(projectId, 'sheet'); // a live run refuses below, without Flow
   await enqueue(async () => {
     if (state && isLive(state)) {
       if (isHeroSheetRun(state)) {

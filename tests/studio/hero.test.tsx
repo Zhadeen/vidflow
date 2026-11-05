@@ -175,6 +175,10 @@ function sheetClient(over: Partial<RunClient> = {}): RunClient {
     forget: vi.fn(ok),
     choose: vi.fn(ok),
     heroSheet: vi.fn(ok),
+    checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
+    openFlow: vi.fn(async () => ({ ok: true as const })),
+    showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),
+    testPrompt: vi.fn(async () => ({ ok: true, message: 'Flow is ready.' })),
     subscribe: () => () => undefined,
     ...over,
   };

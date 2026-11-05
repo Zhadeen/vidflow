@@ -11,7 +11,10 @@ import {
 } from '../flow/driver';
 import {
   FLOW_ACCEPT_NOTICE,
+  FLOW_CHECKS,
   FLOW_CONFIRM,
+  FLOW_SHOW_ME,
+  FLOW_TEST_PROMPT,
   FLOW_DETAIL,
   FLOW_EVENT,
   FLOW_NEW_PROJECT,
@@ -23,8 +26,13 @@ import {
   FLOW_TILES_NOW,
   FLOW_UPLOAD_REFERENCE,
   FlowBlockedError,
+  TEST_PROMPT_TEXT,
   decodeBytes,
   type AcceptNoticeResponse,
+  type FlowChecksResponse,
+  type ShowMeResponse,
+  type TestPromptRequest,
+  type TestPromptResponse,
   type ConfirmResponse,
   type UploadReferenceRequest,
   type UploadReferenceResponse,
@@ -37,6 +45,7 @@ import {
   type TilesNowResponse,
   type ToBackground,
 } from '../flow/messages';
+import { renderHighlight } from '../flow/highlight';
 import { createRefresher, placeLive, renderLive } from '../flow/live';
 import { BILLING_PATTERN, LIMIT_PATTERN, SEL, USAGE_NOTICE_PATTERN } from '../flow/selectors';
 import type { RunEvent } from '../runs/run';
@@ -47,6 +56,8 @@ const OBSERVE_THROTTLE_MS = 1_000;
 const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
 const CONFIRM_WAIT_MS = 8_000;
 const DETAIL_WAIT_MS = 10_000; // the detail page renders its History panel after the picture
+const CHECKS_WAIT_MS = 5_000; // a Flow window that just opened is still drawing its page
+const SHOW_ME_MS = 4_000; // Show me in Flow: each control is ringed in turn, about this long in all
 
 export default defineContentScript({
   matches: ['https://flow.google.com/*', 'https://labs.google/fx/*'],
@@ -142,6 +153,71 @@ export default defineContentScript({
       }
     }
 
+    /** The Checks tab's facts: read only (no menu opened, nothing clicked). */
+    async function checks(): Promise<FlowChecksResponse> {
+      const seen = () =>
+        !!document.querySelector(SEL.account) || !!document.querySelector(SEL.promptBox) || !!driver.newProjectButton();
+      const deadline = Date.now() + CHECKS_WAIT_MS;
+      while (!seen() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
+      const state = driver.read();
+      return {
+        account: state.signedInEmail,
+        page: seen(),
+        promptBox: !!document.querySelector(SEL.promptBox),
+        generate: !!document.querySelector(SEL.generate),
+        agentOff: !driver.agentModeOn(),
+        ...driver.readSettings(),
+        credits: driver.readCredits(),
+        noticeDialog: state.noticeDialog,
+        billingDialog: state.billingDialog,
+      };
+    }
+
+    /** Show me in Flow: rings the prompt box, Generate and the ingredients button in turn (the §17 ring). */
+    function showMe(): ShowMeResponse {
+      const parts = [
+        { name: 'prompt box', tag: 'Prompt box', el: document.querySelector(SEL.promptBox) },
+        { name: 'Generate button', tag: 'Generate', el: document.querySelector(SEL.generate) },
+        { name: 'ingredients button', tag: 'Ingredients (hero picture)', el: document.querySelector(SEL.ingredients) },
+      ];
+      const found = parts.filter((p) => p.el);
+      const each = found.length ? SHOW_ME_MS / found.length : 0;
+      found.forEach((p, i) => setTimeout(() => !active && renderHighlight(document, p.el, p.tag), i * each));
+      if (found.length) setTimeout(() => !active && renderHighlight(document, null, null), SHOW_ME_MS);
+      return { missing: parts.filter((p) => !p.el).map((p) => p.name) };
+    }
+
+    /** Test one prompt: settings, Agent mode off, type, wait for Generate to be ready, clear. Never presses Generate. */
+    async function testPrompt(req: TestPromptRequest): Promise<TestPromptResponse> {
+      if (active) return { ok: false, message: 'VidFlow is making pictures right now. Test one prompt when the run has finished or stopped.' };
+      let typed = false;
+      try {
+        if (!(await driver.waitUntilReady(READY_WAIT_MS))) {
+          return { ok: false, message: "VidFlow can't find Flow's prompt box. Check the Flow window, then try again." };
+        }
+        const state = driver.read();
+        const check = checkCanStart(state, await getExpectedAccount(), 'Start');
+        if (!check.ok) return { ok: false, message: check.message.replace(/,? then press Start again\.$/, '.') };
+        await driver.setImageMode();
+        await driver.setAspect(req.aspect);
+        await driver.setOutputs(req.outputs);
+        await driver.turnOffAgentMode();
+        typed = true;
+        await driver.prepareSubmit(TEST_PROMPT_TEXT); // waits for Flow to enable Generate; nothing is pressed
+        const cleared = await driver.clearPrompt();
+        return {
+          ok: true,
+          message: cleared
+            ? `Flow is ready: Image · ${req.aspect} · x${req.outputs}, the test prompt typed and Generate ready. The test prompt was cleared.`
+            : `Flow is ready: Image · ${req.aspect} · x${req.outputs} and Generate ready, but the test prompt is still in the box. Clear it in the Flow window.`,
+        };
+      } catch (err) {
+        if (typed) await driver.clearPrompt().catch(() => false);
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: message.replace(/,? then press Resume\.$/, ', then try again.') };
+      }
+    }
+
     async function confirm(): Promise<ConfirmResponse> {
       if (!beforePress) return { started: false };
       const started = await driver.waitForStart(beforePress, CONFIRM_WAIT_MS);
@@ -188,6 +264,9 @@ export default defineContentScript({
         [FLOW_DETAIL]: () => detail(),
         [FLOW_UPLOAD_REFERENCE]: () => uploadReference(message as UploadReferenceRequest),
         [FLOW_ACCEPT_NOTICE]: () => acceptNotice(),
+        [FLOW_CHECKS]: () => checks(),
+        [FLOW_SHOW_ME]: async () => showMe(),
+        [FLOW_TEST_PROMPT]: () => testPrompt(message as TestPromptRequest),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;

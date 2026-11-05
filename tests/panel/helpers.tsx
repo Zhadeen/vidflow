@@ -78,6 +78,10 @@ export function fakeBackground(initial: RunState | null) {
     forget: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     choose: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
+    checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
+    openFlow: vi.fn(async () => ({ ok: true as const })),
+    showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),
+    testPrompt: vi.fn(async () => ({ ok: true, message: 'Flow is ready.' })),
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

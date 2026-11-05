@@ -16,11 +16,19 @@ vi.mock('../../src/runs/coordinator', () => ({
   resumeRun: vi.fn(async () => undefined),
   retryScene: vi.fn(async () => undefined),
   setFlowPort: vi.fn(),
+  setStartChecks: vi.fn(),
   startHeroSheetRun: vi.fn(async () => undefined),
   startRun: vi.fn(async () => undefined),
   stopRun: vi.fn(async () => undefined),
 }));
 vi.mock('../../src/flow/port', () => ({ createFlowPort: vi.fn(() => ({})) }));
+vi.mock('../../src/runs/checks', () => ({
+  runChecks: vi.fn(async () => ({ flowOpen: false, rows: [] })),
+  openFlow: vi.fn(async () => undefined),
+  showMeInFlow: vi.fn(async () => ({ missing: ['ingredients button'] })),
+  testOnePrompt: vi.fn(async () => ({ ok: true, message: 'Flow is ready.' })),
+  startChecks: vi.fn(async () => null),
+}));
 
 type OnMessage = (message: unknown, sender: { id?: string; url?: string; tab?: { id?: number } }, sendResponse: (r: unknown) => void) => unknown;
 let onMessage: OnMessage;
@@ -89,5 +97,53 @@ describe('run/hero-sheet', () => {
     expect(onMessage(sheet, { id: 'vidflow', url: 'chrome-extension://vidflow/studio.html' }, sendResponse)).toBe(true);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, state: null }));
     expect(startHeroSheetRun).toHaveBeenCalledWith('p1');
+  });
+});
+
+describe('Checks tab messages', () => {
+  const FLOW_SENDER = { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 4 } };
+  const PANEL = { id: 'vidflow', url: 'chrome-extension://vidflow/sidepanel.html' };
+  const cases = [
+    { message: { type: 'run/checks', projectId: 'p1' }, fn: 'runChecks', args: ['p1'], reply: { ok: true, flowOpen: false, rows: [] } },
+    { message: { type: 'run/open-flow' }, fn: 'openFlow', args: [], reply: { ok: true } },
+    { message: { type: 'run/show-me' }, fn: 'showMeInFlow', args: [], reply: { ok: true, missing: ['ingredients button'] } },
+    { message: { type: 'run/test-prompt', projectId: 'p1' }, fn: 'testOnePrompt', args: ['p1'], reply: { ok: true, message: 'Flow is ready.' } },
+  ] as const;
+
+  it("are refused from VidFlow's content script in a Flow tab and from other extensions", async () => {
+    const checks = (await import('../../src/runs/checks')) as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    for (const c of cases) {
+      for (const sender of [FLOW_SENDER, { id: 'other', url: 'chrome-extension://other/sidepanel.html' }]) {
+        const sendResponse = vi.fn();
+        expect(onMessage(c.message, sender, sendResponse)).toBeUndefined();
+        expect(sendResponse).not.toHaveBeenCalled();
+      }
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    for (const c of cases) expect(checks[c.fn]).not.toHaveBeenCalled();
+  });
+
+  it("are answered for VidFlow's side panel", async () => {
+    const checks = (await import('../../src/runs/checks')) as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    for (const c of cases) {
+      const sendResponse = vi.fn();
+      expect(onMessage(c.message, PANEL, sendResponse)).toBe(true);
+      await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith(c.reply));
+      expect(checks[c.fn]).toHaveBeenCalledWith(...c.args);
+    }
+  });
+
+  it('a refusal comes back as a plain message', async () => {
+    const checks = await import('../../src/runs/checks');
+    vi.mocked(checks.showMeInFlow).mockRejectedValueOnce(new Error('VidFlow is making pictures right now.'));
+    const sendResponse = vi.fn();
+    onMessage({ type: 'run/show-me' }, PANEL, sendResponse);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: false, message: 'VidFlow is making pictures right now.' }));
+  });
+
+  it('Start runs the checks first: the background sets the gate', async () => {
+    const coordinator = await import('../../src/runs/coordinator');
+    const checks = await import('../../src/runs/checks');
+    expect(coordinator.setStartChecks).toHaveBeenCalledWith(checks.startChecks);
   });
 });

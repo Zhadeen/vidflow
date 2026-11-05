@@ -90,6 +90,20 @@ export interface FlowDriver {
    * notice or no ready accept button.
    */
   acceptNotice(): Promise<boolean>;
+  /** Flow's model, aspect and outputs as its settings button shows them (the popover is never opened); null parts unknown. */
+  readSettings(): FlowSettingsRead;
+  /** Flow's credit balance, only when the page shows it without opening a menu; otherwise null. */
+  readCredits(): number | null;
+  /** True while Flow's Agent mode chip is pressed. */
+  agentModeOn(): boolean;
+  /** Empties the prompt box (Flow's Clear prompt button, else select-all and delete); true once it is empty. */
+  clearPrompt(): Promise<boolean>;
+}
+
+export interface FlowSettingsRead {
+  model: string | null;
+  aspect: AspectRatio | null;
+  outputs: number | null;
 }
 
 export type StartCheck =
@@ -152,6 +166,8 @@ const AGENT_OFF_TRIES = 3;
 const AGENT_MODE_MESSAGE =
   "Flow's Agent mode is on and VidFlow couldn't turn it off. Turn it off in the Flow window, then press Resume.";
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
+/** A balance ("1,250 credits left", "Credits: 40"); never the popover's "Generating will use 0 credits" cost note. */
+const CREDITS_BALANCE = /^(?:(\d[\d,]*)\s+(?:ai\s+)?credits?\s+(?:left|remaining|available)|(?:ai\s+)?credits?\s*(?:left|remaining|available)?\s*:\s*(\d[\d,]*))$/i;
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -526,10 +542,50 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     return now.keys.some((k) => !before.keys.includes(k));
   }
 
+  function readSettings(): FlowSettingsRead {
+    if (!q(SEL.settingsTrigger)) return { model: null, aspect: null, outputs: null };
+    const text = triggerText();
+    const aspect = (Object.keys(ASPECT_ICON) as AspectRatio[]).find((a) => text.includes(ASPECT_ICON[a])) ?? null;
+    const outputs = /\bx(\d)\b/.exec(text);
+    // What is left once the icon names and the outputs are taken out, without a leading emoji: "Nano Banana 2.1".
+    const model = squash(text.replace(/\bcrop_\w+/g, ' ').replace(/\bx\d\b/g, ' ')).replace(/^[^\p{L}\p{N}]+/u, '');
+    return { model: model || null, aspect, outputs: outputs ? Number(outputs[1]) : null };
+  }
+
+  function readCredits(): number | null {
+    // Only what is on the page now: the settings popover's cost note is skipped, and no menu is opened to look.
+    for (const el of doc.querySelectorAll<HTMLElement>('body *')) {
+      if (el.children.length > 0 || el.closest('.settings-popover, [role="menu"], [role="listbox"]')) continue;
+      const m = CREDITS_BALANCE.exec(squash(el.textContent));
+      if (m && isShown(el)) return Number((m[1] ?? m[2])!.replace(/,/g, ''));
+    }
+    return null;
+  }
+
+  async function clearPrompt(): Promise<boolean> {
+    const box = q(SEL.promptBox);
+    if (!box) return false;
+    const empty = () => squash(q(SEL.promptBox)?.textContent) === '';
+    if (empty()) return true;
+    const clear = q(SEL.clearPrompt);
+    if (clear) {
+      clear.click();
+      if (await until(empty, opts.timeoutMs ?? PICKER_TIMEOUT_MS, 'not cleared').catch(() => false)) return true;
+    }
+    box.focus();
+    doc.execCommand('selectAll');
+    doc.execCommand('delete');
+    return empty();
+  }
+
   return {
     read,
     resultCards,
     snapshot,
+    readSettings,
+    readCredits,
+    agentModeOn: () => !!q(SEL.agentModeOn),
+    clearPrompt,
 
     async waitForStart(before, timeoutMs) {
       try {

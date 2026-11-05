@@ -1,4 +1,5 @@
 import type { StepTarget } from '../runs/activity';
+import type { CheckRow } from '../runs/checks';
 import type { RunEvent, RunState } from '../runs/run';
 import type { AspectRatio } from '../store/projects';
 import type { FlowResultCard, StartVerb } from './driver';
@@ -17,6 +18,9 @@ export const FLOW_PILL = 'flow/pill';
 export const FLOW_PILL_TOGGLE = 'flow/pill-toggle';
 export const FLOW_UPLOAD_REFERENCE = 'flow/upload-reference';
 export const FLOW_ACCEPT_NOTICE = 'flow/accept-notice';
+export const FLOW_CHECKS = 'flow/checks';
+export const FLOW_SHOW_ME = 'flow/show-me';
+export const FLOW_TEST_PROMPT = 'flow/test-prompt';
 
 /** Said whenever VidFlow can't upload or attach the hero reference: a prompt that names it is never sent without it. */
 export const REFERENCE_ATTACH_MESSAGE =
@@ -116,6 +120,55 @@ export interface AcceptNoticeResponse {
   accepted: boolean;
 }
 
+/** background → VidFlow's own Flow tab: what the Checks tab needs, read only (no menu is opened, nothing is clicked). */
+export interface ChecksRequest {
+  type: typeof FLOW_CHECKS;
+}
+export interface FlowChecksResponse {
+  /** The signed-in Google account, or null when signed out / not shown. */
+  account: string | null;
+  /** The helper recognises the page as Flow (account, prompt bar or New project button seen). */
+  page: boolean;
+  promptBox: boolean;
+  generate: boolean;
+  /** False while Flow's Agent mode chip is pressed. */
+  agentOff: boolean;
+  /** From the settings button's own text (no popover opened); null when it isn't on the page. */
+  model: string | null;
+  aspect: AspectRatio | null;
+  outputs: number | null;
+  /** Only when Flow shows a credit balance without opening a menu. */
+  credits: number | null;
+  noticeDialog: boolean;
+  billingDialog: boolean;
+}
+
+/** background → VidFlow's own Flow tab: ring the prompt box, Generate and the ingredients button for a few seconds. */
+export interface ShowMeRequest {
+  type: typeof FLOW_SHOW_ME;
+}
+export interface ShowMeResponse {
+  /** Plain names of what wasn't on the page. */
+  missing: string[];
+}
+
+/**
+ * background → VidFlow's own Flow tab, on a Flow project: set Flow's settings, type a test prompt, wait for Generate to
+ * be ready, then clear the prompt again. Generate is never pressed.
+ */
+/** Typed by Test one prompt, then cleared again. */
+export const TEST_PROMPT_TEXT = 'VidFlow test — this will be cleared';
+
+export interface TestPromptRequest {
+  type: typeof FLOW_TEST_PROMPT;
+  aspect: AspectRatio;
+  outputs: 1 | 2 | 4;
+}
+export interface TestPromptResponse {
+  ok: boolean;
+  message: string;
+}
+
 const CHUNK = 0x8000;
 
 /** Bytes → base64, a chunk at a time (spreading 10 MB into one String.fromCharCode call overflows the stack). */
@@ -140,7 +193,10 @@ export type ToFlowTab =
   | TilePointRequest
   | DetailRequest
   | UploadReferenceRequest
-  | AcceptNoticeRequest;
+  | AcceptNoticeRequest
+  | ChecksRequest
+  | ShowMeRequest
+  | TestPromptRequest;
 
 export type BlockingEvent = Extract<RunEvent, { type: 'needsOwner' } | { type: 'limit' }>;
 
@@ -223,6 +279,26 @@ export const RUN_CHOOSE = 'run/choose';
 /** Make the hero's model sheet in Flow (its own one-prompt run); Try again on a refused sheet sends this too. */
 export const RUN_HERO_SHEET = 'run/hero-sheet';
 export const RUN_STATE = 'run/state';
+/** The Checks tab (spec §19): read VidFlow's Flow tab, open Flow, ring its controls, try one prompt without Generate. */
+export const RUN_CHECKS = 'run/checks';
+export const RUN_OPEN_FLOW = 'run/open-flow';
+export const RUN_SHOW_ME = 'run/show-me';
+export const RUN_TEST_PROMPT = 'run/test-prompt';
+
+/** studio/panel → background for the Checks tab. Each has its own reply type below. */
+export type ChecksToolRequest =
+  | { type: typeof RUN_CHECKS; projectId: string }
+  | { type: typeof RUN_OPEN_FLOW }
+  | { type: typeof RUN_SHOW_ME }
+  | { type: typeof RUN_TEST_PROMPT; projectId: string };
+
+export type ChecksReply = { ok: true; flowOpen: boolean; rows: CheckRow[] } | { ok: false; message: string };
+export type OpenFlowReply = { ok: true } | { ok: false; message: string };
+export type ShowMeReply = { ok: true; missing: string[] } | { ok: false; message: string };
+export interface TestPromptReply {
+  ok: boolean;
+  message: string;
+}
 
 /** studio → background. Each is answered with a RunReply. */
 export type StudioRequest =

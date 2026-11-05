@@ -107,6 +107,10 @@ function backgroundClient(over: Partial<RunClient> = {}): RunClient {
       return { ok: true, state: null };
     }),
     heroSheet: vi.fn(ok),
+    checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
+    openFlow: vi.fn(async () => ({ ok: true as const })),
+    showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),
+    testPrompt: vi.fn(async () => ({ ok: true, message: 'Flow is ready.' })),
     subscribe: () => () => undefined,
     ...over,
   };

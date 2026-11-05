@@ -944,3 +944,38 @@ describe('tile helpers', () => {
     expect(tileContainer(img).classList.contains('tile')).toBe(true);
   });
 });
+
+describe('FlowDriver checks (read only)', () => {
+  it("reads model, aspect and outputs from the settings button's own text", () => {
+    load('prompt-bar.html');
+    expect(createFlowDriver().readSettings()).toEqual({ model: 'Nano Banana 2.1', aspect: '9:16', outputs: 2 });
+    document.body.innerHTML = '';
+    expect(createFlowDriver().readSettings()).toEqual({ model: null, aspect: null, outputs: null });
+  });
+
+  it('reads a credit balance only when the page shows one, never the "will use 0 credits" note', () => {
+    load('prompt-bar.html');
+    const driver = createFlowDriver();
+    expect(driver.readCredits()).toBeNull();
+    document.querySelector('header')!.insertAdjacentHTML('beforeend', '<span>1,250 credits left</span>');
+    expect(driver.readCredits()).toBe(1250);
+  });
+
+  it('says whether Agent mode is on', () => {
+    load('prompt-bar.html');
+    const driver = createFlowDriver();
+    expect(driver.agentModeOn()).toBe(false);
+    $('.agent-mode-chip').setAttribute('aria-pressed', 'true');
+    expect(driver.agentModeOn()).toBe(true);
+  });
+
+  it('clears the prompt with Flow’s Clear prompt button', async () => {
+    load('prompt-bar.html');
+    $(SEL.promptBox).innerHTML = '<p>VidFlow test — this will be cleared</p>';
+    const clear = vi.fn(() => ($(SEL.promptBox).innerHTML = '<p><br></p>'));
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button aria-label="Clear prompt">close</button>');
+    $(SEL.clearPrompt).addEventListener('click', clear);
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 100 }).clearPrompt()).resolves.toBe(true);
+    expect(clear).toHaveBeenCalledTimes(1);
+  });
+});
