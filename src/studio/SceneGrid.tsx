@@ -1,5 +1,6 @@
 import type { Scene } from '../scenes/types';
 import type { AspectRatio, SceneState } from '../store/projects';
+import { chosenPicture } from './choice';
 
 const STATUS_WORD: Record<SceneState['status'], string> = {
   pending: 'Waiting',
@@ -26,8 +27,8 @@ export function SceneGrid({ scenes, states, urls, aspect, selected, onSelect }: 
     <ol className="vf-tiles" aria-label="Scenes">
       {scenes.map((scene, i) => {
         const state = states[scene.id];
-        const first = state?.pictureIds[0];
-        const url = first ? urls[first] : undefined;
+        const picture = chosenPicture(state);
+        const url = picture ? urls[picture] : undefined;
         const n = String(i + 1).padStart(2, '0');
         const word = STATUS_WORD[state?.status ?? 'pending'];
         return (

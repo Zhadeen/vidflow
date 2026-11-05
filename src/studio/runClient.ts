@@ -8,6 +8,7 @@ import {
   RUN_STATE,
   RUN_STOP,
   RUN_FORGET,
+  RUN_CHOOSE,
   type RunReply,
   type RunStateMessage,
   type StudioRequest,
@@ -25,6 +26,8 @@ export interface RunClient {
   stop(): Promise<RunReply>;
   /** This project's scenes were replaced: forget a finished run for it. */
   forget(projectId: string): Promise<RunReply>;
+  /** The owner chose one of a scene's pictures; saved even while a run is live. */
+  choose(projectId: string, sceneId: string, pictureId: string): Promise<RunReply>;
   /** Called on every change of the run; returns an unsubscribe. */
   subscribe(listener: (state: RunState) => void): () => void;
 }
@@ -49,6 +52,7 @@ export function chromeRunClient(): RunClient {
     retry: (projectId, sceneId) => send({ type: RUN_RETRY, projectId, sceneId }),
     stop: () => send({ type: RUN_STOP }),
     forget: (projectId) => send({ type: RUN_FORGET, projectId }),
+    choose: (projectId, sceneId, pictureId) => send({ type: RUN_CHOOSE, projectId, sceneId, pictureId }),
     subscribe(listener) {
       const onMessage = (message: RunStateMessage, sender: chrome.runtime.MessageSender) => {
         if (sender.id === chrome.runtime.id && message?.type === RUN_STATE) listener(message.state);

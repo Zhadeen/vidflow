@@ -15,6 +15,7 @@ import {
   initRun,
   nextSceneToSubmit,
   normaliseEvent,
+  NOT_THIS_SCENES_PICTURE,
   reduceRun,
   runSummary,
   USER_PAUSE_REASON,
@@ -882,6 +883,27 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
   await ready;
   if (state?.projectId === projectId && state.status !== 'idle') return dispatch({ type: 'retry', sceneId });
   return startRun(projectId, sceneId);
+}
+
+/**
+ * The owner chose one of a scene's pictures. While this project has a run (live or finished) the run's state takes it,
+ * so the choice is saved with the project and survives every later broadcast; otherwise the stored project takes it.
+ */
+export async function chooseScenePicture(projectId: string, sceneId: string, pictureId: string): Promise<void> {
+  await ready;
+  await enqueue(async () => {
+    const inRun = state?.projectId === projectId ? state.sceneStates[sceneId] : undefined;
+    if (state && inRun) {
+      if (!inRun.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
+      await commit(reduceRun(state, { type: 'choose', sceneId, pictureId }));
+      return;
+    }
+    const project = await getProject(projectId);
+    const scene = project?.sceneStates[sceneId];
+    if (!project || !scene || !scene.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
+    project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
+    await saveProject(project);
+  });
 }
 
 export const pauseRun = () => dispatch({ type: 'pause' });

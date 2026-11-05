@@ -88,7 +88,7 @@ const media: MediaStore = {
 };
 
 const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
-const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, forget: ok, subscribe: () => () => undefined };
+const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, forget: ok, choose: ok, subscribe: () => () => undefined };
 
 const screen = new URLSearchParams(location.search).get('screen') ?? 'running';
 const noop = () => undefined;

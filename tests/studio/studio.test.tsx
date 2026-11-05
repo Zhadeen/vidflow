@@ -62,7 +62,7 @@ function runningState(p: Project, done: number): RunState {
 
 function fakeClient(over: Partial<RunClient> = {}): RunClient {
   const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
-  return { get: ok, start: vi.fn(ok), pause: vi.fn(ok), resume: vi.fn(ok), retry: vi.fn(ok), stop: vi.fn(ok), forget: vi.fn(ok), subscribe: () => () => undefined, ...over };
+  return { get: ok, start: vi.fn(ok), pause: vi.fn(ok), resume: vi.fn(ok), retry: vi.fn(ok), stop: vi.fn(ok), forget: vi.fn(ok), choose: vi.fn(ok), subscribe: () => () => undefined, ...over };
 }
 
 function renderProject(p: Project, run: RunState | null, step: 'script' | 'pictures', client = fakeClient()) {

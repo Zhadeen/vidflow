@@ -20,6 +20,8 @@ export type RunEvent =
   | { type: 'stop' }
   /** The owner pressed Try again on a refused or failed scene: it goes back in the queue. */
   | { type: 'retry'; sceneId: string }
+  /** The owner chose which of a scene's pictures it uses (ignored unless it is one of them). */
+  | { type: 'choose'; sceneId: string; pictureId: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
   | {
       type: 'needsOwner';
@@ -28,6 +30,10 @@ export type RunEvent =
     };
 
 export const USER_PAUSE_REASON = 'Paused by you';
+
+/** Said when a picture choice names a picture the scene doesn't have (or a scene the project doesn't have). */
+export const NOT_THIS_SCENES_PICTURE =
+  "That picture isn't one of this scene's pictures any more. Pick one of the pictures shown.";
 
 export interface RunState {
   projectId: string;
@@ -171,6 +177,11 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
         status: state.status === 'finished' ? 'running' : state.status,
         sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'pending' } },
       };
+    }
+    case 'choose': {
+      const current = state.sceneStates[event.sceneId];
+      if (!current || !current.pictureIds.includes(event.pictureId)) return state;
+      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, chosenPictureId: event.pictureId } } };
     }
     case 'limit':
       return { ...state, status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };

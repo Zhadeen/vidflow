@@ -958,3 +958,58 @@ describe('live step and activity log', () => {
     await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
   });
 });
+
+describe("the scene's chosen picture", () => {
+  it('a choice made during a run survives the next run broadcast', async () => {
+    const { coordinator, project, fakePort } = await setup(2);
+    const store = await import('../../src/store/projects');
+    // Scene 1 already has pictures; scene 2 is still to make, so the run stays live.
+    const saved = (await store.getProject(project.id))!;
+    saved.scenes = [...saved.scenes, { ...saved.scenes[0]!, id: 's2', slide: 2, imagePrompt: 'A stickman sits' }];
+    saved.sceneStates = { s1: { sceneId: 's1', status: 'done', pictureIds: ['m/a', 'm/b'] } };
+    await store.saveProject(saved);
+    const heard: import('../../src/runs/run').RunState[] = [];
+    coordinator.onRunState((s) => heard.push(s));
+    coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'running');
+
+    await expect(coordinator.chooseScenePicture(project.id, 's1', 'm/zz')).rejects.toThrow();
+    await coordinator.chooseScenePicture(project.id, 's1', 'm/b');
+    await coordinator.pauseRun(); // the next broadcast
+    await waitFor(() => heard.at(-1)?.status === 'paused');
+
+    expect(heard.at(-1)!.sceneStates.s1?.chosenPictureId).toBe('m/b');
+    expect((await store.getProject(project.id))!.sceneStates.s1?.chosenPictureId).toBe('m/b');
+  });
+
+  it('a choice with no live run goes straight into the stored project', async () => {
+    const { coordinator, project } = await setup(2);
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(project.id))!;
+    saved.sceneStates = { s1: { sceneId: 's1', status: 'done', pictureIds: ['m/a', 'm/b'] } };
+    await store.saveProject(saved);
+    await coordinator.chooseScenePicture(project.id, 's1', 'm/b');
+    expect((await store.getProject(project.id))!.sceneStates.s1?.chosenPictureId).toBe('m/b');
+    await expect(coordinator.chooseScenePicture(project.id, 's1', 'm/zz')).rejects.toThrow();
+    expect(coordinator.getRunState()).toBeNull();
+  });
+
+  it('try again clears the choice', async () => {
+    const { reduceRun } = await import('../../src/runs/run');
+    // A finished run whose scene failed after an earlier batch of pictures, one of them chosen.
+    let s: import('../../src/runs/run').RunState = {
+      projectId: 'p',
+      status: 'finished',
+      inFlight: [],
+      sceneStates: {
+        s1: { sceneId: 's1', status: 'failed', message: 'no', pictureIds: ['m/a', 'm/b'], chosenPictureId: 'm/b' },
+      },
+    };
+    s = reduceRun(s, { type: 'retry', sceneId: 's1' });
+    s = reduceRun(s, { type: 'submitted', sceneId: 's1' });
+    s = reduceRun(s, { type: 'pictures', sceneId: 's1', mediaIds: ['m/c', 'm/d'] });
+    expect(s.sceneStates.s1?.pictureIds).toEqual(['m/c', 'm/d']);
+    expect(s.sceneStates.s1?.chosenPictureId).toBeUndefined();
+  });
+});

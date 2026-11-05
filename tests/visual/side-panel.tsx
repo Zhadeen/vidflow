@@ -67,7 +67,7 @@ async function main() {
   };
 
   const reply = async (): Promise<RunReply> => ({ ok: true, state: run });
-  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, subscribe: () => () => undefined };
+  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, choose: reply, subscribe: () => () => undefined };
   createRoot(document.getElementById('root')!).render(<Panel client={client} />);
   Object.assign(window, { REPLY, ready: true });
 }

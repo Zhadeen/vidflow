@@ -4,6 +4,7 @@ import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
 import type { Project, SceneState } from '../store/projects';
 import { ActivityList } from './ActivityList';
+import { chosenPicture } from './choice';
 import { Button } from './Button';
 import { ownerPauseReason, pictureProgress, runPhase, sceneNumber, sceneStatesFor } from './progress';
 import type { RunClient } from './runClient';
@@ -43,7 +44,7 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
   const shownState: SceneState | undefined = shownId ? states[shownId] : undefined;
 
   const wanted = useMemo(() => {
-    const ids = project.scenes.map((s) => states[s.id].pictureIds[0]).filter((id): id is string => !!id);
+    const ids = project.scenes.map((s) => chosenPicture(states[s.id])).filter((id): id is string => !!id);
     for (const id of shownState?.pictureIds ?? []) if (!ids.includes(id)) ids.push(id);
     return ids;
   }, [project.scenes, states, shownState]);
