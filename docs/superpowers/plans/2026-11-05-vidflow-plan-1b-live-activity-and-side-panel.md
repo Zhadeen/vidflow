@@ -100,6 +100,7 @@ export async function openForTab(tab: { id?: number; windowId?: number; url?: st
 ```
 - [ ] **Step 1: Failing tests:**
   - `opens the side panel on a Flow tab` (mock `chrome.sidePanel.open({ windowId })`) and `opens the studio tab when the active tab isn't Flow`.
+  - `Open full studio ↗ opens or focuses the studio tab on this project` (both states).
   - Panel setup: `pick or create a video`; `paste shows "✓ 6 scenes found" and applies only on Use these scenes`; `aspect, per-scene, style and hero choices save to the project`; `summary reads "12 pictures · 0 Flow credits"`; `exactly one coral primary` in each state.
   - Panel running: `shows step, progress, counts and the scene strip (saved ✓ cream, current coral outline, upcoming navy)`; `Pause/Resume and Stop call the run client`; `panel and studio show the same run after a pause from the studio` (shared `run/state` broadcast).
   - ScriptStep still passes its existing tests after the `useScriptDraft` extraction.
