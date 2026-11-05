@@ -35,7 +35,9 @@ const defaultDeps: PortDeps = {
 const HELPER_ATTEMPTS = 20;
 const HELPER_RETRY_MS = 1_000;
 // Also retried: Flow reloads its page right after a new project opens, closing a request's channel mid-way.
-// Every request sent through ask() only reads or types; the Generate press is done by the background, never here.
+// Retrying is safe: requests sent through ask() read, type, or (prepare) click Flow's own settings radios (mode, aspect,
+// outputs), which are idempotent: each click is guarded by confirmed(), so a repeat finds it already set. The Generate
+// press is done by the background, never here.
 const helperMissing = (err: unknown) =>
   /receiving end does not exist|could not establish connection|message channel closed/i.test(
     err instanceof Error ? err.message : String(err),

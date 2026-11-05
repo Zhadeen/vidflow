@@ -7,7 +7,7 @@
     "dev": "wxt",
     "build": "wxt build",
     "build:e2e": "wxt build --mode e2e",
-    "check:prod-clean": "! grep -rq vidflow-e2e .output/chrome-mv3",
+    "check:prod-clean": "! grep -rqE 'vidflow-e2e|e2e/start' .output/chrome-mv3",
     "postinstall": "wxt prepare",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
