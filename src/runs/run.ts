@@ -124,6 +124,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
         setScene(state, event.sceneId, {
           status: 'done',
           pictureIds: event.mediaIds,
+          chosenPictureId: undefined, // new pictures: the best-picture choice is made again (Plan 2)
           message: undefined,
           ...(event.cardKeys ? { cardKeys: event.cardKeys } : {}),
         }),

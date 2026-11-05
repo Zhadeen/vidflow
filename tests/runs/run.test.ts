@@ -186,3 +186,10 @@ describe('result matching state', () => {
     expect(s.sceneStates['scene-01']!.submission).toBeUndefined();
   });
 });
+
+it('new pictures clear an earlier best-picture choice', () => {
+  let s = apply(initRun(project(1)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 1 });
+  s = { ...s, sceneStates: { 'scene-01': { ...s.sceneStates['scene-01']!, chosenPictureId: 'old' } } };
+  s = reduceRun(s, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m1'], cardKeys: ['k1'] });
+  expect(s.sceneStates['scene-01']!.chosenPictureId).toBeUndefined();
+});

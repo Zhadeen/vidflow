@@ -113,12 +113,12 @@ export default defineContentScript({
 
     async function detail(): Promise<DetailResponse> {
       const deadline = Date.now() + DETAIL_WAIT_MS;
-      let prompt = driver.readDetailPrompt();
-      while (prompt === null && Date.now() < deadline) {
+      let read = driver.readDetailPrompt();
+      while ((read.prompt === null || read.mediaId === null) && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 250));
-        prompt = driver.readDetailPrompt();
+        read = driver.readDetailPrompt();
       }
-      return { prompt, mediaId: driver.detailMediaId() };
+      return read;
     }
 
     chrome.runtime.onMessage.addListener((message: { type?: string }, _sender, sendResponse) => {

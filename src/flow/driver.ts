@@ -33,6 +33,11 @@ export interface FlowSnapshot {
 
 export type StartVerb = 'Start' | 'Resume';
 
+export interface DetailRead {
+  mediaId: string | null;
+  prompt: string | null;
+}
+
 export interface FlowDriver {
   read(): FlowPageState;
   /** Waits (up to timeoutMs) for the prompt box and Generate, e.g. right after Flow opens a new project. */
@@ -51,10 +56,11 @@ export interface FlowDriver {
   newProjectButton(): { x: number; y: number } | null;
   /** Scrolls the finished tile with this media id into view and returns its centre, or null when it isn't in the DOM. */
   tilePoint(key: string): { x: number; y: number } | null;
-  /** On a picture's detail page: the full original prompt (the oldest History entry's prompt line), else null. */
-  readDetailPrompt(): string | null;
-  /** On a picture's detail page: the media id of the picture shown, when the page carries one. */
-  detailMediaId(): string | null;
+  /**
+   * On a picture's detail page: the full prompt of its first history step (the generation), and the media id of the
+   * one element carrying data-media-id (the opened picture). Either is null when the page doesn't show it plainly.
+   */
+  readDetailPrompt(): DetailRead;
 }
 
 export type StartCheck =
@@ -105,10 +111,6 @@ export interface DriverOptions {
 const SETTINGS_TIMEOUT_MS = 5_000;
 const GENERATE_TIMEOUT_MS = 30_000;
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
-
-/** History lines that aren't a prompt: model names, dates, aspect icons. A prompt has at least four words. */
-const NOT_A_PROMPT = /nano banana|imagen|\bveo\b|^\w{3} \d{1,2}, \d{4}$|crop_|^history$/i;
-const isPromptLine = (t: string) => t.split(' ').length >= 4 && !NOT_A_PROMPT.test(t);
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -208,23 +210,15 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     });
   }
 
-  /** The text an element holds itself (not its children's), squashed. */
-  const ownText = (el: Element) =>
-    squash([...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join(' '));
-
-  function historyPanel(): Element | null {
-    const labelled = q(SEL.detailHistory);
-    if (labelled) return labelled;
-    const heading = [...doc.querySelectorAll('h1, h2, h3, [role="heading"]')].find((h) => /^history$/i.test(squash(h.textContent)));
-    return heading?.parentElement ?? null;
-  }
-
-  function readDetailPrompt(): string | null {
-    const panel = historyPanel();
-    if (!panel) return null;
-    // Entries are listed newest first; VidFlow never edits, so there is one. The original prompt is the oldest entry's.
-    const lines = [...panel.querySelectorAll('*')].map(ownText).filter(isPromptLine);
-    return lines.at(-1) ?? null;
+  function readDetailPrompt(): DetailRead {
+    const ids = doc.querySelectorAll<HTMLElement>(SEL.mediaId);
+    const mediaId = ids.length === 1 ? ids[0]!.dataset.mediaId || null : null;
+    // A freshly generated picture has one step; VidFlow never edits, so the first step is the generation's prompt.
+    const step = q(SEL.detailStep);
+    // The prompt may be split over several text parts: join them as written.
+    const parts = step ? [...step.querySelectorAll(SEL.detailPromptText)].map((p) => p.textContent ?? '') : [];
+    const prompt = squash(parts.join(''));
+    return { mediaId, prompt: prompt || null };
   }
 
   function read(): FlowPageState {
@@ -294,11 +288,6 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     readDetailPrompt,
-
-    detailMediaId() {
-      if (!historyPanel()) return null;
-      return q<HTMLImageElement>(SEL.tileImage)?.dataset.mediaId ?? null;
-    },
 
     tilePoint(key) {
       const img = [...doc.querySelectorAll<HTMLImageElement>(SEL.tileImage)].find((i) => i.dataset.mediaId === key);

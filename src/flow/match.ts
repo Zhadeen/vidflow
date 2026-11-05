@@ -75,8 +75,8 @@ export function matchResults(
   const closed = (s: Slot) => s.unconfirmed || s.refusal !== null || s.filled >= outputsPerPrompt;
 
   for (const card of oldestFirst) {
-    // A refusal right after a refused submission is the same submission's (one refused tile per output).
-    if (card.refusal !== null && lastRefused && lastRefused.absorb > 0) {
+    // A refusal right after a refused submission, with its prompt, is the same submission's (one per output).
+    if (card.refusal !== null && lastRefused && lastRefused.absorb > 0 && verifyMatch(lastRefused.sub.prompt, card.caption)) {
       lastRefused.absorb--;
       continue;
     }
@@ -88,9 +88,18 @@ export function matchResults(
       if (!slot) break; // surplus: nobody is owed a picture any more
 
       if (card.refusal !== null) {
-        slot.refusal = card.refusal;
-        slot.absorb = outputsPerPrompt - slot.filled - 1;
-        lastRefused = slot;
+        // A refused tile keeps the prompt as its caption: it refuses a scene only when that is the scene's prompt.
+        if (verifyMatch(slot.sub.prompt, card.caption)) {
+          slot.refusal = card.refusal;
+          slot.absorb = outputsPerPrompt - slot.filled - 1;
+          lastRefused = slot;
+          break;
+        }
+        const laterOwner = slots.slice(i + 1).some((s) => !closed(s) && verifyMatch(s.sub.prompt, card.caption));
+        const earlierOwner = slots.slice(0, i).some((s) => verifyMatch(s.sub.prompt, card.caption));
+        if (earlierOwner && !laterOwner) break; // a surplus refusal of an earlier scene
+        slot.unconfirmed = true; // never a refusal by position alone
+        if (laterOwner) continue; // offer it to the scene it names
         break;
       }
 

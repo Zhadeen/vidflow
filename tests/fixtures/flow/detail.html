@@ -1,25 +1,28 @@
 <!--
-  Hand-built from spike S5's notes on the picture detail page (/project/<p>/edit/<generationId>), opened by clicking a
-  result tile. Not captured live: the note records that the page shows the picture, a download button and the full
-  original prompt, which appears as the prompt line of the (only) entry in the History panel. Roles, aria-labels,
-  data-media-id and the image URL shape follow the project page. Task 10 must check this against the real page.
+  Picture detail page (/project/<p>/edit/<editId>; the edit id differs from the media id), opened by clicking a result
+  tile. Structure checked on the live page (5 Nov 2026, Task 8 review): exactly one element carries data-media-id —
+  the opened picture's <img>, whose value equals the grid tile's key — and the full prompt sits in
+  flow-expandable-prompt div.prompt-text span.text-part, inside div.history-step (flow-editor-history-step-image,
+  under div.editor-history-content). Hand-built: Angular attributes left out.
 -->
 <div class="edit-page">
   <header>
-    <button aria-label="Back to project"><i class="material-icons">arrow_back</i></button>
+    <button aria-label="Back"><i class="material-icons">arrow_back</i></button>
     <button aria-label="Download"><i class="material-icons">download</i> Download</button>
   </header>
   <main>
     <img data-media-id="5b208a77-5547-4e88-9b51-f74f987f2f0d" src="https://flow-content.google/image/5b208a77-5547-4e88-9b51-f74f987f2f0d" alt="Generated image">
   </main>
-  <aside aria-label="History">
-    <h2>History</h2>
-    <div class="history-entry">
-      <div class="history-prompt">
-        A stickman waves from a window,
-        black ink on white paper
+  <div class="editor-history-content">
+    <flow-editor-history-step-image>
+      <div class="history-step">
+        <flow-expandable-prompt>
+          <div class="prompt-text"><span class="text-part">A stickman waves from a window,
+            black ink on white paper</span></div>
+          <button aria-label="Expand prompt"><i class="material-icons">expand_more</i></button>
+        </flow-expandable-prompt>
+        <div class="history-meta"><span>🍌 Nano Banana 2.1</span> <i class="material-icons">crop_16_9</i></div>
       </div>
-      <div class="history-meta"><span>🍌 Nano Banana 2.1</span> <i class="material-icons">crop_16_9</i> <span>Nov 5, 2026</span></div>
-    </div>
-  </aside>
+    </flow-editor-history-step-image>
+  </div>
 </div>

@@ -8,7 +8,7 @@ const WAVE = 'A stickman waves from a window, black ink on white paper';
 const sub = (sceneId: string, prompt: string, seq: number): Submission => ({ sceneId, prompt, seq, submittedAt: seq * 1000 });
 
 /** Tiles as Flow lists them: newest first. Each entry is a finished key, or a spec for an in-progress/refused tile. */
-type TileSpec = string | { pending: string } | { refusal: string };
+type TileSpec = string | { pending: string } | { refusal: string; caption: string };
 function tiles(...specs: TileSpec[]): FlowResultCard[] {
   return specs.map((s, domIndex) => {
     if (typeof s === 'string') {
@@ -17,7 +17,7 @@ function tiles(...specs: TileSpec[]): FlowResultCard[] {
     if ('pending' in s) {
       return { key: `pending-${domIndex}`, caption: s.pending, imageUrl: null, progress: 40, refusal: null, domIndex };
     }
-    return { key: `pending-${domIndex}`, caption: '', imageUrl: null, progress: null, refusal: s.refusal, domIndex };
+    return { key: `pending-${domIndex}`, caption: s.caption, imageUrl: null, progress: null, refusal: s.refusal, domIndex };
   });
 }
 
@@ -58,16 +58,32 @@ describe('matchResults', () => {
 
   it('refusal completes a scene with no pictures', () => {
     const subs = [sub('scene-01', BIKE, 1), sub('scene-02', WAVE, 2)];
-    const cards = tiles('w2', 'w1', { refusal: 'This prompt might violate our policies' });
+    const cards = tiles('w2', 'w1', { refusal: 'This prompt might violate our policies', caption: BIKE });
     expect(matchResults(subs, cards, new Set(), 2)).toEqual([
       { kind: 'refused', sceneId: 'scene-01', cardKeys: [], message: 'This prompt might violate our policies' },
       { kind: 'pictures', sceneId: 'scene-02', cardKeys: ['w1', 'w2'] },
     ]);
     // Flow showing one refused tile per output still refuses only that scene.
-    const twice = tiles('w2', 'w1', { refusal: 'Might violate' }, { refusal: 'Might violate' });
+    const twice = tiles('w2', 'w1', { refusal: 'Might violate', caption: BIKE }, { refusal: 'Might violate', caption: BIKE });
     expect(matchResults(subs, twice, new Set(), 2).map((m) => [m.kind, m.sceneId])).toEqual([
       ['refused', 'scene-01'],
       ['pictures', 'scene-02'],
+    ]);
+  });
+
+  it("never marks a scene refused from a refused tile that isn't its prompt", () => {
+    const subs = [sub('scene-01', BIKE, 1), sub('scene-02', WAVE, 2)];
+    // A refused tile for some other prompt sits where scene-01's pictures should be: unconfirmed, not refused.
+    const foreign = tiles('w1', { refusal: 'Might violate', caption: 'A stickman in a fight' });
+    expect(matchResults(subs, foreign, new Set(), 1)).toEqual([
+      { kind: 'unconfirmed', sceneId: 'scene-01', cardKeys: [] },
+      { kind: 'pictures', sceneId: 'scene-02', cardKeys: ['w1'] },
+    ]);
+    // scene-02's refusal where scene-01's pictures should be: scene-02 is refused, scene-01 is not.
+    const later = tiles({ refusal: 'Might violate', caption: WAVE });
+    expect(matchResults(subs, later, new Set(), 1)).toEqual([
+      { kind: 'unconfirmed', sceneId: 'scene-01', cardKeys: [] },
+      { kind: 'refused', sceneId: 'scene-02', cardKeys: [], message: 'Might violate' },
     ]);
   });
 

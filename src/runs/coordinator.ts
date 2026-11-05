@@ -55,9 +55,14 @@ const PACE_MIN_MS = 4000;
 const PACE_MAX_MS = 7000;
 const URL_WAIT_MS = 30_000;
 const URL_POLL_MS = 500;
+const BACK_WAIT_MS = 5_000;
 // A blocked run is always left paused, so owner-facing messages from the pump name Resume.
 const PUMP_VERB: StartVerb = 'Resume';
 export const NOT_STARTED_MESSAGE = "VidFlow pressed Generate but Flow didn't start. Check the Flow window, then press Resume.";
+/** Tile reports this soon after returning from a detail page don't count towards giving up on a scene. */
+const SETTLE_MS = 3_000;
+/** Consecutive qualifying reports (or unreadable detail reads) before VidFlow gives up on a scene. */
+const GIVE_UP_AFTER = 2;
 const SAVE_FAILED_MESSAGE = "VidFlow couldn't save this scene's pictures. Press Try again.";
 const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then press Resume.";
 
@@ -74,7 +79,14 @@ let queue: Promise<unknown> = Promise.resolve();
 /** Everything that drives the Flow tab (submitting, opening a picture's detail) takes turns through this. */
 let tabQueue: Promise<unknown> = Promise.resolve();
 /** The latest tiles VidFlow's Flow tab reported; matched to scenes by processTiles. */
-let latestCards: FlowResultCard[] = [];
+let latestReport: { id: number; at: number; cards: FlowResultCard[] } = { id: 0, at: 0, cards: [] };
+/** When the Flow tab last came back from a detail page; reports soon after may show a half-drawn grid. */
+let lastDetailReturn = 0;
+/** Per scene: how many qualifying tile reports in a row showed no consistent assignment, and the last one counted. */
+const unconfirmedStreak = new Map<string, { count: number; reportId: number }>();
+/** Per card: detail reads that didn't show this card plainly, counted once per tile report (attempt). */
+const unreadCount = new Map<string, { count: number; attempt: number }>();
+let unconfirmedAttempt = 0;
 /** True while the Flow tab is away on a picture's detail page; tile reports from there are ignored. */
 let inDetail = false;
 let matching = false;
@@ -174,8 +186,8 @@ async function tabUrl(tabId: number): Promise<string | undefined> {
 }
 
 /** Polls the tab until its URL satisfies `ok`; returns that URL, or null after URL_WAIT_MS. */
-async function waitForUrl(tabId: number, ok: (url: string) => boolean): Promise<string | null> {
-  const deadline = Date.now() + URL_WAIT_MS;
+async function waitForUrl(tabId: number, ok: (url: string) => boolean, waitMs = URL_WAIT_MS): Promise<string | null> {
+  const deadline = Date.now() + waitMs;
   for (;;) {
     const url = await tabUrl(tabId);
     if (url && ok(url)) return url;
@@ -315,6 +327,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
       const found = await findUnconfirmedStart(tabId, project, unconfirmed);
       if (found === null) return 'stop';
+      if (found === 'wait') return 'next'; // look again after the pace pause, without pressing
       if (found) {
         await dispatch({ type: 'submitted', sceneId, prompt: unconfirmed.prompt, at: Date.now() });
         return 'next';
@@ -362,7 +375,7 @@ async function findUnconfirmedStart(
   tabId: number,
   project: Project,
   u: NonNullable<SceneState['unconfirmed']>,
-): Promise<boolean | null> {
+): Promise<boolean | 'wait' | null> {
   if (!state) return null;
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
@@ -372,28 +385,47 @@ async function findUnconfirmedStart(
   ).length;
   const owedToOthers = samePromptInFlight * project.outputsPerPrompt;
   let hits = 0;
+  let generating = 0;
+  const attempt = -++unconfirmedAttempt; // each Resume check is its own attempt (tile reports count up from 1)
   for (const card of fresh) {
     let ok: boolean;
     if (isFinished(card)) {
-      const detail = await detailOf(tabId, project.id, card.key);
+      const detail = await detailOf(tabId, project.id, card.key, attempt);
       if (detail === null) return null;
+      if (detail === 'unread') return 'wait';
       ok = verifyMatch(u.prompt, detail);
+    } else if (card.refusal !== null) {
+      ok = verifyMatch(u.prompt, card.caption); // a refused tile keeps its prompt as caption: Flow did take it
     } else {
-      ok = verifyMatch(u.prompt, card.caption); // still generating (or refused): the caption is the prompt
+      // Still generating: its caption alone doesn't prove it. Wait for it to finish and check its detail then.
+      if (verifyMatch(u.prompt, card.caption)) generating++;
+      continue;
     }
     if (ok && ++hits > owedToOthers) return true;
   }
-  return stillRunning(project.id) ? false : null;
+  if (!stillRunning(project.id)) return null;
+  return hits + generating > owedToOthers ? 'wait' : false;
 }
 
-/** A card's full prompt: known already, or read from its detail view ('' when unreadable). null if the run stopped. */
-async function detailOf(tabId: number, projectId: string, key: string): Promise<string | null> {
+/**
+ * A card's full prompt: known already, or read from its detail view. 'unread' when the detail didn't show this card
+ * plainly (try again later); after GIVE_UP_AFTER such reads it is recorded as '' (never matches). null if the run stopped.
+ */
+async function detailOf(tabId: number, projectId: string, key: string, attempt: number): Promise<string | 'unread' | null> {
   const known = state?.detailPrompts?.[key];
   if (known !== undefined) return known;
+  if (unreadCount.get(key)?.attempt === attempt) return 'unread'; // already tried on this report
   const read = await readDetailFor(tabId, projectId, key);
   if (!stillRunning(projectId)) return null;
-  await dispatch({ type: 'detail', cardKey: key, prompt: read ?? '' });
-  return read ?? '';
+  if (read === null) {
+    const tries = (unreadCount.get(key)?.count ?? 0) + 1;
+    unreadCount.set(key, { count: tries, attempt });
+    if (tries < GIVE_UP_AFTER) return 'unread';
+    await dispatch({ type: 'detail', cardKey: key, prompt: '' });
+    return '';
+  }
+  await dispatch({ type: 'detail', cardKey: key, prompt: read });
+  return read;
 }
 
 /**
@@ -416,20 +448,31 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
     await port.press(tabId, at.x, at.y);
     if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
     const { prompt, mediaId } = await port.readDetail(tabId);
-    if (mediaId && mediaId !== key) return null; // opened a different picture
-    return prompt;
+    // Trust the prompt only when the page's one picture is this card; missing or different means unread.
+    return mediaId === key ? prompt : null;
   } catch {
     return null;
   } finally {
     try {
       const now = await tabUrl(tabId);
       if (!now || !onProject(now)) {
-        await chrome.tabs.update(tabId, { url: flowUrl });
-        await waitForUrl(tabId, onProject);
+        // History back keeps Flow's grid (a reload would redraw it from scratch); reload only if that fails.
+        let back = false;
+        try {
+          await chrome.tabs.goBack(tabId);
+          back = (await waitForUrl(tabId, onProject, BACK_WAIT_MS)) !== null;
+        } catch {
+          back = false;
+        }
+        if (!back) {
+          await chrome.tabs.update(tabId, { url: flowUrl });
+          await waitForUrl(tabId, onProject);
+        }
       }
     } catch {
       // The pump puts the tab back on the project before its next press.
     }
+    lastDetailReturn = Date.now();
     inDetail = false;
   }
 }
@@ -440,7 +483,7 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
 export async function handleTiles(cards: FlowResultCard[]): Promise<void> {
   await ready;
   if (inDetail) return;
-  latestCards = cards;
+  latestReport = { id: latestReport.id + 1, at: Date.now(), cards };
   void processTiles();
 }
 
@@ -477,22 +520,32 @@ async function matchOnce(): Promise<void> {
         : [];
     });
     if (submissions.length === 0) return;
-    const cards = latestCards;
+    const report = latestReport;
+    const cards = report.cards;
     const details = run.detailPrompts ?? {};
     const matches = matchResults(submissions, cards, claimedKeys(run), project.outputsPerPrompt, details);
+    // A report taken while the grid may still be redrawing (just back from a detail page) can't make VidFlow give up.
+    const settled = report.at - lastDetailReturn >= SETTLE_MS;
+    const unconfirmedNow = new Set(matches.filter((m) => m.kind === 'unconfirmed').map((m) => m.sceneId));
+    if (settled) for (const { sceneId } of submissions) if (!unconfirmedNow.has(sceneId)) unconfirmedStreak.delete(sceneId);
 
     let changed = false;
     for (const m of matches) {
       if (m.kind === 'refused') await dispatch({ type: 'refused', sceneId: m.sceneId, message: m.message });
-      else if (m.kind === 'unconfirmed') await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
-      else {
+      else if (m.kind === 'unconfirmed') {
+        // Only give up when the same holds in GIVE_UP_AFTER settled reports in a row (or at the scene's deadline).
+        const streak = unconfirmedStreak.get(m.sceneId) ?? { count: 0, reportId: -1 };
+        if (settled && streak.reportId !== report.id) unconfirmedStreak.set(m.sceneId, { count: streak.count + 1, reportId: report.id });
+        if ((unconfirmedStreak.get(m.sceneId)?.count ?? 0) < GIVE_UP_AFTER) continue;
+        unconfirmedStreak.delete(m.sceneId);
+        await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
+      } else {
         const [key] = unverifiedKeys(m, details);
         if (key !== undefined) {
           // Check it in Flow's detail view, then match again with what that showed.
-          const read = await readDetailFor(tabId, run.projectId, key);
-          if (!stillRunning(run.projectId)) return;
-          await dispatch({ type: 'detail', cardKey: key, prompt: read ?? '' });
-          if (read === null) await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
+          const detail = await detailOf(tabId, run.projectId, key, report.id);
+          if (detail === null || detail === 'unread') return; // stopped, or try again on the next tile report
+          if (detail === '') await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
           changed = true;
           break;
         }
@@ -616,7 +669,10 @@ export function registerCoordinator(): void {
           void dispatch({
             type: 'failed',
             sceneId,
-            message: "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
+            // A scene VidFlow couldn't match consistently says so, rather than blaming Flow's speed.
+            message: unconfirmedStreak.has(sceneId)
+              ? UNCONFIRMED_MESSAGE
+              : "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
           });
         }
       });

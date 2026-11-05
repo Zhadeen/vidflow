@@ -40,6 +40,7 @@ function mockChrome() {
     tabs: {
       get: vi.fn(async () => ({ ...tab })),
       update: vi.fn(async (_id: number, props: { url: string }) => void (tab.url = props.url)),
+      goBack: vi.fn(async () => void (tab.url = tab.url.replace(/\/edit\/.*$/, ''))),
       setZoom: vi.fn(async () => undefined),
       getZoom: vi.fn(async () => 1),
     },
@@ -254,23 +255,72 @@ describe('matching results to scenes', () => {
     expect(chromeMock.tab.url).toBe(PROJECT_URL); // back on the project after each detail
   });
 
-  it('never saves a card whose detail prompt differs, and fails the scene when the detail cannot be read', async () => {
+  it('never saves a card whose detail prompt differs, and fails the scene when the detail stays unreadable', async () => {
     const { coordinator, port } = await submitted(1);
     const fetchMock = stubFetch();
-    vi.mocked(port.readDetail).mockResolvedValueOnce({ prompt: 'A stickman reads a book', mediaId: null });
+    vi.mocked(port.readDetail).mockResolvedValueOnce({ prompt: 'A stickman reads a book', mediaId: 'other' });
     await coordinator.handleTiles([card('other', 0)]);
     await waitFor(() => coordinator.getRunState()?.detailPrompts?.other !== undefined);
     await new Promise((r) => setTimeout(r, 30));
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted'); // still waiting for its own picture
     expect(fetchMock).not.toHaveBeenCalled();
 
-    vi.mocked(port.readDetail).mockResolvedValueOnce({ prompt: null, mediaId: null });
+    vi.mocked(port.readDetail).mockResolvedValue({ prompt: null, mediaId: 'k1' });
     await coordinator.handleTiles([card('k1', 0), card('other', 1)]);
+    await waitFor(() => vi.mocked(port.readDetail).mock.calls.length === 2);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted'); // one unreadable read: try again later
+    await coordinator.handleTiles([card('k1', 0), card('other', 1)]); // the next report: still unreadable
     await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed');
     expect(coordinator.getRunState()!.sceneStates.s1?.message).toBe(
       "VidFlow couldn't confirm which picture belongs to this scene. Press Try again.",
     );
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("trusts a detail prompt only when the page's picture is that card", async () => {
+    const { coordinator, port, prompt, chromeMock } = await submitted(1);
+    const fetchMock = stubFetch();
+    vi.mocked(port.readDetail).mockResolvedValue({ prompt, mediaId: null }); // right prompt, but whose picture?
+    await coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => vi.mocked(port.readDetail).mock.calls.length >= 1);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(port.readDetail).toHaveBeenCalledTimes(1); // one read per tile report, however often matching runs
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(coordinator.getRunState()!.detailPrompts?.k1).toBeUndefined(); // not recorded as verified
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
+    expect(chromeMock.tabs.goBack).toHaveBeenCalledWith(7); // back to the grid without a reload
+    expect(chromeMock.tab.url).toBe(PROJECT_URL);
+  });
+
+  it('a single partial tile report does not fail a scene; a persistent one does', async () => {
+    const { coordinator, port, prompt } = await submitted(1);
+    const fetchMock = stubFetch();
+    // A refused tile for some other prompt where s1's picture should be: no consistent assignment in this report.
+    const foreign: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, caption: 'A stickman in a fight', refusal: 'Might violate' };
+    await coordinator.handleTiles([foreign]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
+
+    // The next report is complete: s1's own picture arrives and is saved.
+    vi.mocked(port.readDetail).mockResolvedValue({ prompt, mediaId: 'k1' });
+    await coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a scene whose tiles stay inconsistent over two reports', async () => {
+    const { coordinator } = await submitted(1);
+    const foreign: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, caption: 'A stickman in a fight', refusal: 'Might violate' };
+    await coordinator.handleTiles([foreign]);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
+    await coordinator.handleTiles([foreign, { ...foreign, key: 'pending-1', domIndex: 1 }]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed');
+    expect(coordinator.getRunState()!.sceneStates.s1).toMatchObject({
+      status: 'failed',
+      message: "VidFlow couldn't confirm which picture belongs to this scene. Press Try again.",
+    });
   });
 
   it('records an unconfirmed start with the tiles seen just before the press', async () => {
@@ -309,6 +359,23 @@ describe('matching results to scenes', () => {
     expect(port.prepare).toHaveBeenCalledTimes(1);
     expect(coordinator.getRunState()!.sceneStates.s1?.unconfirmed).toBeUndefined();
     expect(coordinator.getRunState()!.detailPrompts?.n1).toBeDefined();
+  });
+
+  it('on Resume, waits for a still-generating tile with its prompt instead of declaring it submitted or pressing', async () => {
+    const ctx = await setup(2);
+    const port = ctx.fakePort({ confirmStarted: vi.fn(async () => false), tiles: vi.fn(async () => [card('old', 0)]) });
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused');
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    const generating: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, progress: 40, caption: prompt };
+    vi.mocked(port.tiles).mockResolvedValue([generating, card('old', 1)]);
+    await ctx.coordinator.resumeRun();
+    await waitFor(() => vi.mocked(port.tiles).mock.calls.length >= 2);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1).toMatchObject({ status: 'pending' });
+    expect(port.prepare).toHaveBeenCalledTimes(1); // not pressed again
+    await ctx.coordinator.pauseRun(); // stop this run's pump looking again, so it can't touch the next test's chrome
   });
 
   it("on Resume, presses again when no new tile is the scene's", async () => {

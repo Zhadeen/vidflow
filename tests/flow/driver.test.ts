@@ -327,27 +327,34 @@ describe('FlowDriver.resultCards', () => {
 });
 
 describe('FlowDriver picture detail', () => {
-  it('reads the full original prompt from the detail page', () => {
+  const PROMPT = 'A stickman waves from a window, black ink on white paper';
+  const ID = '5b208a77-5547-4e88-9b51-f74f987f2f0d';
+
+  it("reads the full prompt and the opened picture's media id from the detail page", () => {
     load('detail.html');
-    const driver = createFlowDriver();
-    expect(driver.readDetailPrompt()).toBe('A stickman waves from a window, black ink on white paper');
-    expect(driver.detailMediaId()).toBe('5b208a77-5547-4e88-9b51-f74f987f2f0d');
+    expect(createFlowDriver().readDetailPrompt()).toEqual({ mediaId: ID, prompt: PROMPT });
   });
 
-  it('reads the oldest entry when the history has more than one', () => {
+  it('reads the first history step (the generation) when there are several', () => {
     load('detail.html');
-    const entry = document.querySelector('.history-entry')!;
-    const edit = entry.cloneNode(true) as HTMLElement;
-    edit.querySelector('.history-prompt')!.textContent = 'Make the stickman wave with his other hand';
-    entry.before(edit); // newest first
-    expect(createFlowDriver().readDetailPrompt()).toBe('A stickman waves from a window, black ink on white paper');
+    const step = document.querySelector('flow-editor-history-step-image')!;
+    const edit = step.cloneNode(true) as HTMLElement;
+    edit.querySelector('.text-part')!.textContent = 'Make the stickman wave with his other hand';
+    step.after(edit);
+    expect(createFlowDriver().readDetailPrompt().prompt).toBe(PROMPT);
   });
 
-  it('gives null when the page is not a detail page', () => {
+  it('gives no media id unless exactly one element carries one', () => {
+    load('detail.html');
+    document.querySelector('[data-media-id]')!.removeAttribute('data-media-id');
+    expect(createFlowDriver().readDetailPrompt()).toEqual({ mediaId: null, prompt: PROMPT });
+    load('detail.html', 'tiles.html');
+    expect(createFlowDriver().readDetailPrompt().mediaId).toBeNull();
+  });
+
+  it('gives no prompt when the page is not a detail page', () => {
     load('tiles.html');
-    expect(createFlowDriver().readDetailPrompt()).toBeNull();
-    document.body.innerHTML = '<aside aria-label="History"><h2>History</h2></aside>';
-    expect(createFlowDriver().readDetailPrompt()).toBeNull();
+    expect(createFlowDriver().readDetailPrompt().prompt).toBeNull();
   });
 
   it("finds a finished tile's centre to open its detail", () => {
