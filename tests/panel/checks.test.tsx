@@ -90,10 +90,14 @@ describe('side panel: Checks tab', () => {
     const local = (globalThis as unknown as { chrome: { storage: { local: { get: Mock; set(i: object): Promise<void> } } } }).chrome.storage.local;
     let release!: () => void;
     const late = new Promise<void>((r) => (release = r));
+    let lateReadDone = false;
     const read = local.get.getMockImplementation()!;
     local.get.mockImplementation(async (key: string) => {
-      if (key === ACCEPT_NOTICES_KEY) await late;
-      return read(key);
+      if (key !== ACCEPT_NOTICES_KEY) return read(key);
+      await late;
+      const got = await read(key);
+      lateReadDone = true;
+      return got;
     });
     render(<Panel client={fakeBackground(null).client()} />);
     fireEvent.click(await screen.findByRole('tab', { name: 'Checks' }));
@@ -101,6 +105,12 @@ describe('side panel: Checks tab', () => {
     // Not loaded yet: no state shown and it can't be flipped.
     expect((notices as HTMLButtonElement).disabled).toBe(true);
     expect(notices.getAttribute('aria-checked')).toBe('false');
+    // The switches' effects (their reads and storage listeners) run after the DOM shows them; under load that can be
+    // later than findByRole. Keep-awake's read isn't held back, so once it shows, both switches are listening.
+    const awake = screen.getByRole('switch', { name: 'Keep Mac awake while running' });
+    await waitFor(() => expect((awake as HTMLButtonElement).disabled).toBe(false));
+    expect(awake.getAttribute('aria-checked')).toBe('true');
+    expect((notices as HTMLButtonElement).disabled).toBe(true);
     // Turned off elsewhere (the studio) before the read arrives …
     await act(async () => {
       chrome.data[ACCEPT_NOTICES_KEY] = false;
@@ -111,12 +121,11 @@ describe('side panel: Checks tab', () => {
     // … then the old read (on) arrives late: it must not win.
     chrome.data[ACCEPT_NOTICES_KEY] = true;
     await act(async () => release());
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => expect(lateReadDone).toBe(true));
+    await act(async () => undefined); // let the late read's result land
     expect(notices.getAttribute('aria-checked')).toBe('false');
 
     // The other switch follows changes made elsewhere too.
-    const awake = screen.getByRole('switch', { name: 'Keep Mac awake while running' });
-    await waitFor(() => expect(awake.getAttribute('aria-checked')).toBe('true'));
     await act(async () => local.set({ [KEEP_AWAKE_KEY]: false }));
     expect(awake.getAttribute('aria-checked')).toBe('false');
   });
