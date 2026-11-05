@@ -326,6 +326,41 @@ describe('FlowDriver.resultCards', () => {
   });
 });
 
+describe('FlowDriver picture detail', () => {
+  it('reads the full original prompt from the detail page', () => {
+    load('detail.html');
+    const driver = createFlowDriver();
+    expect(driver.readDetailPrompt()).toBe('A stickman waves from a window, black ink on white paper');
+    expect(driver.detailMediaId()).toBe('5b208a77-5547-4e88-9b51-f74f987f2f0d');
+  });
+
+  it('reads the oldest entry when the history has more than one', () => {
+    load('detail.html');
+    const entry = document.querySelector('.history-entry')!;
+    const edit = entry.cloneNode(true) as HTMLElement;
+    edit.querySelector('.history-prompt')!.textContent = 'Make the stickman wave with his other hand';
+    entry.before(edit); // newest first
+    expect(createFlowDriver().readDetailPrompt()).toBe('A stickman waves from a window, black ink on white paper');
+  });
+
+  it('gives null when the page is not a detail page', () => {
+    load('tiles.html');
+    expect(createFlowDriver().readDetailPrompt()).toBeNull();
+    document.body.innerHTML = '<aside aria-label="History"><h2>History</h2></aside>';
+    expect(createFlowDriver().readDetailPrompt()).toBeNull();
+  });
+
+  it("finds a finished tile's centre to open its detail", () => {
+    load('tiles.html');
+    const img = document.querySelector<HTMLElement>('img[data-media-id="4ca91b00-de41-44e5-ab6c-85c484c751ab"]')!;
+    img.scrollIntoView = vi.fn();
+    img.getBoundingClientRect = () => ({ left: 100, top: 200, width: 40, height: 20 }) as DOMRect;
+    expect(createFlowDriver().tilePoint('4ca91b00-de41-44e5-ab6c-85c484c751ab')).toEqual({ x: 120, y: 210 });
+    expect(img.scrollIntoView).toHaveBeenCalled();
+    expect(createFlowDriver().tilePoint('not-there')).toBeNull();
+  });
+});
+
 describe('FlowDriver.attachReference', () => {
   it('says it is not available yet', async () => {
     load('prompt-bar.html');

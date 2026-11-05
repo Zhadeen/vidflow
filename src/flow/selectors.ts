@@ -10,6 +10,8 @@ export const SEL = {
   tileList: '.cdk-virtual-scroll-content-wrapper',
   tileImage: 'img[data-media-id]',
   promptBar: 'flow-base-prompt-box',
+  /** Picture detail page (/project/<p>/edit/<id>): the panel listing the picture's prompt(s). Not yet checked live. */
+  detailHistory: '[aria-label="History"], [aria-label="history"]',
   dialog: '[role="dialog"], [role="alertdialog"], dialog[open], mat-dialog-container',
   notice: '[role="alert"], [role="status"], [aria-live], mat-snack-bar-container, .mat-mdc-snack-bar-container',
 } as const;

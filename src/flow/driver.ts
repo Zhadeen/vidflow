@@ -49,6 +49,12 @@ export interface FlowDriver {
   waitForStart(before: FlowSnapshot, timeoutMs: number): Promise<boolean>;
   /** Centre of the home page's "New project" button, or null when it isn't there. */
   newProjectButton(): { x: number; y: number } | null;
+  /** Scrolls the finished tile with this media id into view and returns its centre, or null when it isn't in the DOM. */
+  tilePoint(key: string): { x: number; y: number } | null;
+  /** On a picture's detail page: the full original prompt (the oldest History entry's prompt line), else null. */
+  readDetailPrompt(): string | null;
+  /** On a picture's detail page: the media id of the picture shown, when the page carries one. */
+  detailMediaId(): string | null;
 }
 
 export type StartCheck =
@@ -99,6 +105,10 @@ export interface DriverOptions {
 const SETTINGS_TIMEOUT_MS = 5_000;
 const GENERATE_TIMEOUT_MS = 30_000;
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
+
+/** History lines that aren't a prompt: model names, dates, aspect icons. A prompt has at least four words. */
+const NOT_A_PROMPT = /nano banana|imagen|\bveo\b|^\w{3} \d{1,2}, \d{4}$|crop_|^history$/i;
+const isPromptLine = (t: string) => t.split(' ').length >= 4 && !NOT_A_PROMPT.test(t);
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -198,6 +208,25 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     });
   }
 
+  /** The text an element holds itself (not its children's), squashed. */
+  const ownText = (el: Element) =>
+    squash([...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join(' '));
+
+  function historyPanel(): Element | null {
+    const labelled = q(SEL.detailHistory);
+    if (labelled) return labelled;
+    const heading = [...doc.querySelectorAll('h1, h2, h3, [role="heading"]')].find((h) => /^history$/i.test(squash(h.textContent)));
+    return heading?.parentElement ?? null;
+  }
+
+  function readDetailPrompt(): string | null {
+    const panel = historyPanel();
+    if (!panel) return null;
+    // Entries are listed newest first; VidFlow never edits, so there is one. The original prompt is the oldest entry's.
+    const lines = [...panel.querySelectorAll('*')].map(ownText).filter(isPromptLine);
+    return lines.at(-1) ?? null;
+  }
+
   function read(): FlowPageState {
     const accountLabel = q(SEL.account)?.getAttribute('aria-label') ?? '';
     const email = /\(([^()\s]+@[^()\s]+)\)/.exec(accountLabel)?.[1] ?? null;
@@ -262,6 +291,20 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       } catch {
         return false;
       }
+    },
+
+    readDetailPrompt,
+
+    detailMediaId() {
+      if (!historyPanel()) return null;
+      return q<HTMLImageElement>(SEL.tileImage)?.dataset.mediaId ?? null;
+    },
+
+    tilePoint(key) {
+      const img = [...doc.querySelectorAll<HTMLImageElement>(SEL.tileImage)].find((i) => i.dataset.mediaId === key);
+      if (!img) return null;
+      img.scrollIntoView({ block: 'center' });
+      return centre(img);
     },
 
     newProjectButton() {
