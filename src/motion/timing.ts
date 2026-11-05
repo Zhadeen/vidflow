@@ -25,7 +25,8 @@ export function slideSeconds(scene: Scene): number {
 
 /** The shortest clip length (4/6/8/10) that covers the slide; longer slides cap at 10. */
 export function clipLengthFor(seconds: number): ClipLength {
-  return LENGTHS.find((l) => seconds <= l) ?? 10;
+  const s = round3(seconds);
+  return LENGTHS.find((l) => s <= l) ?? 10;
 }
 
 /** The part of the clip the slide uses, in seconds: [0, min(slide, clip length)]. */

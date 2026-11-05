@@ -17,6 +17,6 @@ export function hasChoice(state: SceneState | undefined): boolean {
 
 /** Who made the scene's choice. A choice saved before Plan 3 has no source and counts as the owner's (the safe side). */
 export function choiceSourceOf(state: SceneState | undefined): 'owner' | 'auto' | undefined {
-  if (!state?.chosenPictureId) return undefined;
-  return state.choiceSource ?? 'owner';
+  if (!hasChoice(state)) return undefined;
+  return state?.choiceSource ?? 'owner';
 }

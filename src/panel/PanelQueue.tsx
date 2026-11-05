@@ -156,7 +156,7 @@ export function PanelQueue(props: Props) {
   const saved = useMemo(() => sceneStatesFor(project, run), [project, run]);
   const states = useMemo(() => {
     const out = { ...saved };
-    for (const [sceneId, pictureId] of Object.entries(swaps)) if (out[sceneId]) out[sceneId] = { ...out[sceneId], chosenPictureId: pictureId };
+    for (const [sceneId, pictureId] of Object.entries(swaps)) if (out[sceneId]) out[sceneId] = { ...out[sceneId], chosenPictureId: pictureId, choiceSource: 'owner' };
     return out;
   }, [saved, swaps]);
   useEffect(() => {

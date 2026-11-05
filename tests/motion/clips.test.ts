@@ -33,4 +33,8 @@ describe('clips', () => {
     expect(estimate(project({ motionMode: 'all' }), states)).toEqual({ clips: 3, credits: 7 + 10 + 15 });
     expect(estimate(project(), states)).toEqual({ clips: 0, credits: 0 });
   });
+  it('estimate excludes a scene that already has a current clip', () => {
+    const withClip = { ...states, a: st('a', { clip: { mediaId: 'm', sourcePictureId: 'a/a', length: 4, use: [0, 2.4] } }) };
+    expect(estimate(project({ motionMode: 'all' }), withClip)).toEqual({ clips: 2, credits: 10 + 15 });
+  });
 });

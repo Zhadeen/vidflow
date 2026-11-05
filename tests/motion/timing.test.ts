@@ -25,3 +25,22 @@ describe('timing', () => {
     expect(slideSeconds(sc(2, null))).toBe(3);
   });
 });
+
+describe('timing boundaries', () => {
+  it('lengths at the edges', () => {
+    expect(clipLengthFor(4.0)).toBe(4);
+    expect(clipLengthFor(4.0000000001)).toBe(4);
+    expect(clipLengthFor(4.001)).toBe(6);
+    expect(clipLengthFor(10.0)).toBe(10);
+    expect(clipLengthFor(10.001)).toBe(10);
+  });
+  it('odd spans count 3 s', () => {
+    expect(slideSeconds(sc(5, 2))).toBe(3);
+    expect(slideSeconds(sc(2, 0))).toBe(3);
+    expect(slideSeconds(sc(2, 2))).toBe(3);
+  });
+  it('useRange rounds to 3 decimals', () => {
+    expect(useRange(3.0004, 4)).toEqual([0, 3]);
+    expect(useRange(3.0006, 4)).toEqual([0, 3.001]);
+  });
+});

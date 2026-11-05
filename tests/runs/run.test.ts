@@ -312,3 +312,16 @@ describe('which pictures have the hero (Queue "hero ✓")', () => {
     expect(s.sceneStates['scene-02']!.withHero).toBe(false);
   });
 });
+
+describe('choice source in the run', () => {
+  it('new pictures clear the choice and its source', () => {
+    const st: SceneState = { sceneId: 'scene-01', status: 'submitted', pictureIds: ['x'], chosenPictureId: 'x', choiceSource: 'auto', autoReason: 'r', autoChecked: true };
+    const s0 = { ...initRun(project(1, { 'scene-01': st })), inFlight: ['scene-01'] };
+    const s = reduceRun(s0, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['a', 'b'] });
+    const out = s.sceneStates['scene-01']!;
+    expect(out.chosenPictureId).toBeUndefined();
+    expect(out.choiceSource).toBeUndefined();
+    expect(out.autoReason).toBeUndefined();
+    expect(out.autoChecked).toBeUndefined();
+  });
+});

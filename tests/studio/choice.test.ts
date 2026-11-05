@@ -125,4 +125,8 @@ describe('choice source', () => {
     expect(choiceSourceOf(done({ chosenPictureId: 'p/b', choiceSource: 'auto' }))).toBe('auto');
     expect(choiceSourceOf(done())).toBeUndefined();
   });
+  it('a dangling choice is not owner', async () => {
+    const { choiceSourceOf } = await import('../../src/studio/chosen');
+    expect(choiceSourceOf(done({ chosenPictureId: 'p/gone' }))).toBeUndefined();
+  });
 });

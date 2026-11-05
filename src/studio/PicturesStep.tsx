@@ -46,7 +46,7 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
   const states = useMemo(() => {
     const out = { ...saved };
     for (const [sceneId, pictureId] of Object.entries(swaps)) {
-      if (out[sceneId]) out[sceneId] = { ...out[sceneId], chosenPictureId: pictureId };
+      if (out[sceneId]) out[sceneId] = { ...out[sceneId], chosenPictureId: pictureId, choiceSource: 'owner' };
     }
     return out;
   }, [saved, swaps]);
