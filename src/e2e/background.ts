@@ -3,13 +3,16 @@
 import { createProject, getMediaStore, getProject, saveProject, type AspectRatio } from '../store/projects';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { parseSceneFile } from '../scenes/parse';
-import { getRunState, startRun } from '../runs/coordinator';
+import { getRunState, resumeRun, startRun, stopRun } from '../runs/coordinator';
 import { runSummary } from '../runs/run';
 
 export const E2E_MARKER = 'vidflow-e2e';
 export const E2E_START = 'e2e/start';
 export const E2E_STATUS = 'e2e/status';
 export const E2E_PICTURE = 'e2e/picture';
+export const E2E_RESUME = 'e2e/resume';
+export const E2E_STOP = 'e2e/stop';
+export const E2E_RELOAD = 'e2e/reload';
 
 export interface E2eStart {
   type: typeof E2E_START;
@@ -27,10 +30,10 @@ export interface E2ePicture {
   type: typeof E2E_PICTURE;
   mediaId: string;
 }
-export type E2eRequest = E2eStart | E2eStatus | E2ePicture;
+export type E2eRequest = E2eStart | E2eStatus | E2ePicture | { type: typeof E2E_RESUME | typeof E2E_STOP | typeof E2E_RELOAD };
 export type E2eReply = { ok: true; data: unknown } | { ok: false; error: string };
 
-const E2E_TYPES = new Set<string>([E2E_START, E2E_STATUS, E2E_PICTURE]);
+const E2E_TYPES = new Set<string>([E2E_START, E2E_STATUS, E2E_PICTURE, E2E_RESUME, E2E_STOP, E2E_RELOAD]);
 const FLOW_HOSTS = new Set(['flow.google.com', 'labs.google']);
 
 /** Only a content script of this extension, running in a Flow tab, may use the hook. */
@@ -100,6 +103,16 @@ export async function handleE2e(message: E2eRequest): Promise<E2eReply> {
         return { ok: true, data: await status(message) };
       case E2E_PICTURE:
         return { ok: true, data: await picture(message) };
+      case E2E_RESUME:
+        await resumeRun();
+        return { ok: true, data: null };
+      case E2E_STOP:
+        await stopRun();
+        return { ok: true, data: null };
+      case E2E_RELOAD:
+        // Reload after answering, so the tester gets a reply; picks up a fresh build of .output/chrome-mv3.
+        setTimeout(() => chrome.runtime.reload(), 200);
+        return { ok: true, data: null };
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

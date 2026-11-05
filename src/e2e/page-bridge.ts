@@ -3,7 +3,14 @@
 export const E2E_PAGE_TYPE = 'vidflow-e2e';
 export const E2E_RESULT_TYPE = 'vidflow-e2e-result';
 
-const ACTIONS: Record<string, string> = { start: 'e2e/start', status: 'e2e/status', picture: 'e2e/picture' };
+const ACTIONS: Record<string, string> = {
+  start: 'e2e/start',
+  status: 'e2e/status',
+  picture: 'e2e/picture',
+  resume: 'e2e/resume',
+  stop: 'e2e/stop',
+  reload: 'e2e/reload',
+};
 
 export function installPageBridge(
   win: Window,
