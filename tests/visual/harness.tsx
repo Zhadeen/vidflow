@@ -7,7 +7,7 @@ import type { RunReply } from '../../src/flow/messages';
 import { initRun, reduceRun, type RunState } from '../../src/runs/run';
 import type { Scene } from '../../src/scenes/types';
 import type { MediaStore } from '../../src/store/media';
-import type { Project } from '../../src/store/projects';
+import { setMediaStore, type Project } from '../../src/store/projects';
 import { ProjectScreen } from '../../src/studio/ProjectScreen';
 import { ProjectsHome } from '../../src/studio/ProjectsHome';
 import type { RunClient } from '../../src/studio/runClient';
@@ -42,7 +42,7 @@ const project: Project = {
   script: SENTENCES.join(' '),
   scenes,
   style: 'stickman-whiteboard',
-  character: { description: 'A tall stick figure with messy hair.', hasReferenceImage: false },
+  character: { description: 'A tall stick figure with messy hair.' },
   aspect: '16:9',
   outputsPerPrompt: 2,
   sceneStates: {},
@@ -85,6 +85,7 @@ const images: Record<string, Promise<Blob>> = {};
 const media: MediaStore = {
   put: async () => '',
   get: (mediaId) => (images[mediaId] ??= fetch(`./${mediaId}.jpg`).then((r) => r.blob())),
+  remove: async () => undefined,
   removeProject: async () => undefined,
 };
 
@@ -116,6 +117,19 @@ function view() {
       );
     case 'script':
       return <ProjectScreen project={project} run={null} client={client} media={media} initialStep="script" onChange={noop} onHome={noop} />;
+    case 'script-hero':
+      setMediaStore(media);
+      return (
+        <ProjectScreen
+          project={{ ...project, character: { description: 'A tall stick figure with messy hair.', referenceMediaId: 'stick1' } }}
+          run={null}
+          client={client}
+          media={media}
+          initialStep="script"
+          onChange={noop}
+          onHome={noop}
+        />
+      );
     case 'idle':
       return <ProjectScreen project={project} run={null} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
     case 'paused': {

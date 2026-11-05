@@ -7,7 +7,7 @@ const scene: Scene = {
   id: 'scene-01', slide: 1, start: 0, end: 4, sentence: 's', concept: 'c', textOverlay: '',
   imagePrompt: 'A stickman stares at a pile of bills', motionPrompt: 'm', motionPromptIsDefault: false,
 };
-const hero = { description: 'tall stickman with a red scarf', hasReferenceImage: false };
+const hero = { description: 'tall stickman with a red scarf' };
 
 describe('buildImagePrompt', () => {
   it('orders style, character, scene, enforcement', () => {
@@ -23,15 +23,15 @@ describe('buildImagePrompt', () => {
     expect(buildImagePrompt(scene, STYLE_PRESETS['stickman-whiteboard'], null)).not.toMatch(/HERO/);
   });
 
-  it('mentions the Ingredient reference only when one is attached', () => {
+  it('the prompt asks Flow to match the reference only when one is set', () => {
     const s = STYLE_PRESETS['stickman-colour'];
-    expect(buildImagePrompt(scene, s, { ...hero, hasReferenceImage: true })).toMatch(/reference picture.*Ingredient/i);
+    expect(buildImagePrompt(scene, s, { ...hero, referenceMediaId: 'p1/hero-reference' })).toMatch(/reference picture.*Ingredient/i);
     expect(buildImagePrompt(scene, s, hero)).not.toMatch(/Ingredient/);
   });
 
   it('removes words that fight the style', () => {
     for (const style of Object.values(STYLE_PRESETS)) {
-      const out = buildImagePrompt(scene, style, { description: 'natural photorealistic facial features', hasReferenceImage: false });
+      const out = buildImagePrompt(scene, style, { description: 'natural photorealistic facial features' });
       expect(out).not.toMatch(/photorealistic|realistic skin|3D/i);
       expect(out).toMatch(/natural facial features/);
     }
@@ -69,14 +69,14 @@ describe('forbidden word stripping', () => {
   ];
   it.each(cases)('cleans %s', (description) => {
     for (const style of Object.values(STYLE_PRESETS)) {
-      const out = buildImagePrompt(scene, style, { description, hasReferenceImage: false });
+      const out = buildImagePrompt(scene, style, { description });
       const hero = out.split('\n\n').find((b) => b.startsWith('HERO')) ?? '';
       expect(hero).not.toMatch(/realis|render|3D|CGI|photo|hyper/i);
       expect(hero).not.toMatch(/\.\.|-\s|\s-|,\s*,|\s,/);
     }
   });
   it('drops the description sentence when nothing is left', () => {
-    const out = buildImagePrompt(scene, STYLE_PRESETS['stickman-colour'], { description: 'photorealistic 3D', hasReferenceImage: false });
+    const out = buildImagePrompt(scene, STYLE_PRESETS['stickman-colour'], { description: 'photorealistic 3D' });
     expect(out).not.toMatch(/:\s*\./);
   });
 });

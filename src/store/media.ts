@@ -1,6 +1,8 @@
 export interface MediaStore {
   put(projectId: string, name: string, data: Blob): Promise<string>; // returns mediaId
   get(mediaId: string): Promise<Blob | undefined>;
+  /** Deletes one stored file; a missing file is not an error. */
+  remove(mediaId: string): Promise<void>;
   removeProject(projectId: string): Promise<void>;
 }
 
@@ -22,6 +24,9 @@ export function memoryMediaStore(): MediaStore {
     },
     async get(id) {
       return files.get(id);
+    },
+    async remove(id) {
+      files.delete(id);
     },
     async removeProject(projectId) {
       for (const id of [...files.keys()]) if (id.startsWith(`${projectId}/`)) files.delete(id);
@@ -53,6 +58,16 @@ export function opfsMediaStore(): MediaStore {
       } catch (e) {
         if (e instanceof DOMException && e.name === 'NotFoundError') return undefined;
         throw e;
+      }
+    },
+    async remove(id) {
+      const slash = id.indexOf('/');
+      if (slash < 0) return;
+      try {
+        const dir = await (await projectsDir()).getDirectoryHandle(id.slice(0, slash));
+        await dir.removeEntry(id.slice(slash + 1));
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'NotFoundError')) throw e;
       }
     },
     async removeProject(projectId) {

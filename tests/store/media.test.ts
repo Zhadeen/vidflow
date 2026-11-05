@@ -27,3 +27,15 @@ describe('memoryMediaStore', () => {
     expect(await store.get('nope/none')).toBeUndefined();
   });
 });
+
+describe('MediaStore.remove', () => {
+  it('remove deletes one file and leaves the project\'s others', async () => {
+    const store = memoryMediaStore();
+    const a = await store.put('p', 'hero-reference', new Blob(['1']));
+    const b = await store.put('p', 'scene-01-option-1', new Blob(['2']));
+    await store.remove(a);
+    await store.remove(a);
+    expect(await store.get(a)).toBeUndefined();
+    expect(await store.get(b)).toBeDefined();
+  });
+});

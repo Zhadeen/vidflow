@@ -233,10 +233,21 @@ export function PanelSetup({ project, run, busy, error, onChange, onStart, onRev
             value={project.character?.description ?? ''}
             placeholder="a short stickman with a red cap…"
             onChange={(e) =>
-              onChange({ character: e.target.value.trim() ? { description: e.target.value, hasReferenceImage: false } : null })
+              onChange({
+                character:
+                  e.target.value.trim() || project.character?.referenceMediaId
+                    ? {
+                        description: e.target.value,
+                        ...(project.character?.referenceMediaId && { referenceMediaId: project.character.referenceMediaId }),
+                      }
+                    : null,
+              })
             }
           />
         </label>
+        <p className="vf-pn-sub">
+          {project.character?.referenceMediaId ? 'Reference picture ✓' : 'Add one in the full studio'}
+        </p>
       </div>
 
       <p className="vf-pn-summary">

@@ -4,6 +4,7 @@ import { buildClaudePrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
+import { HeroReference } from './HeroReference';
 import { useScriptDraft } from './useScriptDraft';
 
 export type ProjectPatch = Partial<Pick<Project, 'script' | 'scenes' | 'style' | 'customStyle' | 'character' | 'aspect' | 'outputsPerPrompt'>>;
@@ -71,7 +72,12 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
 
   const character = project.character;
   const setHero = (description: string) =>
-    onChange({ character: description.trim() ? { description, hasReferenceImage: false } satisfies CharacterSpec : null });
+    onChange({
+      character:
+        description.trim() || character?.referenceMediaId
+          ? ({ description, ...(character?.referenceMediaId && { referenceMediaId: character.referenceMediaId }) } satisfies CharacterSpec)
+          : null,
+    });
 
   const sceneCount = project.scenes.length;
   const listed = pending ?? project.scenes;
@@ -267,6 +273,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
             <p className="vf-hint" style={{ margin: 'var(--vf-space-2) 0 0' }}>
               Kept the same in every scene.
             </p>
+            <HeroReference project={project} disabled={locked} onChange={(p) => onChange({ character: p.character })} />
           </div>
 
           <Segmented

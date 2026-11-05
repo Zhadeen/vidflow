@@ -51,6 +51,7 @@ const media: MediaStore = {
     blobNames.set(blob, id);
     return blob;
   },
+  remove: async () => undefined,
   removeProject: async () => undefined,
 };
 

@@ -88,6 +88,19 @@ describe('side panel: before starting', () => {
     await waitFor(async () => expect((await getProject(p.id))!.scenes).toHaveLength(6));
   });
 
+  it('shows whether the hero has a reference picture, and keeps it while the description changes', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 6);
+    p.character = { description: 'a cap', referenceMediaId: `${p.id}/hero-reference` };
+    await saveProject(p);
+    render(<Panel client={fakeBackground(null).client()} />);
+    expect(await screen.findByText('Reference picture ✓')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Hero' }), { target: { value: 'a red cap' } });
+    await waitFor(async () =>
+      expect((await getProject(p.id))!.character).toEqual({ description: 'a red cap', referenceMediaId: `${p.id}/hero-reference` }),
+    );
+  });
+
   it('aspect, per-scene, style and hero choices save to the project', async () => {
     stubChrome();
     const p = await seed('Phone Bill Story', 6);
@@ -105,7 +118,7 @@ describe('side panel: before starting', () => {
       expect(saved.aspect).toBe('9:16');
       expect(saved.outputsPerPrompt).toBe(4);
       expect(saved.style).toBe('stickman-colour');
-      expect(saved.character).toEqual({ description: 'a short stickman with a red cap', hasReferenceImage: false });
+      expect(saved.character).toEqual({ description: 'a short stickman with a red cap' });
     });
     expect((screen.getByRole('radio', { name: '9:16' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText(/24 pictures · 0 Flow credits/)).toBeTruthy();

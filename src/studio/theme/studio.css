@@ -1074,3 +1074,15 @@ textarea.vf-input {
   color: var(--vf-muted);
   font-variant-numeric: tabular-nums;
 }
+
+.vf-hero-ref {
+  margin-top: var(--vf-space-3);
+}
+
+.vf-hero-ref-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--vf-radius-sm);
+  border: 1px solid var(--vf-navy-line);
+}

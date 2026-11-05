@@ -3,7 +3,8 @@ import type { StylePreset } from './styles';
 
 export interface CharacterSpec {
   description: string;
-  hasReferenceImage: boolean;
+  /** The owner's reference picture in the media store (`hero-reference`); stored projects without it have none. */
+  referenceMediaId?: string;
 }
 
 function escapeRe(s: string): string {
@@ -35,7 +36,7 @@ function characterBlock(character: CharacterSpec, style: StylePreset): string {
   const hint = style.characterHint ? `, ${style.characterHint}` : '';
   let block = `HERO character (keep identical in every scene${hint})`;
   block += desc ? `: ${desc}.` : '.';
-  if (character.hasReferenceImage) block += ' Match the reference picture attached in the Ingredient slot exactly.';
+  if (character.referenceMediaId) block += ' Match the reference picture attached in the Ingredient slot exactly.';
   return block;
 }
 
