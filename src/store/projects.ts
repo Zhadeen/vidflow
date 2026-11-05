@@ -24,6 +24,8 @@ export interface Project {
   name: string;
   createdAt: number;
   updatedAt: number;
+  /** The owner's script as pasted in the Script step (goes into the Claude prompt). */
+  script?: string;
   scenes: Scene[];
   style: StyleId;
   customStyle?: string;
