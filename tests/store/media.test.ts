@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { memoryMediaStore } from '../../src/store/media';
 
 describe('memoryMediaStore', () => {
@@ -25,5 +25,35 @@ describe('memoryMediaStore', () => {
     expect(await store.get(a)).toBeUndefined();
     expect(await store.get(b)).toBeDefined();
     expect(await store.get('nope/none')).toBeUndefined();
+  });
+});
+
+describe('MediaStore.remove', () => {
+  it('remove deletes one file and leaves the project\'s others', async () => {
+    const store = memoryMediaStore();
+    const a = await store.put('p', 'hero-reference', new Blob(['1']));
+    const b = await store.put('p', 'scene-01-option-1', new Blob(['2']));
+    await store.remove(a);
+    await store.remove(a);
+    expect(await store.get(a)).toBeUndefined();
+    expect(await store.get(b)).toBeDefined();
+  });
+});
+
+describe('opfsMediaStore.remove', () => {
+  it('ignores a file or project that is already gone, and rethrows other errors', async () => {
+    const { opfsMediaStore } = await import('../../src/store/media');
+    const notFound = () => new DOMException('gone', 'NotFoundError');
+    let err: () => Error = notFound;
+    const removed: string[] = [];
+    const dir = { removeEntry: async (n: string) => (removed.push(n), Promise.reject(err())) };
+    const projects = { getDirectoryHandle: async () => dir };
+    const root = { getDirectoryHandle: async () => projects };
+    vi.stubGlobal('navigator', { storage: { getDirectory: async () => root } });
+    const store = opfsMediaStore();
+    await expect(store.remove('p/hero-reference')).resolves.toBeUndefined();
+    expect(removed).toEqual(['hero-reference']);
+    err = () => new DOMException('no', 'SecurityError');
+    await expect(store.remove('p/hero-reference')).rejects.toThrow();
   });
 });

@@ -15,6 +15,15 @@ export const FLOW_TILE_POINT = 'flow/tile-point';
 export const FLOW_DETAIL = 'flow/detail';
 export const FLOW_PILL = 'flow/pill';
 export const FLOW_PILL_TOGGLE = 'flow/pill-toggle';
+export const FLOW_UPLOAD_REFERENCE = 'flow/upload-reference';
+
+/** Said whenever VidFlow can't upload or attach the hero reference: a prompt that names it is never sent without it. */
+export const REFERENCE_ATTACH_MESSAGE =
+  "VidFlow couldn't attach the hero reference in Flow. Check the Flow window, then press Resume.";
+
+/** Said when a picture is left in Flow's prompt bar for a prompt that doesn't use one, and VidFlow can't take it out. */
+export const STRAY_INGREDIENT_MESSAGE =
+  "Flow's prompt bar has a picture in it that VidFlow couldn't take out. Remove it in the Flow window, then press Resume.";
 
 export interface Point {
   x: number;
@@ -26,6 +35,11 @@ export interface SubmitOptions {
   outputs?: 1 | 2 | 4;
   /** The button named in owner-facing messages. */
   verb?: StartVerb;
+  /**
+   * The hero reference already uploaded to this Flow project, by its asset name: attached before typing, and the
+   * prompt is only answered ready while its Ingredient chip shows. Absent for prompts that don't use a reference.
+   */
+  reference?: { name: string };
 }
 
 /** background → Flow tab: set up and type the prompt; answer with where Generate is. */
@@ -71,7 +85,47 @@ export interface DetailResponse {
   mediaId: string | null;
 }
 
-export type ToFlowTab = PrepareRequest | NewProjectRequest | ConfirmRequest | TilesNowRequest | TilePointRequest | DetailRequest;
+/**
+ * background → VidFlow's own Flow tab, once per run in its fresh Flow project: upload the hero reference through the
+ * ingredients picker. The picture lives in the extension's media store, which the page can't read, so its bytes travel
+ * as base64 (a 10 MB picture is ~13.4 MB, well inside runtime messaging's 64 MB limit).
+ */
+export interface UploadReferenceRequest {
+  type: typeof FLOW_UPLOAD_REFERENCE;
+  name: string;
+  mimeType: string;
+  data: string;
+}
+/** mediaId: the uploaded picture's own grid tile (never a scene's picture), or null when it didn't show in time. */
+export type UploadReferenceResponse =
+  | { kind: 'done'; mediaId: string | null }
+  | { kind: 'blocked'; event: BlockingEvent }
+  | { kind: 'error'; message: string };
+
+const CHUNK = 0x8000;
+
+/** Bytes → base64, a chunk at a time (spreading 10 MB into one String.fromCharCode call overflows the stack). */
+export function encodeBytes(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(binary);
+}
+
+export function decodeBytes(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+export type ToFlowTab =
+  | PrepareRequest
+  | NewProjectRequest
+  | ConfirmRequest
+  | TilesNowRequest
+  | TilePointRequest
+  | DetailRequest
+  | UploadReferenceRequest;
 
 export type BlockingEvent = Extract<RunEvent, { type: 'needsOwner' } | { type: 'limit' }>;
 
@@ -142,6 +196,10 @@ export const RUN_RETRY = 'run/retry';
 export const RUN_STOP = 'run/stop';
 /** The project's scenes were replaced: the background forgets a finished run for it. */
 export const RUN_FORGET = 'run/forget';
+/** The owner chose one of a scene's pictures; taken by a live run and the stored project alike. */
+export const RUN_CHOOSE = 'run/choose';
+/** Make the hero's model sheet in Flow (its own one-prompt run); Try again on a refused sheet sends this too. */
+export const RUN_HERO_SHEET = 'run/hero-sheet';
 export const RUN_STATE = 'run/state';
 
 /** studio → background. Each is answered with a RunReply. */
@@ -152,7 +210,9 @@ export type StudioRequest =
   | { type: typeof RUN_RESUME }
   | { type: typeof RUN_STOP }
   | { type: typeof RUN_FORGET; projectId: string }
-  | { type: typeof RUN_RETRY; projectId: string; sceneId: string };
+  | { type: typeof RUN_RETRY; projectId: string; sceneId: string }
+  | { type: typeof RUN_CHOOSE; projectId: string; sceneId: string; pictureId: string }
+  | { type: typeof RUN_HERO_SHEET; projectId: string };
 
 /** The run as it is now, or why the request was refused (message is shown to the owner word for word). */
 export type RunReply =

@@ -10,6 +10,7 @@ const ACTIONS: Record<string, string> = {
   resume: 'e2e/resume',
   stop: 'e2e/stop',
   reload: 'e2e/reload',
+  choose: 'e2e/choose',
 };
 
 export function installPageBridge(

@@ -3,7 +3,7 @@
 import { createProject, getMediaStore, getProject, saveProject, type AspectRatio } from '../store/projects';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { parseSceneFile } from '../scenes/parse';
-import { getLastSendError, getRunState, resumeRun, startRun, stopRun } from '../runs/coordinator';
+import { chooseScenePicture, getLastSendError, getRunState, resumeRun, startHeroSheetRun, startRun, stopRun } from '../runs/coordinator';
 import { runSummary } from '../runs/run';
 
 export const E2E_MARKER = 'vidflow-e2e';
@@ -13,6 +13,7 @@ export const E2E_PICTURE = 'e2e/picture';
 export const E2E_RESUME = 'e2e/resume';
 export const E2E_STOP = 'e2e/stop';
 export const E2E_RELOAD = 'e2e/reload';
+export const E2E_CHOOSE = 'e2e/choose';
 
 export interface E2eStart {
   type: typeof E2E_START;
@@ -21,6 +22,17 @@ export interface E2eStart {
   style?: StyleId;
   aspect?: AspectRatio;
   outputsPerPrompt?: 1 | 2 | 4;
+  /** Hero description; with heroReferenceDataUrl, a reference picture stored as hero-reference. */
+  heroDescription?: string;
+  heroReferenceDataUrl?: string;
+  /** Make the hero model sheet instead of the scenes. */
+  heroSheet?: boolean;
+}
+export interface E2eChoose {
+  type: typeof E2E_CHOOSE;
+  projectId: string;
+  sceneId: string;
+  pictureId: string;
 }
 export interface E2eStatus {
   type: typeof E2E_STATUS;
@@ -30,10 +42,10 @@ export interface E2ePicture {
   type: typeof E2E_PICTURE;
   mediaId: string;
 }
-export type E2eRequest = E2eStart | E2eStatus | E2ePicture | { type: typeof E2E_RESUME | typeof E2E_STOP | typeof E2E_RELOAD };
+export type E2eRequest = E2eStart | E2eStatus | E2ePicture | E2eChoose | { type: typeof E2E_RESUME | typeof E2E_STOP | typeof E2E_RELOAD };
 export type E2eReply = { ok: true; data: unknown } | { ok: false; error: string };
 
-const E2E_TYPES = new Set<string>([E2E_START, E2E_STATUS, E2E_PICTURE, E2E_RESUME, E2E_STOP, E2E_RELOAD]);
+const E2E_TYPES = new Set<string>([E2E_CHOOSE, E2E_START, E2E_STATUS, E2E_PICTURE, E2E_RESUME, E2E_STOP, E2E_RELOAD]);
 const FLOW_HOSTS = new Set(['flow.google.com', 'labs.google']);
 
 /** Only a content script of this extension, running in a Flow tab, may use the hook. */
@@ -57,6 +69,10 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
 async function start(m: E2eStart) {
   if (typeof m.name !== 'string' || !m.name.trim() || typeof m.csv !== 'string') throw new Error('start needs a name and a csv string.');
   if (m.style !== undefined && m.style !== 'custom' && !(m.style in STYLE_PRESETS)) throw new Error(`Unknown style "${m.style}".`);
+  // Only an inline picture: fetch() would otherwise read any URL the caller names.
+  if (m.heroReferenceDataUrl !== undefined && (typeof m.heroReferenceDataUrl !== 'string' || !m.heroReferenceDataUrl.startsWith('data:image/'))) {
+    throw new Error('heroReferenceDataUrl must be a data:image/ URL.');
+  }
   const { scenes, issues } = parseSceneFile(m.csv);
   if (scenes.length === 0) throw new Error(`No scenes found. Issues: ${JSON.stringify(issues)}`);
   const project = await createProject(m.name);
@@ -64,8 +80,17 @@ async function start(m: E2eStart) {
   if (m.style) project.style = m.style;
   if (m.aspect) project.aspect = m.aspect;
   if (m.outputsPerPrompt) project.outputsPerPrompt = m.outputsPerPrompt;
+  if (m.heroDescription) {
+    let referenceMediaId: string | undefined;
+    if (m.heroReferenceDataUrl) {
+      const blob = await (await fetch(m.heroReferenceDataUrl)).blob();
+      referenceMediaId = await getMediaStore().put(project.id, 'hero-reference', blob);
+    }
+    project.character = { description: m.heroDescription, ...(referenceMediaId ? { referenceMediaId } : {}) };
+  }
   await saveProject(project);
-  await startRun(project.id); // the same path the studio's Start button uses
+  if (m.heroSheet) await startHeroSheetRun(project.id);
+  else await startRun(project.id); // the same path the studio's Start button uses
   return { projectId: project.id, sceneCount: scenes.length, issues };
 }
 
@@ -87,7 +112,7 @@ async function status(m: E2eStatus) {
   const flowWindow = (await chrome.storage.local.get('vidflow.flowWindow'))['vidflow.flowWindow'] as { windowId: number; tabId: number } | undefined;
   const flowTab = flowWindow ? await chrome.tabs.get(flowWindow.tabId).catch(() => null) : null;
   const tab = flowTab && { id: flowTab.id, windowId: flowTab.windowId, url: flowTab.url, active: flowTab.active, status: flowTab.status };
-  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, lastSendError: await getLastSendError(), flowWindow, flowTab: tab };
+  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, heroSheet: project?.heroSheet ?? null, character: project?.character ?? null, lastSendError: await getLastSendError(), flowWindow, flowTab: tab };
 }
 
 async function picture(m: E2ePicture) {
@@ -106,6 +131,9 @@ export async function handleE2e(message: E2eRequest): Promise<E2eReply> {
         return { ok: true, data: await status(message) };
       case E2E_PICTURE:
         return { ok: true, data: await picture(message) };
+      case E2E_CHOOSE:
+        await chooseScenePicture(message.projectId, message.sceneId, message.pictureId);
+        return { ok: true, data: null };
       case E2E_RESUME:
         await resumeRun();
         return { ok: true, data: null };

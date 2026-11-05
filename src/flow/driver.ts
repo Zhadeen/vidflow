@@ -1,4 +1,5 @@
 import type { AspectRatio } from '../store/projects';
+import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, STRAY_INGREDIENT_MESSAGE } from './messages';
 import {
   ASPECT_ICON,
   LIMIT_PATTERN,
@@ -45,9 +46,26 @@ export interface FlowDriver {
   setImageMode(): Promise<void>;
   setAspect(a: AspectRatio): Promise<void>;
   setOutputs(n: 1 | 2 | 4): Promise<void>;
-  attachReference(image: Blob): Promise<void>;
-  /** Types the prompt, waits until Flow enables Generate (never enables it itself), returns its centre in viewport px. */
-  prepareSubmit(prompt: string): Promise<{ x: number; y: number }>;
+  /**
+   * Uploads the hero reference into this Flow project's assets through the ingredients picker (spike S7), unless an
+   * asset with the file's name is already there, and waits until Flow has finished uploading it. Returns the media id
+   * of the grid tile the upload makes, or null when that tile didn't show in time. FlowBlockedError when it can't.
+   */
+  uploadReference(file: File): Promise<string | null>;
+  /**
+   * Attaches the uploaded asset with this name to the prompt (Flow's Generate clears it, so once per prompt).
+   * Afterwards the prompt bar shows exactly one ingredient, the reference. FlowBlockedError when it can't.
+   */
+  attachReference(name: string): Promise<void>;
+  /** True while the prompt bar shows exactly one ingredient. */
+  hasReference(): boolean;
+  /** Turns Flow's sticky Agent mode off (it would take the prompt instead of making pictures); never turns it on. */
+  turnOffAgentMode(): Promise<void>;
+  /**
+   * Types the prompt, waits until Flow enables Generate (never enables it itself), returns its centre in viewport px.
+   * With `reference`, throws FlowBlockedError instead of answering when the reference's chip isn't in the bar.
+   */
+  prepareSubmit(prompt: string, opts?: { reference?: boolean }): Promise<{ x: number; y: number }>;
   resultCards(): FlowResultCard[];
   snapshot(): FlowSnapshot;
   /** True once Flow cleared the prompt box or showed a new in-progress tile; false after timeoutMs. */
@@ -110,6 +128,15 @@ export interface DriverOptions {
 
 const SETTINGS_TIMEOUT_MS = 5_000;
 const GENERATE_TIMEOUT_MS = 30_000;
+const PICKER_TIMEOUT_MS = 5_000;
+/** Spike S7: an upload read "Uploading" for 5–10 s. */
+const UPLOAD_TIMEOUT_MS = 30_000;
+const REFERENCE_TILE_TIMEOUT_MS = 10_000;
+const ASSETS_LOAD_WAIT_MS = 1_500;
+const CLOSE_WAIT_MS = 1_000;
+const AGENT_OFF_TRIES = 3;
+const AGENT_MODE_MESSAGE =
+  "Flow's Agent mode is on and VidFlow couldn't turn it off. Turn it off in the Flow window, then press Resume.";
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
@@ -269,6 +296,142 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     };
   }
 
+  // ---- Hero reference (spike S7) ---------------------------------------------
+  const blocked = (message = REFERENCE_ATTACH_MESSAGE) =>
+    new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message });
+
+  /** Like until(), but a timeout pauses the run with `message` instead of failing the scene. */
+  async function untilOrBlocked<T>(probe: () => T | null | false | undefined, timeoutMs: number, message?: string): Promise<T> {
+    try {
+      return await until(probe, timeoutMs, 'timed out');
+    } catch {
+      throw blocked(message);
+    }
+  }
+
+  const overlayRoot = (): ParentNode => q(SEL.overlay) ?? doc;
+  const overlayButton = (text: string) =>
+    [...overlayRoot().querySelectorAll<HTMLButtonElement>('button')].find(
+      (b) => squash(b.textContent).includes(text) && !b.disabled && b.getAttribute('aria-disabled') !== 'true',
+    ) ?? null;
+  /** The asset with this name in the open picker (text "<name> Image", or "Uploading <name>" while uploading). */
+  // Read as separate text parts: textContent glues "Uploading" onto the name.
+  const optionParts = (option: Element) => textNodes(option, true);
+  const findAsset = (name: string) =>
+    [...(q(SEL.assetList)?.querySelectorAll<HTMLElement>(SEL.assetOption) ?? [])].find((o) =>
+      optionParts(o).some((t) => t.includes(name)),
+    ) ?? null;
+  const isUploading = (option: Element) => optionParts(option).some((t) => /^Uploading\b/i.test(t));
+  const readyAsset = (name: string) => {
+    const option = findAsset(name);
+    return option && !isUploading(option) ? option : null;
+  };
+  const chips = () => doc.querySelectorAll(SEL.ingredientChip).length;
+
+  /** The open picker: its asset list, or (in a brand-new Flow project, which says "No assets found.") its Upload button. */
+  const pickerOpen = () => q(SEL.assetList) ?? overlayButton('Upload media');
+
+  async function openPicker(): Promise<void> {
+    if (pickerOpen()) return;
+    const trigger = q(SEL.ingredients);
+    if (!trigger) throw blocked();
+    trigger.click();
+    await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS);
+  }
+
+  /** The tile Flow adds to the grid for an uploaded picture carries its file name as caption. */
+  function referenceTileKey(name: string): string | null {
+    for (const tile of doc.querySelectorAll(SEL.tile)) {
+      const img = tile.querySelector<HTMLImageElement>(SEL.tileImage);
+      if (img?.dataset.mediaId && textNodes(tile, true).some((t) => t.includes(name))) return img.dataset.mediaId;
+    }
+    return null;
+  }
+
+  /** Closes the picker; carries on if it stays open. */
+  async function closePicker(): Promise<void> {
+    // Flow's overlay closes on an Escape that comes from inside it (live, 5 Nov 2026); one sent to the document does nothing.
+    const inside = pickerOpen();
+    if (!inside) return;
+    inside.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    await until(() => !pickerOpen(), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+  }
+
+
+  async function uploadReference(file: File): Promise<string | null> {
+    const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
+    await openPicker();
+    // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
+    await until(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS, 'empty').catch(() => undefined);
+    // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file window: a
+    // cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the page's own
+    // events, so this works from the content script's isolated world. The input it clicked is the one Flow listens to;
+    // another file input left in the page is never used. Flow may click again while the upload is under way, so the
+    // guard stays until the picker has closed (or the upload gave up).
+    let clicked: HTMLInputElement | null = null;
+    const noFileWindow = (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'file') return;
+      e.preventDefault();
+      clicked = e.target;
+    };
+    let guarded = false;
+    try {
+      if (!findAsset(file.name)) {
+        const upload = overlayButton('Upload media');
+        if (!upload) throw blocked();
+        const before = new Set(doc.querySelectorAll(SEL.fileInput));
+        doc.addEventListener('click', noFileWindow, true);
+        guarded = true;
+        upload.click();
+        const input = await untilOrBlocked(
+          () => clicked ?? [...doc.querySelectorAll<HTMLInputElement>(SEL.fileInput)].filter((i) => !before.has(i)).pop(),
+          pickerWait,
+        );
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      await untilOrBlocked(() => readyAsset(file.name), opts.timeoutMs ?? UPLOAD_TIMEOUT_MS);
+      await closePicker();
+    } finally {
+      if (guarded) doc.removeEventListener('click', noFileWindow, true);
+    }
+    try {
+      return await until(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS, 'no tile');
+    } catch {
+      return null; // the coordinator also recognises the tile by its file-name caption
+    }
+  }
+
+  async function attachReference(name: string): Promise<void> {
+    const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
+    if (chips() > 0) {
+      // A chip left from an earlier attempt: start from an empty bar so exactly one ingredient remains.
+      const clear = q(SEL.clearPrompt);
+      if (!clear) throw blocked();
+      clear.click();
+      await untilOrBlocked(() => chips() === 0, wait);
+    }
+    await openPicker();
+    const option = await untilOrBlocked(() => readyAsset(name), wait);
+    option.click();
+    const add = await untilOrBlocked(() => overlayButton('Add to prompt'), wait);
+    add.click();
+    await untilOrBlocked(() => chips() === 1, wait);
+  }
+
+  async function turnOffAgentMode(): Promise<void> {
+    const wait = opts.timeoutMs ?? SETTINGS_TIMEOUT_MS;
+    for (let i = 0; i < AGENT_OFF_TRIES; i++) {
+      const on = q(SEL.agentModeOn);
+      if (!on) return;
+      on.click();
+      await until(() => !q(SEL.agentModeOn), wait, 'still on').catch(() => undefined);
+    }
+    if (q(SEL.agentModeOn)) throw blocked(AGENT_MODE_MESSAGE);
+  }
+
   const centre = (el: Element) => {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
@@ -343,14 +506,22 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       return chooseSetting(`x${n}`, () => new RegExp(`\\bx${n}\\b`).test(triggerText()));
     },
 
-    async attachReference() {
-      // Deferred to Plan 2 (spike S5 did not explore Flow's ingredient upload). Nothing calls this yet.
-      throw new Error("Adding a reference picture isn't available yet.");
-    },
+    uploadReference,
+    attachReference,
+    hasReference: () => chips() === 1,
+    turnOffAgentMode,
 
-    async prepareSubmit(prompt) {
+    async prepareSubmit(prompt, submitOpts = {}) {
       const box = q(SEL.promptBox);
       if (!box) throw new Error("VidFlow can't find Flow's prompt box.");
+      // A prompt must never carry an Ingredient it doesn't mention: one left in the bar goes first (Clear prompt also
+      // empties the text, so this comes before typing). If it can't go, the run pauses.
+      if (!submitOpts.reference && chips() > 0) {
+        const clear = q(SEL.clearPrompt);
+        if (!clear) throw blocked(STRAY_INGREDIENT_MESSAGE);
+        clear.click();
+        await untilOrBlocked(() => chips() === 0, opts.timeoutMs ?? PICKER_TIMEOUT_MS, STRAY_INGREDIENT_MESSAGE);
+      }
       box.focus();
       // Spike S5: execCommand insertText is what Flow's editor accepts from the DOM.
       doc.execCommand('selectAll');
@@ -369,6 +540,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       );
       const at = centre(button);
       if (!at) throw new Error("Flow's Generate button isn't visible.");
+      // Never answer ready for a prompt that names the reference picture while its chip isn't there.
+      if (submitOpts.reference && chips() !== 1) throw blocked();
       return at;
     },
   };

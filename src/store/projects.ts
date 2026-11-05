@@ -22,6 +22,14 @@ export interface SceneState {
    */
   unconfirmed?: { keysBefore: string[]; prompt: string; at?: number };
 }
+/** The hero's model sheet (made in Flow): kept apart from the scenes, so it is never a scene in the grid or export. */
+export interface HeroSheet {
+  status: SceneStatus;
+  pictureIds: string[];
+  message?: string;
+  /** The shape the sheet was drawn in (absent in sheets saved before it was kept: use the project's). */
+  aspect?: AspectRatio;
+}
 export interface Project {
   id: string;
   name: string;
@@ -36,6 +44,8 @@ export interface Project {
   aspect: AspectRatio;
   outputsPerPrompt: 1 | 2 | 4;
   sceneStates: Record<string, SceneState>;
+  /** The latest model sheet of the hero; absent until one is made. */
+  heroSheet?: HeroSheet;
 }
 
 interface VidflowDB extends DBSchema {

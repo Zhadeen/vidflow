@@ -1,4 +1,4 @@
-import type { Project, SceneState } from '../store/projects';
+import type { AspectRatio, Project, SceneState } from '../store/projects';
 
 export type RunEvent =
   | { type: 'start' }
@@ -20,6 +20,8 @@ export type RunEvent =
   | { type: 'stop' }
   /** The owner pressed Try again on a refused or failed scene: it goes back in the queue. */
   | { type: 'retry'; sceneId: string }
+  /** The owner chose which of a scene's pictures it uses (ignored unless it is one of them). */
+  | { type: 'choose'; sceneId: string; pictureId: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
   | {
       type: 'needsOwner';
@@ -29,8 +31,25 @@ export type RunEvent =
 
 export const USER_PAUSE_REASON = 'Paused by you';
 
+/** Said when a picture choice names a picture the scene doesn't have (or a scene the project doesn't have). */
+export const NOT_THIS_SCENES_PICTURE =
+  "That picture isn't one of this scene's pictures any more. Pick one of the pictures shown.";
+
+/** The model sheet's pseudo-scene: the only "scene" of a hero-sheet run, never one of the project's scenes. */
+export const HERO_SHEET_ID = 'hero-sheet';
+
 export interface RunState {
   projectId: string;
+  /**
+   * 'hero-sheet': this run makes the hero's model sheet (one prompt, pseudo-scene HERO_SHEET_ID), saved on
+   * project.heroSheet rather than the scenes. Absent for a scene run.
+   */
+  kind?: 'hero-sheet';
+  /**
+   * A hero-sheet run's outputs and shape, fixed when it starts: Flow was asked for these, so matching counts them,
+   * whatever the project's settings say later.
+   */
+  sheet?: { outputs: Project['outputsPerPrompt']; aspect: AspectRatio };
   status: 'idle' | 'running' | 'paused' | 'finished';
   pauseReason?: string;
   resumeAt?: number | null;
@@ -42,6 +61,11 @@ export interface RunState {
   nextSeq?: number;
   /** Full prompts read from Flow cards' detail views, by card key (verification before saving). */
   detailPrompts?: Record<string, string>;
+  /**
+   * The hero reference uploaded into this run's Flow project (spike S7), by its asset name. The upload is a tile in
+   * Flow's grid too: its card keys (and any tile captioned with its name) are never matched to a scene.
+   */
+  reference?: { name: string; flowProjectUrl: string; cardKeys: string[] };
 }
 
 /** Every scene without a done/refused state starts (again) as pending. */
@@ -55,6 +79,26 @@ export function initRun(project: Project): RunState {
         : { sceneId: scene.id, status: 'pending', pictureIds: existing?.pictureIds ?? [] };
   }
   return { projectId: project.id, status: 'idle', inFlight: [], sceneStates };
+}
+
+/** A run that makes only the hero's model sheet, starting from scratch (a fresh Flow project, no pictures yet). */
+export function initHeroSheetRun(project: Project): RunState {
+  return {
+    projectId: project.id,
+    kind: 'hero-sheet',
+    sheet: { outputs: project.outputsPerPrompt, aspect: project.aspect },
+    status: 'idle',
+    inFlight: [],
+    sceneStates: { [HERO_SHEET_ID]: { sceneId: HERO_SHEET_ID, status: 'pending', pictureIds: [] } },
+  };
+}
+
+export const isHeroSheetRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'hero-sheet';
+
+/** Running, or paused with something still to make: no other run may start. */
+export function isLive(run: RunState | null | undefined): boolean {
+  if (!run) return false;
+  return run.status === 'running' || (run.status === 'paused' && hasUnfinished(run));
 }
 
 function hasUnfinished(state: RunState): boolean {
@@ -171,6 +215,11 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
         status: state.status === 'finished' ? 'running' : state.status,
         sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'pending' } },
       };
+    }
+    case 'choose': {
+      const current = state.sceneStates[event.sceneId];
+      if (!current || !current.pictureIds.includes(event.pictureId)) return state;
+      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, chosenPictureId: event.pictureId } } };
     }
     case 'limit':
       return { ...state, status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };

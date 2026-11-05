@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildImagePrompt } from '../../src/prompts/build';
+import { buildImagePrompt, buildModelSheetPrompt } from '../../src/prompts/build';
 import { STYLE_PRESETS, customStyle } from '../../src/prompts/styles';
 import type { Scene } from '../../src/scenes/types';
 
@@ -7,7 +7,7 @@ const scene: Scene = {
   id: 'scene-01', slide: 1, start: 0, end: 4, sentence: 's', concept: 'c', textOverlay: '',
   imagePrompt: 'A stickman stares at a pile of bills', motionPrompt: 'm', motionPromptIsDefault: false,
 };
-const hero = { description: 'tall stickman with a red scarf', hasReferenceImage: false };
+const hero = { description: 'tall stickman with a red scarf' };
 
 describe('buildImagePrompt', () => {
   it('orders style, character, scene, enforcement', () => {
@@ -23,15 +23,15 @@ describe('buildImagePrompt', () => {
     expect(buildImagePrompt(scene, STYLE_PRESETS['stickman-whiteboard'], null)).not.toMatch(/HERO/);
   });
 
-  it('mentions the Ingredient reference only when one is attached', () => {
+  it('the prompt asks Flow to match the reference only when one is set', () => {
     const s = STYLE_PRESETS['stickman-colour'];
-    expect(buildImagePrompt(scene, s, { ...hero, hasReferenceImage: true })).toMatch(/reference picture.*Ingredient/i);
+    expect(buildImagePrompt(scene, s, { ...hero, referenceMediaId: 'p1/hero-reference' })).toMatch(/reference picture.*Ingredient/i);
     expect(buildImagePrompt(scene, s, hero)).not.toMatch(/Ingredient/);
   });
 
   it('removes words that fight the style', () => {
     for (const style of Object.values(STYLE_PRESETS)) {
-      const out = buildImagePrompt(scene, style, { description: 'natural photorealistic facial features', hasReferenceImage: false });
+      const out = buildImagePrompt(scene, style, { description: 'natural photorealistic facial features' });
       expect(out).not.toMatch(/photorealistic|realistic skin|3D/i);
       expect(out).toMatch(/natural facial features/);
     }
@@ -69,14 +69,14 @@ describe('forbidden word stripping', () => {
   ];
   it.each(cases)('cleans %s', (description) => {
     for (const style of Object.values(STYLE_PRESETS)) {
-      const out = buildImagePrompt(scene, style, { description, hasReferenceImage: false });
+      const out = buildImagePrompt(scene, style, { description });
       const hero = out.split('\n\n').find((b) => b.startsWith('HERO')) ?? '';
       expect(hero).not.toMatch(/realis|render|3D|CGI|photo|hyper/i);
       expect(hero).not.toMatch(/\.\.|-\s|\s-|,\s*,|\s,/);
     }
   });
   it('drops the description sentence when nothing is left', () => {
-    const out = buildImagePrompt(scene, STYLE_PRESETS['stickman-colour'], { description: 'photorealistic 3D', hasReferenceImage: false });
+    const out = buildImagePrompt(scene, STYLE_PRESETS['stickman-colour'], { description: 'photorealistic 3D' });
     expect(out).not.toMatch(/:\s*\./);
   });
 });
@@ -86,5 +86,39 @@ describe('customStyle', () => {
     const s = customStyle('chalk on slate');
     expect(s).toMatchObject({ id: 'custom', prefix: 'chalk on slate', enforcement: '', forbiddenWords: [] });
     expect(buildImagePrompt(scene, s, null)).toBe('chalk on slate\n\nScene: A stickman stares at a pile of bills');
+  });
+});
+
+describe('buildModelSheetPrompt', () => {
+  it("the model sheet prompt keeps the style's forbidden words out", () => {
+    const description = 'photorealistic tall stickman, realistic 3D render of a red scarf, CGI hands';
+    for (const style of Object.values(STYLE_PRESETS)) {
+      const out = buildModelSheetPrompt({ description }, style);
+      expect(out).not.toMatch(/realis|render|3D|CGI|photo/i);
+      expect(out).toMatch(/tall stickman/);
+      expect(out).toMatch(/red scarf/);
+      // The same style rules as the scenes: the prefix first, the enforcement last.
+      expect(out.startsWith(style.prefix)).toBe(true);
+      expect(out.endsWith(style.enforcement)).toBe(true);
+      expect(out).toMatch(/front/i);
+      expect(out).toMatch(/side/i);
+      expect(out).toMatch(/back/i);
+      expect(out).toMatch(/3 (facial )?expressions|three (facial )?expressions/i);
+      expect(out).toMatch(/plain (white |empty )?background/i);
+    }
+  });
+
+  it('never asks for an attached reference (the sheet makes the reference)', () => {
+    const out = buildModelSheetPrompt(
+      { description: 'tall stickman', referenceMediaId: 'p1/hero-reference' },
+      STYLE_PRESETS['stickman-whiteboard'],
+    );
+    expect(out).not.toMatch(/Ingredient|reference picture/i);
+  });
+
+  it('works with a custom style, which has no forbidden words or enforcement', () => {
+    const out = buildModelSheetPrompt({ description: 'tall stickman' }, customStyle('chalk on slate'));
+    expect(out.startsWith('chalk on slate')).toBe(true);
+    expect(out).not.toMatch(/\n\n$/);
   });
 });

@@ -94,6 +94,25 @@ describe('renderPill', () => {
     expect(fill.style.background).toBe('rgb(244, 237, 224)');
   });
 
+  it('a model sheet run shows its step without the picture counts', () => {
+    const sheetRun: RunState = {
+      projectId: 'p',
+      kind: 'hero-sheet',
+      status: 'running',
+      inFlight: ['hero-sheet'],
+      sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'submitted', pictureIds: [] } },
+    };
+    const v = pillView(sheetRun, { text: 'Model sheet · Typing the prompt', scene: null })!;
+    expect(v.sheet).toBe(true);
+    const root = renderPill(document, v, vi.fn())!.shadowRoot!;
+    expect(text(root.querySelector('.step'))).toBe('Model sheet · Typing the prompt');
+    expect(root.querySelector<HTMLElement>('.counts')!.style.display).toBe('none');
+    expect(root.querySelector<HTMLElement>('.track')!.style.display).toBe('none');
+    // Between steps (or paused) it still names the sheet, never "Picture 1 of 1".
+    const between = renderPill(document, pillView({ ...sheetRun, status: 'paused' })!, vi.fn())!.shadowRoot!;
+    expect(text(between.querySelector('.step'))).toBe('Model sheet');
+  });
+
   it('shows a step that is not about one scene as it is', () => {
     const host = renderPill(document, view({ step: 'Set Flow to Image · 16:9 · 2 pictures' }), vi.fn())!;
     expect(text(host.shadowRoot!.querySelector('.step'))).toBe('Set Flow to Image · 16:9 · 2 pictures');

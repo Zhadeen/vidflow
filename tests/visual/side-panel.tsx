@@ -26,7 +26,7 @@ const screen = new URLSearchParams(location.search).get('screen') ?? 'setup';
 const id = (i: number) => `scene-${String(i).padStart(2, '0')}`;
 
 async function main() {
-  setMediaStore({ put: async () => '', get: async () => new Blob(), removeProject: async () => undefined });
+  setMediaStore({ put: async () => '', get: async () => new Blob(), remove: async () => undefined, removeProject: async () => undefined });
   for (const p of await listProjects()) await deleteProject(p.id);
   const older = await createProject('Why cats knock things over');
   await saveProject(older);
@@ -67,7 +67,7 @@ async function main() {
   };
 
   const reply = async (): Promise<RunReply> => ({ ok: true, state: run });
-  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, subscribe: () => () => undefined };
+  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, choose: reply, heroSheet: reply, subscribe: () => () => undefined };
   createRoot(document.getElementById('root')!).render(<Panel client={client} />);
   Object.assign(window, { REPLY, ready: true });
 }

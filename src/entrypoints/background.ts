@@ -15,6 +15,8 @@ import {
   RUN_STATE,
   RUN_STOP,
   RUN_FORGET,
+  RUN_CHOOSE,
+  RUN_HERO_SHEET,
   type RunReply,
   type RunStateMessage,
   type StudioRequest,
@@ -23,6 +25,7 @@ import {
 import { createFlowPort } from '../flow/port';
 import {
   RunBlockedError,
+  chooseScenePicture,
   discardFinishedRun,
   getRunState,
   handleFlowEvent,
@@ -35,6 +38,7 @@ import {
   resumeRun,
   retryScene,
   setFlowPort,
+  startHeroSheetRun,
   startRun,
   stopRun,
 } from '../runs/coordinator';
@@ -61,6 +65,12 @@ async function answerStudio(message: StudioRequest): Promise<RunReply> {
       case RUN_FORGET:
         await discardFinishedRun(message.projectId);
         break;
+      case RUN_CHOOSE:
+        await chooseScenePicture(message.projectId, message.sceneId, message.pictureId);
+        break;
+      case RUN_HERO_SHEET:
+        await startHeroSheetRun(message.projectId);
+        break;
       case RUN_GET:
         break;
     }
@@ -71,7 +81,17 @@ async function answerStudio(message: StudioRequest): Promise<RunReply> {
   }
 }
 
-const STUDIO_TYPES = new Set<string>([RUN_GET, RUN_START, RUN_PAUSE, RUN_RESUME, RUN_RETRY, RUN_STOP, RUN_FORGET]);
+const STUDIO_TYPES = new Set<string>([
+  RUN_GET,
+  RUN_START,
+  RUN_PAUSE,
+  RUN_RESUME,
+  RUN_RETRY,
+  RUN_STOP,
+  RUN_FORGET,
+  RUN_CHOOSE,
+  RUN_HERO_SHEET,
+]);
 
 export default defineBackground(() => {
   registerCoordinator();

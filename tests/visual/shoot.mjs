@@ -23,8 +23,13 @@ const shots = [
   ['paused', 1280, 1050],
   ['finished', 1280, 1150],
   ['running', 390, 1700, 'running-phone'],
+  ['script-hero', 1280, 1100, 'script-step-hero'],
+  ['script-model-sheet', 1280, 1500, 'script-step-model-sheet'],
+  ['swap', 1280, 1000, 'pictures-step-swap'],
 ];
-for (const [screen, width, height, name] of shots) {
+// Optional: only the named shots, e.g. `node tests/visual/shoot.mjs docs/design/build-check pictures-step-swap`.
+const only = process.argv.slice(3);
+for (const [screen, width, height, name] of shots.filter(([s, , , n]) => only.length === 0 || only.includes(n ?? s))) {
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
   await page.goto(`http://localhost:5199/?screen=${screen}`);
   await page.waitForLoadState('networkidle');

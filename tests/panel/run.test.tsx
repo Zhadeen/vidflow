@@ -203,3 +203,21 @@ describe('studio after edits in the panel', () => {
     await editedInPanel(() => document.dispatchEvent(new Event('visibilitychange')));
   });
 });
+
+describe('side panel: while the model sheet is made', () => {
+  it('says so in one line instead of the setup view and its coral Start', async () => {
+    const p = await seed('Phone Bill Story', 6, (x) => (x.character = { description: 'a tall stickman' }));
+    stubChrome();
+    const sheetRun = {
+      projectId: p.id,
+      kind: 'hero-sheet' as const,
+      status: 'running' as const,
+      inFlight: ['hero-sheet'],
+      sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'submitted' as const, pictureIds: [] } },
+    };
+    render(<Panel client={fakeBackground(sheetRun).client()} />);
+    expect(await screen.findByText('Making the model sheet… Open the Script step in the full studio')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Start making pictures' })).toBeNull();
+    expect(document.querySelector('[data-variant="primary"]')).toBeNull();
+  });
+});

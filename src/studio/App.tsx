@@ -55,9 +55,11 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
     return client.subscribe((state) => {
       setRun(state);
       if (state.projectId !== current.current) return;
-      // The background saved the scene states into the project before announcing; take only those.
+      // The background saved the scene states (or the model sheet) into the project before announcing; take only those.
       void getProject(state.projectId).then((fresh) => {
-        if (fresh) setProject((p) => (p && p.id === fresh.id ? { ...p, sceneStates: fresh.sceneStates } : p));
+        if (fresh) {
+          setProject((p) => (p && p.id === fresh.id ? { ...p, sceneStates: fresh.sceneStates, heroSheet: fresh.heroSheet } : p));
+        }
       });
     });
   }, [client]);
@@ -130,7 +132,19 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
           </p>
         )}
         {project && project.id === projectId ? (
-          <ProjectScreen key={project.id} project={project} run={run} client={client} media={media} onChange={change} onHome={() => open(null)} onRunState={setRun} />
+          <ProjectScreen
+            key={project.id}
+            project={project}
+            run={run}
+            client={client}
+            media={media}
+            onChange={change}
+            onHome={() => open(null)}
+            onRunState={setRun}
+            onSceneState={(sceneId, state) =>
+              setProject((p) => (p && p.id === project.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
+            }
+          />
         ) : (
           !error && <p className="vf-hint">Opening your video…</p>
         )}

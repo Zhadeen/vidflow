@@ -1,6 +1,6 @@
 /// <reference types="chrome" />
 import { useEffect, useState } from 'react';
-import { ACTIVITY_KEY, readActivity, sceneNumber, stepLine, type ActivityEntry } from '../runs/activity';
+import { ACTIVITY_KEY, entryLabel, readActivity, type ActivityEntry } from '../runs/activity';
 import { getLiveActivity, LIVE_ACTIVITY_KEY, setLiveActivity } from '../settings';
 import type { Project } from '../store/projects';
 
@@ -12,14 +12,13 @@ function clock(at: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** "Scene 3" in bold, then " · text"; just the text when the line isn't about one scene. */
+/** "Scene 3" (or "Model sheet") in bold, then " · text"; just the text when the line isn't about one scene. */
 function line(e: ActivityEntry, project: Pick<Project, 'scenes'> | undefined) {
-  const n = project ? sceneNumber(project, e.sceneId) : null;
-  if (n === null) return e.text;
+  const label = entryLabel(project, e.sceneId);
+  if (label === null) return e.text;
   return (
     <>
-      <b>Scene {n}</b>
-      {stepLine(n, e.text).slice(`Scene ${n}`.length)}
+      <b>{label}</b> · {e.text}
     </>
   );
 }

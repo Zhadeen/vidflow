@@ -643,21 +643,50 @@ textarea.vf-input {
   overflow: hidden;
 }
 
-/* Plan 2: the chosen card gets data-best="true" — coral border + coral badge. */
+/* The picture in use: coral border + the coral "★ Using this" pill (a label, not a button; approved look). */
 .vf-option[data-best='true'] {
-  border: 2px solid var(--vf-coral);
+  /* 1px border + 1px ring = the approved 2px coral edge, without moving the picture on a swap. */
+  border-color: var(--vf-coral);
+  box-shadow: 0 0 0 1px var(--vf-coral);
+}
+
+/* Focus lands on the chosen card after a swap (tabindex -1): keep the coral edge, add the cream ring outside it. */
+.vf-option[data-best='true']:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--vf-coral), 0 0 0 3px var(--vf-navy), 0 0 0 5px var(--vf-cream);
+}
+
+.vf-option[data-best='true']:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .vf-best {
   position: absolute;
+  z-index: 1;
   top: var(--vf-space-3);
   left: var(--vf-space-3);
   background: var(--vf-coral);
   color: var(--vf-on-coral);
+  /* The approved pill (visual-style-v2.html: 11px/700, 3px 9px on 13px text) at the studio's 16px scale. */
   font-size: var(--vf-text-sm);
   font-weight: 700;
   padding: 3px 12px;
   border-radius: var(--vf-radius-pill);
+  pointer-events: none;
+}
+
+/* Another picture of the scene: one click anywhere on the card uses it. */
+.vf-option[data-swap='true'] {
+  cursor: pointer;
+  transition: border-color 160ms var(--vf-ease);
+}
+
+.vf-option[data-swap='true']:hover {
+  border-color: var(--vf-cream-muted);
+}
+
+.vf-option-use {
+  margin-top: var(--vf-space-3);
 }
 
 .vf-option-frame {
@@ -1044,4 +1073,95 @@ textarea.vf-input {
 .vf-activity-time {
   color: var(--vf-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.vf-hero-ref {
+  margin-top: var(--vf-space-3);
+}
+
+.vf-hero-ref-thumb {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: var(--vf-radius-sm);
+  border: 1px solid var(--vf-navy-line);
+}
+
+/* The hero's model sheet: made in Flow, picked as the reference (secondary buttons only; the coral one stays put). */
+.vf-hero-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-2);
+  margin-top: var(--vf-space-4);
+  padding-top: var(--vf-space-4);
+  border-top: 1px solid var(--vf-navy-line);
+}
+
+.vf-hero-sheet-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.vf-hero-sheet-problem {
+  display: flex;
+  gap: var(--vf-space-4);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--vf-space-3) var(--vf-space-4);
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-md);
+}
+
+.vf-hero-sheet-problem p {
+  margin: 0;
+}
+
+.vf-hero-sheet-problem .vf-what {
+  font-weight: 700;
+}
+
+.vf-hero-sheet-problem .vf-why {
+  color: var(--vf-cream-soft);
+}
+
+.vf-hero-sheet-pictures {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--vf-space-3);
+  margin-top: var(--vf-space-2);
+}
+
+.vf-hero-sheet-picture {
+  margin: 0;
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-md);
+  overflow: hidden;
+}
+
+.vf-hero-sheet-frame {
+  display: block;
+  width: 100%;
+  background: var(--vf-navy-sunken);
+  border-bottom: 1px solid var(--vf-navy-line-strong);
+}
+
+.vf-hero-sheet-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vf-hero-sheet-picture figcaption {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-3);
+}
+
+.vf-hero-sheet-picture .vf-option-title {
+  font-size: var(--vf-text-sm);
 }

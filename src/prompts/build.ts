@@ -3,7 +3,8 @@ import type { StylePreset } from './styles';
 
 export interface CharacterSpec {
   description: string;
-  hasReferenceImage: boolean;
+  /** The owner's reference picture in the media store (`hero-reference`); stored projects without it have none. */
+  referenceMediaId?: string;
 }
 
 function escapeRe(s: string): string {
@@ -35,7 +36,7 @@ function characterBlock(character: CharacterSpec, style: StylePreset): string {
   const hint = style.characterHint ? `, ${style.characterHint}` : '';
   let block = `HERO character (keep identical in every scene${hint})`;
   block += desc ? `: ${desc}.` : '.';
-  if (character.hasReferenceImage) block += ' Match the reference picture attached in the Ingredient slot exactly.';
+  if (character.referenceMediaId) block += ' Match the reference picture attached in the Ingredient slot exactly.';
   return block;
 }
 
@@ -43,6 +44,24 @@ export function buildImagePrompt(scene: Scene, style: StylePreset, character: Ch
   const parts = [style.prefix];
   if (character) parts.push(characterBlock(character, style));
   parts.push(`Scene: ${scene.imagePrompt}`);
+  if (style.enforcement) parts.push(style.enforcement);
+  return parts.join('\n\n');
+}
+
+/**
+ * The hero's model sheet (one Flow prompt): front, side and back views plus 3 expressions on a plain background, in
+ * the project's style with the same rules as the scenes. Never names a reference picture: the sheet is how one is made.
+ */
+export function buildModelSheetPrompt(character: CharacterSpec, style: StylePreset): string {
+  const desc = stripForbidden(character.description, style.forbiddenWords).replace(/[.\s]+$/, '');
+  const hint = style.characterHint ? `, ${style.characterHint}` : '';
+  const parts = [style.prefix];
+  parts.push(`Character model sheet of the HERO${hint}${desc ? `: ${desc}` : ''}.`);
+  parts.push(
+    'Show the same character six times side by side, evenly spaced: front view, side view, back view, then 3 facial ' +
+      'expressions (happy, worried, surprised). Keep the proportions and details identical in every view. A plain empty ' +
+      'background with no scenery, no props and no text.',
+  );
   if (style.enforcement) parts.push(style.enforcement);
   return parts.join('\n\n');
 }

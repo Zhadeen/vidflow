@@ -2,8 +2,10 @@ import { useId, useState, type DragEvent } from 'react';
 import type { CharacterSpec } from '../prompts/build';
 import { buildClaudePrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
+import { isHeroSheetRun } from '../runs/run';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
+import { HeroReference, type SheetControls } from './HeroReference';
 import { useScriptDraft } from './useScriptDraft';
 
 export type ProjectPatch = Partial<Pick<Project, 'script' | 'scenes' | 'style' | 'customStyle' | 'character' | 'aspect' | 'outputsPerPrompt'>>;
@@ -16,6 +18,8 @@ interface Props {
   hasPictures: boolean;
   onChange(patch: ProjectPatch): void;
   onContinue(): void;
+  /** The run and client for "Make a model sheet in Flow" (left out where there is none). */
+  sheet?: SheetControls;
 }
 
 const STYLE_NOTES: Record<Exclude<StyleId, 'custom'>, string> = {
@@ -32,7 +36,7 @@ const ASPECTS: { value: AspectRatio; label: string }[] = [
 
 type CopyState = { kind: 'idle' } | { kind: 'copied' } | { kind: 'failed' };
 
-export function ScriptStep({ project, locked, hasPictures, onChange, onContinue }: Props) {
+export function ScriptStep({ project, locked, hasPictures, onChange, onContinue, sheet }: Props) {
   const ids = useId();
   const [script, setScript] = useState(project.script ?? '');
   const [copy, setCopy] = useState<CopyState>({ kind: 'idle' });
@@ -70,8 +74,23 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
   }
 
   const character = project.character;
-  const setHero = (description: string) =>
-    onChange({ character: description.trim() ? { description, hasReferenceImage: false } satisfies CharacterSpec : null });
+  /**
+   * The hero from the latest description and reference; none when both are empty. Both are always given: undefined
+   * means the reference was removed (a default would quietly bring the old one back).
+   */
+  const setHero = (description: string, referenceMediaId: string | undefined) =>
+    onChange({
+      character:
+        description.trim() || referenceMediaId
+          ? ({ description, ...(referenceMediaId && { referenceMediaId }) } satisfies CharacterSpec)
+          : null,
+    });
+
+  // Flow is drawing this video's model sheet with the shape, outputs and hero it was asked for: those wait until it's
+  // done, so a paused sheet can't resume with a different prompt.
+  const sheetRun = sheet?.run;
+  const sheetLive =
+    !!sheetRun && isHeroSheetRun(sheetRun) && sheetRun.projectId === project.id && (sheetRun.status === 'running' || sheetRun.status === 'paused');
 
   const sceneCount = project.scenes.length;
   const listed = pending ?? project.scenes;
@@ -259,20 +278,26 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
               id={`${ids}-hero`}
               className="vf-input"
               rows={3}
-              disabled={locked}
+              disabled={locked || sheetLive}
               value={character?.description ?? ''}
               placeholder="A tall stick figure with a round head, messy hair and a red scarf."
-              onChange={(e) => setHero(e.target.value)}
+              onChange={(e) => setHero(e.target.value, character?.referenceMediaId)}
             />
             <p className="vf-hint" style={{ margin: 'var(--vf-space-2) 0 0' }}>
               Kept the same in every scene.
             </p>
+            <HeroReference
+              project={project}
+              disabled={locked || sheetLive}
+              sheet={sheet}
+              onChange={(id) => setHero(character?.description ?? '', id)}
+            />
           </div>
 
           <Segmented
             legend="Shape"
             name={`${ids}-aspect`}
-            disabled={locked}
+            disabled={locked || sheetLive}
             value={project.aspect}
             options={ASPECTS}
             onChange={(aspect) => onChange({ aspect })}
@@ -282,7 +307,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
             <Segmented
               legend="Pictures per scene"
               name={`${ids}-outputs`}
-              disabled={locked}
+              disabled={locked || sheetLive}
               value={String(project.outputsPerPrompt)}
               options={[
                 { value: '1', label: '1' },

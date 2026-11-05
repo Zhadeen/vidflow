@@ -7,7 +7,7 @@ import type { RunReply } from '../../src/flow/messages';
 import { initRun, reduceRun, type RunState } from '../../src/runs/run';
 import type { Scene } from '../../src/scenes/types';
 import type { MediaStore } from '../../src/store/media';
-import type { Project } from '../../src/store/projects';
+import { setMediaStore, type Project } from '../../src/store/projects';
 import { ProjectScreen } from '../../src/studio/ProjectScreen';
 import { ProjectsHome } from '../../src/studio/ProjectsHome';
 import type { RunClient } from '../../src/studio/runClient';
@@ -42,7 +42,7 @@ const project: Project = {
   script: SENTENCES.join(' '),
   scenes,
   style: 'stickman-whiteboard',
-  character: { description: 'A tall stick figure with messy hair.', hasReferenceImage: false },
+  character: { description: 'A tall stick figure with messy hair.' },
   aspect: '16:9',
   outputsPerPrompt: 2,
   sceneStates: {},
@@ -71,6 +71,7 @@ const T = Date.now();
                 { at: T - 40000, projectId: 'p1', sceneId: id(1), text: '✓ Saved 2 pictures' },
                 { at: T - 20000, projectId: 'p1', sceneId: id(2), text: 'Typing the prompt' },
                 { at: T - 5000, projectId: 'p1', sceneId: id(2), text: 'Pressing Generate' },
+                ...(screen === 'swap' ? [{ at: T - 1000, projectId: 'p1', sceneId: id(38), text: 'Swapped to picture 2' }] : []),
               ],
             }
           : {},
@@ -84,11 +85,12 @@ const images: Record<string, Promise<Blob>> = {};
 const media: MediaStore = {
   put: async () => '',
   get: (mediaId) => (images[mediaId] ??= fetch(`./${mediaId}.jpg`).then((r) => r.blob())),
+  remove: async () => undefined,
   removeProject: async () => undefined,
 };
 
 const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
-const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, forget: ok, subscribe: () => () => undefined };
+const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, forget: ok, choose: ok, heroSheet: ok, subscribe: () => () => undefined };
 
 const screen = new URLSearchParams(location.search).get('screen') ?? 'running';
 const noop = () => undefined;
@@ -115,6 +117,36 @@ function view() {
       );
     case 'script':
       return <ProjectScreen project={project} run={null} client={client} media={media} initialStep="script" onChange={noop} onHome={noop} />;
+    case 'script-hero':
+      setMediaStore(media);
+      return (
+        <ProjectScreen
+          project={{ ...project, character: { description: 'A tall stick figure with messy hair.', referenceMediaId: 'stick1' } }}
+          run={null}
+          client={client}
+          media={media}
+          initialStep="script"
+          onChange={noop}
+          onHome={noop}
+        />
+      );
+    case 'script-model-sheet':
+      setMediaStore(media);
+      return (
+        <ProjectScreen
+          project={{
+            ...project,
+            character: { description: 'A tall stick figure with messy hair.', referenceMediaId: 'stick1' },
+            heroSheet: { status: 'done', pictureIds: ['stick1', 'stick2'] },
+          }}
+          run={null}
+          client={client}
+          media={media}
+          initialStep="script"
+          onChange={noop}
+          onHome={noop}
+        />
+      );
     case 'idle':
       return <ProjectScreen project={project} run={null} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
     case 'paused': {
@@ -142,6 +174,16 @@ function view() {
       });
       const p = { ...project, sceneStates: run.sceneStates };
       return <ProjectScreen project={p} run={run} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
+    }
+    case 'swap': {
+      // The owner swapped scene 38 to its second picture during the run: pill and coral border on option 2.
+      const run = runWith(38, (s) =>
+        reduceRun(reduceRun(reduceRun(s, { type: 'choose', sceneId: id(38), pictureId: 'stick2' }), { type: 'submitted', sceneId: id(39) }), {
+          type: 'submitted',
+          sceneId: id(40),
+        }),
+      );
+      return <ProjectScreen project={project} run={run} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
     }
     default: {
       const run = runWith(38, (s) => reduceRun(reduceRun(s, { type: 'submitted', sceneId: id(39) }), { type: 'submitted', sceneId: id(40) }));

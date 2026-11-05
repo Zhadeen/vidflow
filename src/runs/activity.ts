@@ -1,5 +1,6 @@
 /// <reference types="chrome" />
 import type { Project } from '../store/projects';
+import { HERO_SHEET_ID } from './run';
 
 /** What the Flow panel shows about the run: the step it is on now, and a capped log of what it did. */
 export type StepTarget = 'project' | 'setting' | 'prompt' | 'generate' | 'tile' | null;
@@ -32,6 +33,13 @@ export function sceneNumber(project: Pick<Project, 'scenes'>, sceneId: string | 
   if (!sceneId) return null;
   const i = project.scenes.findIndex((s) => s.id === sceneId);
   return i < 0 ? null : (project.scenes[i]!.slide ?? i + 1);
+}
+
+/** What a log line or step is about, as shown before its text: "Scene 3", "Model sheet", or null for the run itself. */
+export function entryLabel(project: Pick<Project, 'scenes'> | null | undefined, sceneId: string | null): string | null {
+  if (sceneId === HERO_SHEET_ID) return 'Model sheet';
+  const n = project ? sceneNumber(project, sceneId) : null;
+  return n === null ? null : `Scene ${n}`;
 }
 
 /** Storage writes take turns, so two quick calls never overwrite each other (read-modify-write). */

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FlowBlockedError, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW } from '../../src/flow/messages';
+import { FlowBlockedError, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
 import { createFlowPort } from '../../src/flow/port';
 
 function setup(responses: unknown[], zoom = 1) {
@@ -110,5 +110,31 @@ describe('Flow port', () => {
       { type: FLOW_DETAIL },
       { type: FLOW_DETAIL },
     ]);
+  });
+
+  it("sends the reference picture's bytes to the Flow tab and returns the reference tile's media id", async () => {
+    const bytes = new Uint8Array(70_000).map((_, i) => i % 256); // more than one encoding chunk
+    const { send, port } = setup([{ kind: 'done', mediaId: 'ref-media-1' }, { kind: 'done', mediaId: null }]);
+    const blob = new Blob([bytes], { type: 'image/webp' });
+    expect(await port.uploadReference(7, 'vidflow-hero-3f1c2a9e.webp', blob)).toBe('ref-media-1');
+    const [, message] = send.mock.calls[0]! as [number, { type: string; name: string; mimeType: string; data: string }];
+    expect(message.type).toBe(FLOW_UPLOAD_REFERENCE);
+    expect(message.name).toBe('vidflow-hero-3f1c2a9e.webp');
+    expect(message.mimeType).toBe('image/webp');
+    expect(decodeBytes(message.data)).toEqual(bytes);
+    expect(await port.uploadReference(7, 'x.png', blob)).toBeNull();
+  });
+
+  it('turns a blocked or failed upload into a FlowBlockedError or an error', async () => {
+    const event = { type: 'needsOwner', reason: 'page-not-recognised', message: 'Check Flow' } as const;
+    const { port } = setup([{ kind: 'blocked', event }, { kind: 'error', message: 'gone' }]);
+    await expect(port.uploadReference(7, 'x.png', new Blob(['x']))).rejects.toBeInstanceOf(FlowBlockedError);
+    await expect(port.uploadReference(7, 'x.png', new Blob(['x']))).rejects.toThrow('gone');
+  });
+
+  it('passes the reference to attach with the prepare request', async () => {
+    const { send, port } = setup([{ kind: 'ready', x: 1, y: 2 }]);
+    await port.prepare(7, 's1', 'p', { verb: 'Resume', reference: { name: 'vidflow-hero-3f1c2a9e.png' } });
+    expect(send).toHaveBeenCalledWith(7, { type: FLOW_PREPARE, prompt: 'p', verb: 'Resume', reference: { name: 'vidflow-hero-3f1c2a9e.png' } });
   });
 });

@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from 'react';
 import type { RunReply } from '../flow/messages';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
-import type { Project, SceneState } from '../store/projects';
+import { getProject, type Project, type SceneState } from '../store/projects';
 import { ActivityList } from './ActivityList';
+import { choosePicture } from './choice';
+import { chosenPicture, hasChoice } from './chosen';
 import { Button } from './Button';
 import { ownerPauseReason, pictureProgress, runPhase, sceneNumber, sceneStatesFor } from './progress';
 import type { RunClient } from './runClient';
@@ -17,20 +19,47 @@ interface Props {
   media: MediaStore;
   /** The run as the background reported it after a request. */
   onRunState(state: RunState | null): void;
+  /** One scene's state as saved, read back after a swap (with no run live the background sends no broadcast). */
+  onSceneState?(sceneId: string, state: SceneState): void;
 }
 
 type Busy = null | 'start' | 'pause' | 'resume' | 'stop' | `retry:${string}`;
 
 const MOTION_NEXT = 'Motion is coming next in VidFlow. Your pictures are saved in this project.';
+const SWAP_HINT = "VidFlow uses Flow's first picture. Click another to swap.";
+const SWAP_FAILED = "VidFlow couldn't save that choice. Try again.";
 
-export function PicturesStep({ project, run, client, media, onRunState }: Props) {
+export function PicturesStep({ project, run, client, media, onRunState, onSceneState }: Props) {
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [motionNote, setMotionNote] = useState(false);
+  // Swaps shown at once, before the background confirms them; each goes once the saved state agrees (or it fails).
+  const [swaps, setSwaps] = useState<Record<string, string>>({});
+  const [swapping, setSwapping] = useState(false);
+  // Where focus goes once a swap settles: the newly chosen card, or back to the button that was pressed.
+  const [focusTo, setFocusTo] = useState<{ pictureId: string; on: 'card' | 'button' } | null>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
 
   const phase = runPhase(project, run);
-  const states = sceneStatesFor(project, run);
+  const saved = useMemo(() => sceneStatesFor(project, run), [project, run]);
+  const states = useMemo(() => {
+    const out = { ...saved };
+    for (const [sceneId, pictureId] of Object.entries(swaps)) {
+      if (out[sceneId]) out[sceneId] = { ...out[sceneId], chosenPictureId: pictureId };
+    }
+    return out;
+  }, [saved, swaps]);
+
+  useEffect(() => {
+    const confirmed = Object.keys(swaps).filter((id) => chosenPicture(saved[id]) === swaps[id]);
+    if (confirmed.length === 0) return;
+    setSwaps((now) => {
+      const next = { ...now };
+      for (const id of confirmed) if (next[id] === swaps[id]) delete next[id];
+      return next;
+    });
+  }, [saved, swaps]);
   const progress = pictureProgress(project, run);
   const pauseReason = ownerPauseReason(project, run);
 
@@ -43,7 +72,7 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
   const shownState: SceneState | undefined = shownId ? states[shownId] : undefined;
 
   const wanted = useMemo(() => {
-    const ids = project.scenes.map((s) => states[s.id].pictureIds[0]).filter((id): id is string => !!id);
+    const ids = project.scenes.map((s) => chosenPicture(states[s.id])).filter((id): id is string => !!id);
     for (const id of shownState?.pictureIds ?? []) if (!ids.includes(id)) ids.push(id);
     return ids;
   }, [project.scenes, states, shownState]);
@@ -70,6 +99,51 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
   const stop = () => act('stop', () => client.stop());
   const retry = (sceneId: string) => act(`retry:${sceneId}`, () => client.retry(project.id, sceneId));
 
+  useEffect(() => {
+    if (!focusTo || swapping) return;
+    const card = [...(optionsRef.current?.querySelectorAll<HTMLElement>('figure') ?? [])].find((f) => f.dataset.pictureId === focusTo.pictureId);
+    const target = focusTo.on === 'card' ? card : card?.querySelector<HTMLElement>('button');
+    target?.focus();
+    setFocusTo(null);
+  }, [focusTo, swapping, states]);
+
+  /** One click: the pill moves now; the background (the single writer) saves it; a refusal puts it back and says why. */
+  async function swap(sceneId: string, pictureId: string) {
+    if (swapping || chosenPicture(states[sceneId]) === pictureId) return;
+    setSwapping(true);
+    setError(null);
+    setSwaps((now) => ({ ...now, [sceneId]: pictureId }));
+    try {
+      await choosePicture(project.id, sceneId, pictureId, client);
+    } catch (e) {
+      setSwaps((now) => {
+        const next = { ...now };
+        delete next[sceneId];
+        return next;
+      });
+      setError(e instanceof Error && e.message ? e.message : SWAP_FAILED);
+      setFocusTo({ pictureId, on: 'button' });
+      setSwapping(false);
+      return;
+    }
+    setFocusTo({ pictureId, on: 'card' });
+    try {
+      // Saved. Read it back: with no run live there is no broadcast to bring it; with one, the run has it too.
+      const fresh = await getProject(project.id);
+      // Only this scene: anything else in the stored project is not this swap's to bring in.
+      const scene = fresh?.sceneStates[sceneId];
+      if (scene) onSceneState?.(sceneId, scene);
+      if (phase === 'running' || phase === 'paused') {
+        const reply = await client.get();
+        if (reply.ok) onRunState(reply.state);
+      }
+    } catch {
+      // The choice is saved; the next refresh shows it. The swap already shows here.
+    } finally {
+      setSwapping(false);
+    }
+  }
+
   const showBeforeStart = phase === 'idle' && picked === null && remaining > 0;
 
   return (
@@ -79,13 +153,30 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
           {showBeforeStart ? (
             <BeforeStart scenes={remaining} total={project.scenes.length} perScene={project.outputsPerPrompt} />
           ) : (
-            shown && <Options project={project} state={shownState} urls={urls} />
+            shown && (
+              <Options
+                ref={optionsRef}
+                project={project}
+                state={shownState}
+                urls={urls}
+                busy={swapping}
+                onUse={(pictureId) => void swap(shown.id, pictureId)}
+              />
+            )
           )}
           {shown && !showBeforeStart && (
             <p className="vf-status">
               Scene {sceneNumber(project, shown.id)}
               {shown.sentence ? ` · "${shown.sentence}"` : ''}
               {statusTail(phase, shownState)}
+            </p>
+          )}
+          {shown && !showBeforeStart && (shownState?.pictureIds.length ?? 0) > 1 && !project.scenes.some((s) => hasChoice(states[s.id])) && (
+            <p className="vf-hint vf-swap-hint">{SWAP_HINT}</p>
+          )}
+          {shown && !showBeforeStart && (
+            <p role="status" className="vf-visually-hidden">
+              {usingLine(shownState)}
             </p>
           )}
         </section>
@@ -228,18 +319,52 @@ function BeforeStart({ scenes, total, perScene }: { scenes: number; total: numbe
   );
 }
 
-function Options({ project, state, urls }: { project: Project; state: SceneState | undefined; urls: Record<string, string> }) {
+/** "Using option 2 of 3" for screen readers; nothing while the scene has no pictures. */
+function usingLine(state: SceneState | undefined): string {
+  const inUse = chosenPicture(state);
+  if (!state || !inUse) return '';
+  return `Using option ${state.pictureIds.indexOf(inUse) + 1} of ${state.pictureIds.length}`;
+}
+
+interface OptionsProps {
+  ref?: Ref<HTMLDivElement>;
+  project: Project;
+  state: SceneState | undefined;
+  urls: Record<string, string>;
+  /** A swap is being saved: the other cards wait. */
+  busy: boolean;
+  onUse(pictureId: string): void;
+}
+
+function Options({ ref, project, state, urls, busy, onUse }: OptionsProps) {
   const ids = state?.pictureIds ?? [];
   const count = ids.length > 0 ? ids.length : project.outputsPerPrompt;
+  const inUse = chosenPicture(state);
   const empty =
     state?.status === 'submitted' ? 'Flow is making this…' : state?.status === 'refused' || state?.status === 'failed' ? 'No picture' : 'Not made yet';
+  const titleId = useId();
   return (
-    <div className="vf-options">
+    <div className="vf-options" ref={ref}>
       {Array.from({ length: count }, (_, i) => {
         const id = ids[i];
         const url = id ? urls[id] : undefined;
+        const chosen = !!id && id === inUse;
+        const other = !!id && !chosen;
+        // The whole other card is clickable; its "Use this picture" button is the keyboard stop (Enter / Space).
+        const onClick = other && !busy ? () => onUse(id) : undefined;
         return (
-          <figure key={id ?? i} className="vf-option">
+          <figure
+            key={id ?? i}
+            className="vf-option"
+            aria-labelledby={`${titleId}-${i}`}
+            data-best={chosen || undefined}
+            data-swap={other || undefined}
+            data-picture-id={id}
+            aria-current={chosen || undefined}
+            tabIndex={chosen ? -1 : undefined}
+            onClick={onClick}
+          >
+            {chosen && <span className="vf-best">★ Using this</span>}
             <span
               className={`vf-option-frame${url ? '' : ' vf-option-frame-empty'}`}
               style={{ aspectRatio: aspectCss(project.aspect) }}
@@ -251,9 +376,14 @@ function Options({ project, state, urls }: { project: Project; state: SceneState
               )}
             </span>
             <figcaption>
-              <span className="vf-option-title">
+              <span className="vf-option-title" id={`${titleId}-${i}`}>
                 Option {i + 1} of {count}
               </span>
+              {other && (
+                <Button small className="vf-option-use" disabled={busy} aria-describedby={`${titleId}-${i}`}>
+                  Use this picture
+                </Button>
+              )}
             </figcaption>
           </figure>
         );
