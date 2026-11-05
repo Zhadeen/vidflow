@@ -15,6 +15,8 @@ export const manifest = {
 
 export default defineConfig({
   srcDir: 'src',
+  // The e2e build must land in the same folder as the normal one, so Chrome loads one path.
+  outDirTemplate: '{{browser}}-mv{{manifestVersion}}',
   modules: ['@wxt-dev/module-react'],
   manifest,
 });

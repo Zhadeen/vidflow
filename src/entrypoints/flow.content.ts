@@ -154,6 +154,13 @@ export default defineContentScript({
     window.addEventListener('resize', () => placePill(document));
     void refreshPill();
 
+    // Development-only end-to-end bridge: this branch is removed from the normal build.
+    if (import.meta.env.MODE === 'e2e') {
+      void import('../e2e/page-bridge').then((m) =>
+        m.installPageBridge(window, (message) => chrome.runtime.sendMessage(message)),
+      );
+    }
+
     // ---- Observing the page ------------------------------------------------
     let lastTiles = '';
     let lastLimit: string | null = null;

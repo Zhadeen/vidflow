@@ -72,6 +72,12 @@ const STUDIO_TYPES = new Set<string>([RUN_GET, RUN_START, RUN_PAUSE, RUN_RESUME,
 
 export default defineBackground(() => {
   registerCoordinator();
+  // Development-only end-to-end hook: this branch is removed from the normal build.
+  if (import.meta.env.MODE === 'e2e') {
+    void import('../e2e/background').then((m) =>
+      m.registerE2e(true, chrome.runtime.onMessage as never, chrome.runtime.id),
+    );
+  }
   // Set synchronously on every worker start, so a plain wake never finds the run "not connected".
   setFlowPort(createFlowPort());
 
