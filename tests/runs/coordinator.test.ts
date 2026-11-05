@@ -44,7 +44,7 @@ function mockChrome() {
       setZoom: vi.fn(async () => undefined),
       getZoom: vi.fn(async () => 1),
     },
-    runtime: { onStartup: listener() },
+    runtime: { onStartup: listener(), getURL: (p: string) => `chrome-extension://test/${p}` },
     debugger: {
       attach: vi.fn(async () => undefined),
       detach: vi.fn(async () => undefined),

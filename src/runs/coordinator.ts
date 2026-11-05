@@ -40,9 +40,8 @@ export interface FlowPort {
   readDetail(tabId: number): Promise<{ prompt: string | null; mediaId: string | null }>;
 }
 
-// Plain dark square; the extension has no icon files yet (chrome requires an iconUrl on basic notifications).
-const NOTIFICATION_ICON =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+// The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
+const notificationIcon = () => chrome.runtime.getURL('icon/128.png');
 const RUN_KEY = 'vidflow.run';
 const WINDOW_KEY = 'vidflow.flowWindow';
 const SESSION_MARKER = 'vidflow.sessionAlive';
@@ -137,7 +136,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const paceMs = () => PACE_MIN_MS + Math.random() * (PACE_MAX_MS - PACE_MIN_MS);
 
 function notify(message: string): void {
-  void chrome.notifications.create({ type: 'basic', iconUrl: NOTIFICATION_ICON, title: 'VidFlow', message });
+  void chrome.notifications.create({ type: 'basic', iconUrl: notificationIcon(), title: 'VidFlow', message });
 }
 
 function projectStyle(project: Project) {
