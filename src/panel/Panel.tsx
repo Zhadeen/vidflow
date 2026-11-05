@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RunReply } from '../flow/messages';
-import type { RunState } from '../runs/run';
+import { isHeroSheetRun, type RunState } from '../runs/run';
 import { createProject, getProject, listProjects, type Project } from '../store/projects';
 import { runPhase } from '../studio/progress';
 import { applyPatch, saveEdits } from '../studio/projectEdits';
@@ -144,6 +144,8 @@ export function Panel({ client }: { client: RunClient }) {
   const shown = project && project.id === projectId ? project : null;
   const phase = shown ? runPhase(shown, run) : 'idle';
   const running = !!shown && (phase === 'running' || phase === 'paused');
+  // This video's model sheet is being made: the panel only says so (the sheet lives in the studio's Script step).
+  const makingSheet = !!shown && !!run && isHeroSheetRun(run) && run.projectId === shown.id && isLive(run);
 
   return (
     <div className="vf-pn">
@@ -169,7 +171,11 @@ export function Panel({ client }: { client: RunClient }) {
       ) : (
         <>
           <VideoPicker projects={projects} value={projectId} onPick={setProjectId} onCreate={create} />
-          {shown ? (
+          {shown && makingSheet ? (
+            <p className="vf-pn-sub" role="status">
+              Making the model sheet… Open the Script step in the full studio
+            </p>
+          ) : shown ? (
             <PanelSetup
               key={shown.id}
               project={shown}

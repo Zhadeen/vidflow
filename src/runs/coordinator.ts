@@ -101,6 +101,10 @@ export const REFERENCE_MISSING_MESSAGE =
 export const BUSY_MESSAGE = 'Another project is making pictures right now. Pause it or wait for it to finish, then try again.';
 /** A scene run can't start while the hero's model sheet is being made (one run at a time). */
 export const HERO_SHEET_BUSY_MESSAGE = 'VidFlow is making the model sheet right now. Wait for it to finish, then try again.';
+/** …and while it is paused: the Script step's hero section has its Resume and Stop. */
+export const HERO_SHEET_PAUSED_MESSAGE = 'The model sheet is paused. Resume or stop it in the Script step, then try again.';
+/** The model sheet can't start while this same video's scenes are being made. */
+export const HERO_SHEET_SCENES_BUSY = 'This video is making pictures right now. Wait for it to finish, then make the model sheet.';
 /** The model sheet draws the hero as described: without a description there is nothing to draw. */
 export const HERO_SHEET_NEEDS_HERO = 'Describe the hero first, then make the model sheet.';
 
@@ -224,6 +228,13 @@ function noteChanges(prev: RunState | null, next: RunState, project: Project): v
     else note(project, null, `Finished: pictures ready for ${done} of ${Object.keys(next.sceneStates).length} scenes`);
   }
 }
+
+/** What Flow was (or will be) asked for: a sheet run keeps the outputs and shape it started with. */
+const outputsOf = (run: RunState | null, project: Project) => run?.sheet?.outputs ?? project.outputsPerPrompt;
+const aspectOf = (run: RunState | null, project: Project) => run?.sheet?.aspect ?? project.aspect;
+
+/** Why a live model sheet run blocks another start: it is being made, or it is paused. */
+const sheetBlock = (run: RunState) => (run.status === 'paused' ? HERO_SHEET_PAUSED_MESSAGE : HERO_SHEET_BUSY_MESSAGE);
 
 function projectStyle(project: Project) {
   return project.style === 'custom' ? customStyle(project.customStyle ?? '') : STYLE_PRESETS[project.style];
@@ -565,12 +576,13 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
         return 'next';
       }
     }
-    const n = project.outputsPerPrompt;
-    note(project, null, `Set Flow to Image · ${project.aspect} · ${pictures(n)}`, 'setting');
+    const n = outputsOf(state, project);
+    const aspect = aspectOf(state, project);
+    note(project, null, `Set Flow to Image · ${aspect} · ${pictures(n)}`, 'setting');
     note(project, sceneId, 'Typing the prompt', 'prompt');
     const at = await port!.prepare(tabId, sceneId, prompt, {
-      aspect: project.aspect,
-      outputs: project.outputsPerPrompt,
+      aspect,
+      outputs: n,
       verb: PUMP_VERB,
       ...(reference ? { reference: { name: reference } } : {}),
     });
@@ -628,7 +640,7 @@ async function findUnconfirmedStart(
   const samePromptInFlight = state.inFlight.filter((id) =>
     verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? ''),
   ).length;
-  const owedToOthers = samePromptInFlight * project.outputsPerPrompt;
+  const owedToOthers = samePromptInFlight * outputsOf(state, project);
   let hits = 0;
   let generating = 0;
   const attempt = -++unconfirmedAttempt; // each Resume check is its own attempt (tile reports count up from 1)
@@ -817,7 +829,7 @@ async function matchOnce(): Promise<void> {
     const report = latestReport;
     const cards = report.cards.filter(notReference(run));
     const details = run.detailPrompts ?? {};
-    const matches = matchResults(submissions, cards, claimedKeys(run), project.outputsPerPrompt, details);
+    const matches = matchResults(submissions, cards, claimedKeys(run), outputsOf(run, project), details);
     // A report taken while the grid may still be redrawing (just back from a detail page) can't make VidFlow give up.
     const settled = report.at - lastDetailReturn >= SETTLE_MS;
     const unconfirmedNow = new Set(matches.filter((m) => m.kind === 'unconfirmed').map((m) => m.sceneId));
@@ -928,7 +940,7 @@ async function pump(): Promise<void> {
 
 /** Why a run for `projectId` can't start now (another project's run is running, or paused with work left), or null. */
 async function startBlocker(projectId: string): Promise<string | null> {
-  if (state && isHeroSheetRun(state) && isLive(state)) return HERO_SHEET_BUSY_MESSAGE;
+  if (state && isHeroSheetRun(state) && isLive(state)) return sheetBlock(state);
   if (!state || state.projectId === projectId) return null;
   if (state.status === 'running') return BUSY_MESSAGE;
   const unfinished = Object.values(state.sceneStates).some((s) => s.status === 'pending' || s.status === 'submitted');
@@ -987,9 +999,12 @@ export async function startHeroSheetRun(projectId: string): Promise<void> {
   if (!project) throw new Error('That project is no longer in VidFlow.');
   if (!project.character?.description.trim()) throw new Error(HERO_SHEET_NEEDS_HERO);
   await enqueue(async () => {
-    if (isLive(state)) {
-      if (state!.projectId === projectId && isHeroSheetRun(state) && state!.status === 'running') return; // already at it
-      throw new RunBlockedError(BUSY_MESSAGE);
+    if (state && isLive(state)) {
+      if (isHeroSheetRun(state)) {
+        if (state.projectId === projectId && state.status === 'running') return; // already at it
+        throw new RunBlockedError(state.status === 'paused' ? HERO_SHEET_PAUSED_MESSAGE : BUSY_MESSAGE);
+      }
+      throw new RunBlockedError(state.projectId === projectId ? HERO_SHEET_SCENES_BUSY : BUSY_MESSAGE);
     }
     await commit(reduceRun(initHeroSheetRun(project), { type: 'start' }));
   });

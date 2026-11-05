@@ -1,4 +1,4 @@
-import type { Project, SceneState } from '../store/projects';
+import type { AspectRatio, Project, SceneState } from '../store/projects';
 
 export type RunEvent =
   | { type: 'start' }
@@ -45,6 +45,11 @@ export interface RunState {
    * project.heroSheet rather than the scenes. Absent for a scene run.
    */
   kind?: 'hero-sheet';
+  /**
+   * A hero-sheet run's outputs and shape, fixed when it starts: Flow was asked for these, so matching counts them,
+   * whatever the project's settings say later.
+   */
+  sheet?: { outputs: Project['outputsPerPrompt']; aspect: AspectRatio };
   status: 'idle' | 'running' | 'paused' | 'finished';
   pauseReason?: string;
   resumeAt?: number | null;
@@ -81,6 +86,7 @@ export function initHeroSheetRun(project: Project): RunState {
   return {
     projectId: project.id,
     kind: 'hero-sheet',
+    sheet: { outputs: project.outputsPerPrompt, aspect: project.aspect },
     status: 'idle',
     inFlight: [],
     sceneStates: { [HERO_SHEET_ID]: { sceneId: HERO_SHEET_ID, status: 'pending', pictureIds: [] } },

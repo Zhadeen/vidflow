@@ -2,6 +2,7 @@ import { useId, useState, type DragEvent } from 'react';
 import type { CharacterSpec } from '../prompts/build';
 import { buildClaudePrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
+import { isHeroSheetRun } from '../runs/run';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
 import { HeroReference, type SheetControls } from './HeroReference';
@@ -81,6 +82,11 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
           ? ({ description, ...(referenceMediaId && { referenceMediaId }) } satisfies CharacterSpec)
           : null,
     });
+
+  // Flow is drawing this video's model sheet with the shape and outputs it was asked for: those wait until it's done.
+  const sheetRun = sheet?.run;
+  const sheetLive =
+    !!sheetRun && isHeroSheetRun(sheetRun) && sheetRun.projectId === project.id && (sheetRun.status === 'running' || sheetRun.status === 'paused');
 
   const sceneCount = project.scenes.length;
   const listed = pending ?? project.scenes;
@@ -287,7 +293,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
           <Segmented
             legend="Shape"
             name={`${ids}-aspect`}
-            disabled={locked}
+            disabled={locked || sheetLive}
             value={project.aspect}
             options={ASPECTS}
             onChange={(aspect) => onChange({ aspect })}
@@ -297,7 +303,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
             <Segmented
               legend="Pictures per scene"
               name={`${ids}-outputs`}
-              disabled={locked}
+              disabled={locked || sheetLive}
               value={String(project.outputsPerPrompt)}
               options={[
                 { value: '1', label: '1' },

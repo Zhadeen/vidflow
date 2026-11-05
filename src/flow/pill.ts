@@ -13,6 +13,8 @@ export interface PillView {
   saved: number;
   drawing: number;
   toGo: number;
+  /** The run makes the hero's model sheet: one prompt, so no picture counts or bar; the line names the sheet. */
+  sheet?: boolean;
 }
 
 const HOST_ID = 'vidflow-pill';
@@ -38,6 +40,7 @@ export function pillView(
     saved: count('done'),
     drawing: count('submitted'),
     toGo: count('pending'),
+    ...(state.kind === 'hero-sheet' ? { sheet: true } : {}),
   };
 }
 
@@ -103,10 +106,13 @@ export function renderPill(
     b.style.fontWeight = '700';
     b.textContent = view.step;
     line.append(b);
-  } else line.textContent = `Picture ${view.n} of ${view.total}`;
+  } else line.textContent = view.sheet ? 'Model sheet' : `Picture ${view.n} of ${view.total}`;
 
   root.querySelector<HTMLElement>('.fill')!.style.width = `${pillProgress(view)}%`;
-  root.querySelector<HTMLElement>('.counts')!.textContent = `${view.saved} saved · ${view.drawing} being drawn · ${view.toGo} to go`;
+  const counts = root.querySelector<HTMLElement>('.counts')!;
+  counts.textContent = view.sheet ? '' : `${view.saved} saved · ${view.drawing} being drawn · ${view.toGo} to go`;
+  const show = view.sheet ? 'none' : '';
+  for (const part of [counts, root.querySelector<HTMLElement>('.track')!]) if (part.style.display !== show) part.style.display = show;
 
   placePill(doc, host);
   return host;

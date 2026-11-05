@@ -209,7 +209,7 @@ interface ModelSheetProps {
 function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProps) {
   const { run, client, onRunState } = controls;
   const ids = useId();
-  const [asking, setAsking] = useState<null | 'make' | 'resume'>(null);
+  const [asking, setAsking] = useState<null | 'make' | 'resume' | 'stop'>(null);
   const [error, setError] = useState<string | null>(null);
   const live =
     run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused') ? run : null;
@@ -222,7 +222,7 @@ function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProp
   const pictures = sheet?.status === 'done' ? sheet.pictureIds : [];
   const urls = usePictureUrls(getMediaStore(), pictures);
 
-  async function ask(kind: 'make' | 'resume', request: () => Promise<RunReply>) {
+  async function ask(kind: 'make' | 'resume' | 'stop', request: () => Promise<RunReply>) {
     setAsking(kind);
     setError(null);
     try {
@@ -260,6 +260,10 @@ function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProp
           <div className="vf-row">
             <Button small onClick={() => void ask('resume', () => client.resume())} loading={asking === 'resume'} disabled={asking !== null}>
               Resume
+            </Button>
+            {/* Stop ends the sheet's run (pictures stay), so other runs can start. */}
+            <Button small onClick={() => void ask('stop', () => client.stop())} loading={asking === 'stop'} disabled={asking !== null}>
+              Stop
             </Button>
           </div>
         </div>

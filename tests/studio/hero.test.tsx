@@ -276,3 +276,53 @@ describe('the hero model sheet', () => {
     expect(screen.getByRole('button', { name: 'Make a model sheet in Flow' }).hasAttribute('disabled')).toBe(true);
   });
 });
+
+describe('the hero model sheet: fix round 1', () => {
+  const sheetRun = (projectId: string, status: RunState['status'], pauseReason?: string): RunState => ({
+    projectId,
+    kind: 'hero-sheet',
+    status,
+    ...(pauseReason ? { pauseReason } : {}),
+    inFlight: [],
+    sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'pending', pictureIds: [] } },
+  });
+
+  it('a paused sheet offers Resume and Stop (both secondary)', async () => {
+    const p = await createProject('Story');
+    p.character = { description: 'a tall stickman' };
+    await saveProject(p);
+    const stopped = { ...sheetRun(p.id, 'idle') };
+    const client = sheetClient({ stop: vi.fn(async (): Promise<RunReply> => ({ ok: true, state: stopped })) });
+    const onRunState = vi.fn();
+    render(<SheetHost start={p} client={client} run={sheetRun(p.id, 'paused', 'Flow asks you to accept its policy.')} onRunState={onRunState} />);
+    expect(screen.getByText('Flow asks you to accept its policy.')).toBeDefined();
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop.dataset.variant).toBe('secondary');
+    expect(screen.getByRole('button', { name: 'Resume' }).dataset.variant).toBe('secondary');
+    fireEvent.click(stop);
+    await waitFor(() => expect(client.stop).toHaveBeenCalled());
+    await waitFor(() => expect(onRunState).toHaveBeenCalledWith(stopped));
+  });
+
+  it('the shape and pictures per scene wait while this video\'s sheet is being made', async () => {
+    const p = await createProject('Story');
+    p.character = { description: 'a tall stickman' };
+    await saveProject(p);
+    const client = sheetClient();
+    const { rerender } = render(
+      <ScriptStep project={p} locked={false} hasPictures={false} onChange={() => undefined} onContinue={() => undefined} sheet={{ run: sheetRun(p.id, 'running'), client, onRunState: () => undefined }} />,
+    );
+    const group = (name: string) => screen.getByRole('group', { name }) as HTMLFieldSetElement;
+    expect(group('Shape').disabled).toBe(true);
+    expect(group('Pictures per scene').disabled).toBe(true);
+    // Another video's sheet, or this one's finished sheet, leaves them alone.
+    rerender(
+      <ScriptStep project={p} locked={false} hasPictures={false} onChange={() => undefined} onContinue={() => undefined} sheet={{ run: sheetRun('other', 'running'), client, onRunState: () => undefined }} />,
+    );
+    expect(group('Shape').disabled).toBe(false);
+    rerender(
+      <ScriptStep project={p} locked={false} hasPictures={false} onChange={() => undefined} onContinue={() => undefined} sheet={{ run: sheetRun(p.id, 'finished'), client, onRunState: () => undefined }} />,
+    );
+    expect(group('Pictures per scene').disabled).toBe(false);
+  });
+});

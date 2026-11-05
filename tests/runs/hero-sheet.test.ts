@@ -221,7 +221,9 @@ describe('the hero model sheet in Flow', () => {
     coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
     await coordinator.startRun(project.id);
     await waitFor(() => coordinator.getRunState()?.status === 'running');
-    await expect(coordinator.startHeroSheetRun(project.id)).rejects.toThrow(coordinator.BUSY_MESSAGE);
+    // This video's own scenes are being made: it says so; another video's run is the usual busy message.
+    await expect(coordinator.startHeroSheetRun(project.id)).rejects.toThrow(coordinator.HERO_SHEET_SCENES_BUSY);
+    expect(coordinator.HERO_SHEET_SCENES_BUSY).toBe('This video is making pictures right now. Wait for it to finish, then make the model sheet.');
     await expect(coordinator.startHeroSheetRun(other.id)).rejects.toThrow(coordinator.BUSY_MESSAGE);
     expect(coordinator.getRunState()!.sceneStates).toHaveProperty('s1');
   });
@@ -317,5 +319,77 @@ describe('the model sheet stays out of the scenes', () => {
     expect(entryLabel(project, null)).toBeNull();
     const step = { projectId: 'p1', sceneId: 'hero-sheet', text: 'Typing the prompt', target: 'prompt' as const, at: 0 };
     expect(liveView(run, step, project)).toMatchObject({ step: 'Model sheet · Typing the prompt', scene: null, savedCards: [] });
+  });
+});
+
+describe('model sheet: fix round 1', () => {
+  it('a paused sheet blocks other runs with its own message, and Stop frees them', async () => {
+    const { coordinator, project, fakePort, store } = await withHero(1);
+    const other = await store.createProject('Other');
+    other.scenes = (await store.getProject(project.id))!.scenes;
+    other.character = { description: HERO };
+    await store.saveProject(other);
+    coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
+    await coordinator.startHeroSheetRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'running');
+    await expect(coordinator.startRun(other.id)).rejects.toThrow(coordinator.HERO_SHEET_BUSY_MESSAGE);
+    await coordinator.pauseRun();
+    await waitFor(() => coordinator.getRunState()?.status === 'paused');
+    expect(coordinator.HERO_SHEET_PAUSED_MESSAGE).toBe('The model sheet is paused. Resume or stop it in the Script step, then try again.');
+    await expect(coordinator.startRun(other.id)).rejects.toThrow(coordinator.HERO_SHEET_PAUSED_MESSAGE);
+    await expect(coordinator.startHeroSheetRun(other.id)).rejects.toThrow(coordinator.HERO_SHEET_PAUSED_MESSAGE);
+    await coordinator.stopRun();
+    await coordinator.startRun(other.id);
+    expect(coordinator.getRunState()!.projectId).toBe(other.id);
+  });
+
+  it('matches the sheet with the outputs and shape it was sent with, not later edits', async () => {
+    const { coordinator, project, fakePort, store } = await withHero(2);
+    stubFetch();
+    const port = fakePort();
+    let opened = '';
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ((opened = key), { x: TILE_X, y: 300 }));
+    coordinator.setFlowPort(port);
+    await coordinator.startHeroSheetRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates['hero-sheet']?.status === 'submitted');
+    expect(coordinator.getRunState()!.sheet).toEqual({ outputs: 2, aspect: '9:16' });
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt, mediaId: opened }));
+
+    // The owner changes the project's outputs and shape while Flow draws the sheet.
+    const edited = (await store.getProject(project.id))!;
+    edited.outputsPerPrompt = 1;
+    edited.aspect = '1:1';
+    await store.saveProject(edited);
+
+    await coordinator.handleTiles([card('k1', 0)]);
+    await coordinator.settledForTests();
+    expect(coordinator.getRunState()!.sceneStates['hero-sheet']?.status).toBe('submitted'); // one of two isn't the sheet
+    await coordinator.handleTiles([card('k2', 0), card('k1', 1)]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the sheet finished');
+    expect(coordinator.getRunState()!.sceneStates['hero-sheet']?.pictureIds).toHaveLength(2);
+  });
+
+  it('a sheet run restored after a restart sends the model sheet prompt, with no reference', async () => {
+    const ctx = await withHero(1);
+    const { initHeroSheetRun, reduceRun } = await import('../../src/runs/run');
+    const project = (await ctx.store.getProject(ctx.project.id))!;
+    // A running sheet run was saved; the browser restarted (no session marker).
+    ctx.chromeMock.storage.local.data['vidflow.run'] = reduceRun(initHeroSheetRun(project), { type: 'start' });
+    delete ctx.chromeMock.storage.session.data['vidflow.sessionAlive'];
+    vi.resetModules();
+    const store = await import('../../src/store/projects');
+    store.setMediaStore(ctx.media);
+    const coordinator = await loadCoordinator();
+    const port = ctx.fakePort();
+    coordinator.registerCoordinator();
+    coordinator.setFlowPort(port);
+    await waitFor(() => vi.mocked(port.prepare).mock.calls.length === 1, 'the sheet sent after restart');
+    const [, sceneId, prompt, options] = vi.mocked(port.prepare).mock.calls[0]!;
+    expect(sceneId).toBe('hero-sheet');
+    expect(prompt).toMatch(/model sheet/i);
+    expect(prompt).not.toMatch(/Ingredient|reference picture/i);
+    expect(options).toEqual({ aspect: '9:16', outputs: 1, verb: 'Resume' });
+    expect(port.uploadReference).not.toHaveBeenCalled();
   });
 });
