@@ -18,7 +18,7 @@ Run on the owner's Flow Pro (unscripted4ce), e2e build, Chrome with the Plan 1b 
 
 Run 2 first paused twice with "VidFlow pressed New project but Flow didn't open one". Cause: the tester's own automation tab had been moved into VidFlow's dedicated Flow window, so VidFlow's tab was a background tab there. Flow ignores presses in a tab that isn't shown (no pointer events reached the page; checked with capture listeners). VidFlow then lost track of the window (the saved tab was no longer where it was saved). On Resume, VidFlow opened a fresh window of its own and the run completed normally.
 
-This is outside Plan 1b's code (it's the window handling from Plan 1) and only happens when someone moves tabs into VidFlow's window. Logged for Plan 6 polish: before pressing, make VidFlow's tab the shown tab in its own window (`chrome.tabs.update(tabId, { active: true })`, never focusing the window).
+It only happens when someone moves tabs into VidFlow's window. **Now fixed** (Plan 1b final review): right before every press (New project, Generate, opening a tile), the coordinator makes VidFlow's tab the shown tab in its own window (`chrome.tabs.update(tabId, { active: true })`, only when it isn't already, never focusing the window). The studio link in the side panel also never opens or shows the studio inside VidFlow's Flow window.
 
 ## Not seen
 

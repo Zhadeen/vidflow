@@ -89,8 +89,17 @@ type Listener = (changes: Record<string, { newValue?: unknown }>, area: string) 
 /** chrome.* as the panel uses it: local storage (step, activity, switch), tabs and windows. */
 export function stubChrome(data: Record<string, unknown> = {}) {
   const listeners = new Set<Listener>();
-  const tabs = { query: vi.fn(async (): Promise<unknown[]> => []), create: vi.fn(async () => ({})), update: vi.fn(async () => ({})) };
-  const windows = { update: vi.fn(async () => ({})) };
+  const tabs = {
+    query: vi.fn(async (): Promise<unknown[]> => []),
+    create: vi.fn(async () => ({})),
+    update: vi.fn(async () => ({})),
+    move: vi.fn(async () => ({})),
+  };
+  const windows = {
+    update: vi.fn(async () => ({})),
+    getAll: vi.fn(async (): Promise<unknown[]> => []),
+    create: vi.fn(async () => ({ id: 50 })),
+  };
   vi.stubGlobal('chrome', {
     runtime: { id: 'vidflow', getURL: (p: string) => `chrome-extension://vidflow${p}` },
     storage: {

@@ -60,6 +60,7 @@ export function placeLive(doc: Document, view: LiveView | null, liveOn: boolean)
   if (!view || !liveOn) {
     renderHighlight(doc, null, null);
     renderSavedBadges(doc, new Map());
+    placePill(doc); // the pill shows whatever the switch says: keep it off Flow's prompt bar on resize / page changes
     return;
   }
   const h = view.highlight;

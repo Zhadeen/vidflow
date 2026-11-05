@@ -87,6 +87,32 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
     };
   }, [projectId, open]);
 
+  // Back in the studio after the side panel (or openStudio bringing this tab forward on the same video): show what was
+  // changed there, once this tab's own saves are done. The same refresh the panel does (Panel.tsx).
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return;
+      void saving.current
+        .then(async () => {
+          const id = current.current;
+          if (!id) {
+            const list = await summaries();
+            if (current.current === null) setProjects(list);
+            return;
+          }
+          const fresh = await getProject(id);
+          if (fresh && fresh.id === current.current) setProject(fresh);
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
+
   const change = useCallback((patch: ProjectPatch) => {
     setProject((p) => (p ? applyPatch(p, patch) : p));
     const id = current.current;

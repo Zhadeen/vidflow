@@ -9,8 +9,8 @@ let windowsUpdate: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   sidePanelOpen = vi.fn(async () => undefined);
-  // Storage never answers: anything awaited before the panel opens would hold it back.
-  storageGet = vi.fn(() => new Promise(() => undefined));
+  // No Flow window saved yet (the studio opener reads it). The panel test makes storage never answer.
+  storageGet = vi.fn(async () => ({}));
   tabs = { query: vi.fn(async () => []), create: vi.fn(async () => ({})), update: vi.fn(async () => ({})) };
   windowsUpdate = vi.fn(async () => ({}));
   vi.stubGlobal('chrome', {
@@ -26,6 +26,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('toolbar button', () => {
   it('opens the side panel on a Flow tab', async () => {
+    // Storage never answers: anything awaited before the panel opens would hold it back.
+    storageGet.mockImplementation(() => new Promise(() => undefined));
     const result = openForTab({ id: 3, windowId: 7, url: 'https://labs.google/fx/tools/flow/project/abc' });
     // Synchronously, inside the click's user gesture: Chrome refuses sidePanel.open() after an await.
     expect(sidePanelOpen).toHaveBeenCalledWith({ windowId: 7 });

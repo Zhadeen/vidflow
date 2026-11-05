@@ -121,6 +121,32 @@ describe('renderPill', () => {
     expect(onToggle).toHaveBeenCalledWith('pause');
   });
 
+  it('updates in place: the Pause button is the same node after a step change (focus and a press survive)', () => {
+    const onToggle = vi.fn();
+    const host = renderPill(document, view({ step: 'Typing the prompt', scene: 1 }), onToggle)!;
+    const root = host.shadowRoot!;
+    const button = root.querySelector('button')!;
+    button.focus();
+    expect(root.activeElement).toBe(button);
+
+    renderPill(document, view({ step: 'Pressing Generate', scene: 1, saved: 6, toGo: 6 }), onToggle);
+    expect(root.querySelector('button')).toBe(button);
+    expect(root.activeElement).toBe(button);
+    expect(text(root.querySelector('.step'))).toBe('Scene 1 of 12 · Pressing Generate');
+    expect(text(root.querySelector('.counts'))).toBe('6 saved · 0 being drawn · 6 to go');
+    expect(root.querySelector<HTMLElement>('.fill')!.style.width).toBe('50%');
+    expect(root.querySelectorAll('.pill')).toHaveLength(1);
+
+    // Paused: same button, now Resume; one press calls once with the current action.
+    renderPill(document, view({ paused: true }), onToggle);
+    expect(root.querySelector('button')).toBe(button);
+    expect(button.textContent).toBe('Resume');
+    expect(text(root.querySelector('.step'))).toBe('Picture 2 of 12');
+    button.click();
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onToggle).toHaveBeenCalledWith('resume');
+  });
+
   it('offers Resume when paused, and removes itself when hidden', () => {
     const onToggle = vi.fn();
     const host = renderPill(document, view({ n: 3, total: 3, paused: true }), onToggle)!;

@@ -186,6 +186,48 @@ describe('side panel: before starting', () => {
     expect((screen.getByRole('button', { name: 'Start making pictures' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("with a run live and the panel in VidFlow's Flow window, Open full studio ↗ never shows a tab there", async () => {
+    const FLOW_WINDOW = 3;
+    const chrome = stubChrome({ 'vidflow.flowWindow': { windowId: FLOW_WINDOW, tabId: 7 } });
+    chrome.windows.getAll.mockResolvedValue([
+      { id: FLOW_WINDOW, type: 'normal', focused: true },
+      { id: 9, type: 'normal', focused: false },
+    ]);
+    const p = await seed('Phone Bill Story', 6);
+    const bg = fakeBackground(runningState(p, 1));
+    render(<Panel client={bg.client()} />);
+    await screen.findByRole('button', { name: 'Pause' });
+
+    // No studio tab yet: it opens in the other window, not the current one (VidFlow's).
+    fireEvent.click(screen.getByRole('button', { name: /Open full studio/ }));
+    await waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({ url: `${STUDIO}#/project/${p.id}`, windowId: 9, active: true }));
+
+    // A studio tab left inside VidFlow's window is moved out before it is shown.
+    chrome.tabs.query.mockResolvedValue([{ id: 5, windowId: FLOW_WINDOW, url: STUDIO }]);
+    fireEvent.click(screen.getByRole('button', { name: /Open full studio/ }));
+    await waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(5, { active: true, url: `${STUDIO}#/project/${p.id}` }));
+    expect(chrome.tabs.move).toHaveBeenCalledWith(5, { windowId: 9, index: -1 });
+    expect(chrome.tabs.move.mock.invocationCallOrder[0]!).toBeLessThan(chrome.tabs.update.mock.invocationCallOrder[0]!);
+    expect(chrome.windows.update).not.toHaveBeenCalledWith(FLOW_WINDOW, expect.anything());
+    expect(chrome.tabs.update).not.toHaveBeenCalledWith(7, expect.anything());
+  });
+
+  it("Review in the full studio never shows a tab in VidFlow's Flow window", async () => {
+    const FLOW_WINDOW = 3;
+    const chrome = stubChrome({ 'vidflow.flowWindow': { windowId: FLOW_WINDOW, tabId: 7 } });
+    // VidFlow's window is the only one: the studio gets a window of its own.
+    chrome.windows.getAll.mockResolvedValue([{ id: FLOW_WINDOW, type: 'normal', focused: true }]);
+    const p = await seed('Phone Bill Story', 6, (x) => {
+      x.sceneStates = runningState(x, 6).sceneStates;
+    });
+    render(<Panel client={fakeBackground(null).client()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Review in the full studio' }));
+    await waitFor(() => expect(chrome.windows.create).toHaveBeenCalledWith({ url: `${STUDIO}#/project/${p.id}`, focused: true }));
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.windows.update).not.toHaveBeenCalledWith(FLOW_WINDOW, expect.anything());
+  });
+
   it('Open full studio ↗ opens or focuses the studio tab on this project', async () => {
     const chrome = stubChrome();
     const p = await seed('Phone Bill Story', 6);

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRefresher, liveView, renderLive } from '../../src/flow/live';
+import { createRefresher, liveView, placeLive, renderLive } from '../../src/flow/live';
 import type { LiveView } from '../../src/flow/messages';
 import type { Step } from '../../src/runs/activity';
 import type { RunState } from '../../src/runs/run';
@@ -106,6 +106,21 @@ describe('renderLive', () => {
     renderLive(document, null, true, vi.fn());
     expect(document.getElementById('vidflow-pill')).toBeNull();
     vi.useRealTimers();
+  });
+});
+
+describe('placeLive with live activity off', () => {
+  it('still re-places the pill (resize / page changes) though ring and badges stay off', () => {
+    renderLive(document, { n: 1, total: 3, paused: false, step: null, scene: null, saved: 0, drawing: 0, toGo: 3, highlight: null, savedCards: [] }, false, vi.fn());
+    const host = document.getElementById('vidflow-pill')!;
+    expect(host.style.bottom).toBe('16px');
+    // Flow's prompt bar now sits under the pill (e.g. after a resize).
+    const bar = document.createElement('flow-base-prompt-box');
+    bar.getBoundingClientRect = () => ({ left: 0, right: 1000, top: window.innerHeight - 100, bottom: window.innerHeight, width: 1000, height: 100, x: 0, y: 0, toJSON: () => ({}) });
+    document.body.append(bar);
+    placeLive(document, { n: 1, total: 3, paused: false, step: null, scene: null, saved: 0, drawing: 0, toGo: 3, highlight: null, savedCards: [] }, false);
+    expect(host.style.bottom).toBe('108px');
+    expect(document.getElementById('vidflow-highlight')).toBeNull();
   });
 });
 

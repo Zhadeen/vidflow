@@ -29,17 +29,20 @@ function mockChrome() {
     };
   };
   const listener = () => ({ addListener: vi.fn() });
-  const tab = { id: 7, windowId: 3, url: 'https://flow.google.com/' };
+  const tab = { id: 7, windowId: 3, url: 'https://flow.google.com/', active: true };
   const chromeMock = {
     tab,
     storage: { local: area(), session: area() },
     alarms: { create: vi.fn(async (_name: string, _info: unknown) => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
     power: { requestKeepAwake: vi.fn(), releaseKeepAwake: vi.fn() },
     notifications: { create: vi.fn(async () => '') },
-    windows: { create: vi.fn(async () => ({ id: 3, tabs: [{ id: 7 }] })), onRemoved: listener() },
+    windows: { create: vi.fn(async () => ({ id: 3, tabs: [{ id: 7 }] })), update: vi.fn(async () => undefined), onRemoved: listener() },
     tabs: {
       get: vi.fn(async () => ({ ...tab })),
-      update: vi.fn(async (_id: number, props: { url: string }) => void (tab.url = props.url)),
+      update: vi.fn(async (_id: number, props: { url?: string; active?: boolean }) => {
+        if (props.url !== undefined) tab.url = props.url;
+        if (props.active !== undefined) tab.active = props.active;
+      }),
       goBack: vi.fn(async () => void (tab.url = tab.url.replace(/\/edit\/.*$/, ''))),
       setZoomSettings: vi.fn(async () => undefined),
       setZoom: vi.fn(async () => undefined),
@@ -137,6 +140,34 @@ afterEach(async () => {
 });
 
 describe('coordinator ↔ Flow port', () => {
+  it("before every press, VidFlow's tab is made the active tab of its own window (never focusing the window)", async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    const activeAtPress: boolean[] = [];
+    const base = fakePort();
+    const port = fakePort({
+      press: vi.fn(async (tabId: number, x: number, y: number) => {
+        activeAtPress.push(chromeMock.tab.active);
+        chromeMock.tab.active = false; // the owner switched to another tab in that window meanwhile
+        await base.press(tabId, x, y);
+      }),
+    });
+    chromeMock.tab.active = false; // another tab is in front in VidFlow's window
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    expect(activeAtPress).toEqual([true, true]); // New project, then Generate
+    expect(chromeMock.tabs.update).toHaveBeenCalledWith(7, { active: true });
+    expect(chromeMock.windows.update).not.toHaveBeenCalled();
+  });
+
+  it('does not re-activate a tab that is already active before a press', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    expect(chromeMock.tabs.update.mock.calls.filter(([, p]) => 'active' in (p as object))).toEqual([]);
+  });
+
   it('a new run opens a new Flow project, then prepares, presses, confirms and marks the scene submitted', async () => {
     const { chromeMock, coordinator, project, fakePort } = await setup();
     const port = fakePort();
@@ -442,6 +473,24 @@ describe('matching results to scenes', () => {
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
+
+  it('a tile press is preceded by making the tab active', async () => {
+    const { chromeMock, coordinator, port } = await submitted(1);
+    vi.mocked(port.press).mockClear();
+    chromeMock.tab.active = false;
+    let activeAtTilePress: boolean | undefined;
+    const inner = vi.mocked(port.press).getMockImplementation()!;
+    vi.mocked(port.press).mockImplementation(async (tabId, x, y) => {
+      if (x === TILE_X) activeAtTilePress = chromeMock.tab.active;
+      await inner(tabId, x, y);
+    });
+    vi.mocked(port.readDetail).mockResolvedValue({ prompt: null, mediaId: 'k1' });
+    await coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => vi.mocked(port.readDetail).mock.calls.length >= 1);
+    await coordinator.settledForTests();
+    expect(activeAtTilePress).toBe(true);
+    expect(chromeMock.windows.update).not.toHaveBeenCalled();
+  });
 
   it("saves a scene's pictures only after each card's detail prompt verifies", async () => {
     const { chromeMock, coordinator, port, prompt, media, project } = await submitted(2);

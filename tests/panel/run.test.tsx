@@ -5,7 +5,8 @@ import { ACTIVITY_KEY, STEP_KEY, type ActivityEntry, type Step } from '../../src
 import { memoryMediaStore } from '../../src/store/media';
 import { App } from '../../src/studio/App';
 import { readFileSync } from 'node:fs';
-import { clearProjects, fakeBackground, runningState, sceneId, seed, stubChrome } from './helpers';
+import { saveEdits } from '../../src/studio/projectEdits';
+import { clearProjects, fakeBackground, runningState, scenes, sceneId, seed, stubChrome } from './helpers';
 
 beforeEach(async () => {
   await clearProjects();
@@ -71,6 +72,51 @@ describe('side panel: while it runs', () => {
     expect(await screen.findByText('Scene 3 of 6 · Pressing Generate')).toBeTruthy();
   });
 
+  it("scrolls the current scene's strip tile into view when the scene changes", async () => {
+    const scrolled: Array<{ text: string | null; opts: unknown }> = [];
+    const proto = HTMLElement.prototype as unknown as { scrollIntoView?: (o?: unknown) => void };
+    const had = proto.scrollIntoView;
+    proto.scrollIntoView = function (this: HTMLElement, opts?: unknown) {
+      scrolled.push({ text: this.textContent, opts });
+    };
+    try {
+      const p = await seed('Phone Bill Story', 6);
+      stubChrome({ [STEP_KEY]: step(p.id, 3, 'Typing the prompt') });
+      render(<Panel client={fakeBackground(runningState(p, 2, 1)).client()} />);
+      await screen.findByText('Scene 3 of 6 · Typing the prompt');
+      await waitFor(() => expect(scrolled).toEqual([{ text: '3', opts: { block: 'nearest' } }]));
+
+      // Another step on the same scene: no scroll (the owner may have scrolled the strip themselves).
+      await act(async () => {
+        await (globalThis as unknown as { chrome: { storage: { local: { set(i: object): Promise<void> } } } }).chrome.storage.local.set({
+          [STEP_KEY]: step(p.id, 3, 'Pressing Generate'),
+        });
+      });
+      await screen.findByText('Scene 3 of 6 · Pressing Generate');
+      expect(scrolled).toHaveLength(1);
+
+      await act(async () => {
+        await (globalThis as unknown as { chrome: { storage: { local: { set(i: object): Promise<void> } } } }).chrome.storage.local.set({
+          [STEP_KEY]: step(p.id, 4, 'Typing the prompt'),
+        });
+      });
+      await waitFor(() => expect(scrolled.at(-1)).toEqual({ text: '4', opts: { block: 'nearest' } }));
+      expect(scrolled).toHaveLength(2);
+    } finally {
+      if (had) proto.scrollIntoView = had;
+      else delete proto.scrollIntoView;
+    }
+  });
+
+  it('a strip without scrollIntoView (jsdom) still renders the current scene', async () => {
+    const proto = HTMLElement.prototype as unknown as { scrollIntoView?: unknown };
+    expect(proto.scrollIntoView).toBeUndefined();
+    const p = await seed('Phone Bill Story', 6);
+    stubChrome({ [STEP_KEY]: step(p.id, 3, 'Typing the prompt') });
+    render(<Panel client={fakeBackground(runningState(p, 2, 1)).client()} />);
+    expect(await screen.findByText('Scene 3 of 6 · Typing the prompt')).toBeTruthy();
+  });
+
   it('Pause/Resume and Stop call the run client', async () => {
     stubChrome();
     const p = await seed('Phone Bill Story', 6);
@@ -127,5 +173,33 @@ describe('side panel: while it runs', () => {
     // The studio keeps its live-activity switch; the panel leaves it out.
     expect(within(studio.container).getByRole('switch', { name: 'Show live activity in Flow' })).toBeTruthy();
     expect(within(panel.container).queryByRole('switch')).toBeNull();
+  });
+});
+
+describe('studio after edits in the panel', () => {
+  async function editedInPanel(fire: () => void) {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 0);
+    window.location.hash = `#/project/${p.id}`;
+    render(<App client={fakeBackground(null).client()} media={memoryMediaStore()} />);
+    expect(((await screen.findByRole('radio', { name: '16:9' })) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole('heading', { name: '3 scenes' })).toBeNull();
+
+    // The panel saves its edits straight to the store, as Panel.tsx does.
+    await saveEdits(p.id, { scenes: scenes(3), aspect: '9:16', style: 'custom', customStyle: 'Blue ballpoint' });
+    await act(async () => fire());
+
+    expect(await screen.findByRole('heading', { name: '3 scenes' })).toBeTruthy();
+    expect((screen.getByRole('radio', { name: '9:16' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: /Your own style/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('textbox', { name: 'Your own style' }) as HTMLTextAreaElement).value).toBe('Blue ballpoint');
+  }
+
+  it('re-reads the shown video when the studio tab regains focus', async () => {
+    await editedInPanel(() => window.dispatchEvent(new Event('focus')));
+  });
+
+  it('re-reads the shown video when the studio tab becomes visible again', async () => {
+    await editedInPanel(() => document.dispatchEvent(new Event('visibilitychange')));
   });
 });

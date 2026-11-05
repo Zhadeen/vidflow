@@ -263,6 +263,26 @@ async function findOrOpenFlowTab(): Promise<number> {
 }
 
 /**
+ * Flow ignores debugger presses while VidFlow's tab is not the active tab of its window (plan-1b live check). Right
+ * before every press, bring the tab to the front of its own window — only if it isn't already, and never by focusing
+ * the window (the owner keeps working wherever they are).
+ */
+async function frontTab(tabId: number): Promise<void> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) await chrome.tabs.update(tabId, { active: true });
+  } catch {
+    // The tab is gone; the press fails and the run pauses as usual.
+  }
+}
+
+/** Every press goes through here: the tab is made active in its window first. */
+async function pressIn(tabId: number, x: number, y: number): Promise<void> {
+  await frontTab(tabId);
+  await port!.press(tabId, x, y);
+}
+
+/**
  * Page zoom changes what CSS pixels mean to the debugger's input; keep VidFlow's tab at 100% (the port scales
  * otherwise). Zoom is per-site by default, so the tab is made per-tab first: the owner's other Flow tabs keep theirs.
  */
@@ -417,7 +437,7 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
   }
   const at = await port!.findNewProject(tabId, PUMP_VERB);
   if (!stillRunning(projectId)) return false;
-  await port!.press(tabId, at.x, at.y);
+  await pressIn(tabId, at.x, at.y);
   if (!stillRunning(projectId)) await detachFlowDebugger(tabId); // paused or stopped during the press
   const url = await waitForUrl(tabId, (u) => projectUrlOf(u) !== null);
   const flowProjectUrl = projectUrlOf(url ?? undefined);
@@ -483,7 +503,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
     if (!stillRunning(projectId)) return 'stop';
     note(project, sceneId, 'Pressing Generate', 'generate');
-    await port!.press(tabId, at.x, at.y);
+    await pressIn(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
     if (!(await port!.confirmStarted(tabId))) {
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
@@ -600,7 +620,7 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
     }
     const at = await port.tilePoint(tabId, key);
     if (!stillCollecting(projectId)) return null;
-    await port.press(tabId, at.x, at.y);
+    await pressIn(tabId, at.x, at.y);
     if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
     const { prompt, mediaId } = await port.readDetail(tabId);
     // Trust the prompt only when the page's one picture is this card; missing or different means unread.

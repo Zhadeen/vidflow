@@ -55,7 +55,9 @@ describe('findTarget', () => {
 });
 
 describe('renderHighlight', () => {
-  it('ring never intercepts pointer events', () => {
+  // The hit-test half (a press at the ring lands on Generate) only runs in real Chrome: tests/visual/live-activity.mjs.
+  // jsdom has no layout or hit-testing, so this unit test checks what makes that work: pointer-events: none throughout.
+  it('ring and tag are pointer-events: none (the hit-test itself is checked in real Chrome)', () => {
     document.body.innerHTML = fixture('prompt-bar.html');
     const generate = document.querySelector(SEL.generate)!;
     box(generate, 900, 700, 30, 30);
@@ -65,8 +67,6 @@ describe('renderHighlight', () => {
     const drawn = [...h.shadowRoot!.querySelectorAll<HTMLElement>('*')].filter((el) => el.tagName !== 'STYLE');
     expect(drawn.length).toBeGreaterThan(1);
     for (const el of drawn) expect(getComputedStyle(el).pointerEvents).toBe('none');
-    // In Chrome the press hit-tests straight through (checked in tests/visual/live-activity.mjs); jsdom has no hit-testing.
-    if (typeof document.elementFromPoint === 'function') expect(document.elementFromPoint(915, 715)).toBe(generate);
   });
 
   it('draws a coral ring around the target and a coral tag with navy text', () => {

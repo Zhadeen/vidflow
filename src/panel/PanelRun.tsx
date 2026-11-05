@@ -1,5 +1,5 @@
 /// <reference types="chrome" />
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { liveView } from '../flow/live';
 import { pillProgress } from '../flow/pill';
 import { sceneNumber, STEP_KEY, type Step } from '../runs/activity';
@@ -66,6 +66,14 @@ export function PanelRun({ project, run, busy, error, step: stepProp, onPause, o
   const inRun = project.scenes.filter((s) => s.id in run.sceneStates);
   const needLook = inRun.filter((s) => ['refused', 'failed'].includes(run.sceneStates[s.id]!.status)).length;
 
+  // When VidFlow moves on to another scene, bring its strip tile into view (only then: the owner may scroll the strip).
+  const strip = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    if (!currentId) return;
+    const tile = strip.current?.querySelector<HTMLElement>('[aria-current="step"]');
+    if (tile && typeof tile.scrollIntoView === 'function') tile.scrollIntoView({ block: 'nearest' });
+  }, [currentId]);
+
   const line = paused
     ? 'Paused · press Resume to carry on'
     : view?.step
@@ -90,7 +98,7 @@ export function PanelRun({ project, run, busy, error, step: stepProp, onPause, o
           {needLook > 0 ? ` · ${needLook} ${needLook === 1 ? 'needs' : 'need'} a look` : ''}
         </div>
       )}
-      <ol className="vf-pn-strip" aria-label="Scenes">
+      <ol ref={strip} className="vf-pn-strip" aria-label="Scenes">
         {inRun.map((s) => {
           const state = tileState(run.sceneStates[s.id]!, s.id === currentId);
           const n = sceneNumber(project, s.id);
