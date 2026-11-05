@@ -66,6 +66,17 @@ const GIVE_UP_AFTER = 2;
 const SAVE_FAILED_MESSAGE = "VidFlow couldn't save this scene's pictures. Press Try again.";
 const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then press Resume.";
 
+export const BUSY_MESSAGE = 'Another project is making pictures right now. Pause it or wait for it to finish, then try again.';
+
+type RunStateListener = (state: RunState) => void;
+const listeners = new Set<RunStateListener>();
+
+/** The background forwards every state change to the studio through this. Returns an unsubscribe. */
+export function onRunState(listener: RunStateListener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 interface FlowWindow {
   windowId: number;
   tabId: number;
@@ -251,6 +262,13 @@ async function commit(next: RunState): Promise<void> {
   }
   await syncDeadlines(prev, next);
   announce(prev, next);
+  for (const listener of listeners) {
+    try {
+      listener(next);
+    } catch {
+      // A listener's failure (e.g. no studio tab open) never stops the run.
+    }
+  }
 }
 
 async function dispatch(event: RunEvent): Promise<void> {
@@ -608,12 +626,24 @@ async function pump(): Promise<void> {
 
 // ---- Public API ----------------------------------------------------------
 
-export async function startRun(projectId: string): Promise<void> {
+export async function startRun(projectId: string, retrySceneId?: string): Promise<void> {
   await ready;
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
-  await enqueue(() => commit(reduceRun(initRun(project), { type: 'start' })));
+  await enqueue(async () => {
+    if (state && state.projectId !== projectId && state.status === 'running') throw new Error(BUSY_MESSAGE);
+    let next = initRun(project);
+    if (retrySceneId) next = reduceRun(next, { type: 'retry', sceneId: retrySceneId });
+    await commit(reduceRun(next, { type: 'start' }));
+  });
   void pump();
+}
+
+/** Try again on one refused or failed scene: re-queue it in this project's run, or start a run for it. */
+export async function retryScene(projectId: string, sceneId: string): Promise<void> {
+  await ready;
+  if (state?.projectId === projectId && state.status !== 'idle') return dispatch({ type: 'retry', sceneId });
+  return startRun(projectId, sceneId);
 }
 
 export const pauseRun = () => dispatch({ type: 'pause' });

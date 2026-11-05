@@ -193,3 +193,29 @@ it('new pictures clear an earlier best-picture choice', () => {
   s = reduceRun(s, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m1'], cardKeys: ['k1'] });
   expect(s.sceneStates['scene-01']!.chosenPictureId).toBeUndefined();
 });
+
+describe('Try again (retry)', () => {
+  it('puts a refused scene back in the queue and carries on a finished run', () => {
+    let s = apply(initRun(project(2)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01' }, { type: 'submitted', sceneId: 'scene-02' });
+    s = apply(s, { type: 'refused', sceneId: 'scene-01', message: 'Flow said no.' }, { type: 'pictures', sceneId: 'scene-02', mediaIds: ['m'] });
+    expect(s.status).toBe('finished');
+    s = reduceRun(s, { type: 'retry', sceneId: 'scene-01' });
+    expect(s.sceneStates['scene-01']).toMatchObject({ status: 'pending' });
+    expect(s.sceneStates['scene-01']!.message).toBeUndefined();
+    expect(s.status).toBe('running');
+    expect(nextSceneToSubmit(s, ids(2), 2)).toBe('scene-01');
+  });
+
+  it('re-queues a failed scene but leaves a paused run paused', () => {
+    let s = apply(initRun(project(2)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01' });
+    s = apply(s, { type: 'failed', sceneId: 'scene-01', message: 'x' }, { type: 'pause' });
+    s = reduceRun(s, { type: 'retry', sceneId: 'scene-01' });
+    expect(s.sceneStates['scene-01']!.status).toBe('pending');
+    expect(s.status).toBe('paused');
+  });
+
+  it('ignores a scene that is not refused or failed', () => {
+    const s = apply(initRun(project(1)), { type: 'start' });
+    expect(reduceRun(s, { type: 'retry', sceneId: 'scene-01' })).toBe(s);
+  });
+});

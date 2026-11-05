@@ -211,6 +211,52 @@ describe('coordinator ↔ Flow port', () => {
 
 });
 
+describe('studio controls', () => {
+  it('tells listeners about every state change', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const seen: string[] = [];
+    coordinator.onRunState((s) => seen.push(s.status));
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => seen.includes('running'));
+  });
+
+  it('will not start a second project while another is making pictures', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const store = await import('../../src/store/projects');
+    const other = await store.createProject('Other');
+    coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
+    await coordinator.startRun(project.id);
+    await expect(coordinator.startRun(other.id)).rejects.toThrow(coordinator.BUSY_MESSAGE);
+  });
+
+  it('Try again re-queues a refused scene of the current run', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await coordinator.handleFlowEvent({ type: 'refused', sceneId: 's1', message: 'Flow refused it.' });
+    await waitFor(() => coordinator.getRunState()?.status === 'finished');
+    await coordinator.retryScene(project.id, 's1');
+    // Back in the queue of a running run; the pump sends it after its usual pause between scenes.
+    const state = coordinator.getRunState()!;
+    expect(state.status).toBe('running');
+    expect(state.sceneStates.s1).toMatchObject({ status: 'pending' });
+    expect(state.sceneStates.s1?.message).toBeUndefined();
+  });
+
+  it('Try again on a project with no run starts one for that scene', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(project.id))!;
+    saved.sceneStates = { s1: { sceneId: 's1', status: 'refused', message: 'no', pictureIds: [] } };
+    await store.saveProject(saved);
+    coordinator.setFlowPort(fakePort());
+    await coordinator.retryScene(project.id, 's1');
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+  });
+});
+
 describe('matching results to scenes', () => {
   /** Starts a run of one scene and waits until Flow has it; returns the exact prompt VidFlow typed. */
   async function submitted(outputs: 1 | 2 | 4, over: Partial<FlowPort> = {}) {

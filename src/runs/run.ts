@@ -13,6 +13,8 @@ export type RunEvent =
   | { type: 'detail'; cardKey: string; prompt: string }
   | { type: 'refused'; sceneId: string; message: string }
   | { type: 'failed'; sceneId: string; message: string }
+  /** The owner pressed Try again on a refused or failed scene: it goes back in the queue. */
+  | { type: 'retry'; sceneId: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
   | {
       type: 'needsOwner';
@@ -136,6 +138,17 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       return settle(
         setScene(state, event.sceneId, { status: event.type === 'refused' ? 'refused' : 'failed', message: event.message }),
       );
+    }
+    case 'retry': {
+      const current = state.sceneStates[event.sceneId];
+      if (!current || (current.status !== 'refused' && current.status !== 'failed')) return state;
+      const { message: _m, submission: _s, unconfirmed: _u, ...rest } = current;
+      return {
+        ...state,
+        // A finished run carries on with the re-queued scene; a paused one waits for Resume.
+        status: state.status === 'finished' ? 'running' : state.status,
+        sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'pending' } },
+      };
     }
     case 'limit':
       return { ...state, status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };

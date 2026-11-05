@@ -1,4 +1,4 @@
-import type { RunEvent } from '../runs/run';
+import type { RunEvent, RunState } from '../runs/run';
 import type { AspectRatio } from '../store/projects';
 import type { FlowResultCard, StartVerb } from './driver';
 
@@ -111,4 +111,36 @@ export class FlowBlockedError extends Error {
     super(event.message);
     this.name = 'FlowBlockedError';
   }
+}
+
+// ---- Studio ↔ background -----------------------------------------------------
+
+export const RUN_GET = 'run/get';
+export const RUN_START = 'run/start';
+export const RUN_PAUSE = 'run/pause';
+export const RUN_RESUME = 'run/resume';
+export const RUN_RETRY = 'run/retry';
+export const RUN_STATE = 'run/state';
+
+/** studio → background. Each is answered with a RunReply. */
+export type StudioRequest =
+  | { type: typeof RUN_GET }
+  | { type: typeof RUN_START; projectId: string }
+  | { type: typeof RUN_PAUSE }
+  | { type: typeof RUN_RESUME }
+  | { type: typeof RUN_RETRY; projectId: string; sceneId: string };
+
+/** The run as it is now, or why the request was refused (message is shown to the owner word for word). */
+export type RunReply =
+  | { ok: true; state: RunState | null }
+  | {
+      ok: false;
+      reason?: 'wrong-account' | 'signed-out' | 'policy-dialog' | 'page-not-recognised' | 'busy' | 'error';
+      message: string;
+    };
+
+/** background → studio, on every change of the run. */
+export interface RunStateMessage {
+  type: typeof RUN_STATE;
+  state: RunState;
 }
