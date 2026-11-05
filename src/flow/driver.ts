@@ -24,33 +24,52 @@ export interface FlowResultCard {
   domIndex: number;
 }
 
+/** What the page looked like just before Generate was pressed, to confirm the press started something. */
+export interface FlowSnapshot {
+  promptText: string;
+  inProgress: number;
+  keys: string[];
+}
+
+export type StartVerb = 'Start' | 'Resume';
+
 export interface FlowDriver {
   read(): FlowPageState;
+  /** Waits (up to timeoutMs) for the prompt box and Generate, e.g. right after Flow opens a new project. */
+  waitUntilReady(timeoutMs: number): Promise<boolean>;
+  setImageMode(): Promise<void>;
   setAspect(a: AspectRatio): Promise<void>;
   setOutputs(n: 1 | 2 | 4): Promise<void>;
   attachReference(image: Blob): Promise<void>;
   /** Types the prompt, waits until Flow enables Generate (never enables it itself), returns its centre in viewport px. */
   prepareSubmit(prompt: string): Promise<{ x: number; y: number }>;
   resultCards(): FlowResultCard[];
+  snapshot(): FlowSnapshot;
+  /** True once Flow cleared the prompt box or showed a new in-progress tile; false after timeoutMs. */
+  waitForStart(before: FlowSnapshot, timeoutMs: number): Promise<boolean>;
+  /** Centre of the home page's "New project" button, or null when it isn't there. */
+  newProjectButton(): { x: number; y: number } | null;
 }
 
 export type StartCheck =
   | { ok: true }
   | { ok: false; reason: 'wrong-account' | 'signed-out' | 'policy-dialog' | 'page-not-recognised'; message: string };
 
-export function checkCanStart(s: FlowPageState, expectedEmail: string): StartCheck {
+/** `verb` names the button the owner will see: Start before a run, Resume for a paused one. */
+export function checkCanStart(s: FlowPageState, expectedEmail: string, verb: StartVerb = 'Start'): StartCheck {
+  const press = verb === 'Start' ? 'press Start again' : 'press Resume';
   if (s.policyDialog) {
     return {
       ok: false,
       reason: 'policy-dialog',
-      message: 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Start again.',
+      message: `Flow is showing a message about its usage policy or billing. Read it in the Flow window, then ${press}.`,
     };
   }
   if (!s.signedInEmail) {
     return {
       ok: false,
       reason: 'signed-out',
-      message: `Flow isn't signed in. Sign in to Flow as ${expectedEmail}, then press Start again.`,
+      message: `Flow isn't signed in. Sign in to Flow as ${expectedEmail}, then ${press}.`,
     };
   }
   if (s.signedInEmail.toLowerCase() !== expectedEmail.toLowerCase()) {
@@ -58,14 +77,14 @@ export function checkCanStart(s: FlowPageState, expectedEmail: string): StartChe
     return {
       ok: false,
       reason: 'wrong-account',
-      message: `Flow is signed in to ${actual}, but VidFlow is set to use ${expectedEmail}. Switch Flow to ${expectedEmail}, then press Start again.`,
+      message: `Flow is signed in to ${actual}, but VidFlow is set to use ${expectedEmail}. Switch Flow to ${expectedEmail}, then ${press}.`,
     };
   }
   if (!s.ready) {
     return {
       ok: false,
       reason: 'page-not-recognised',
-      message: "VidFlow doesn't recognise this Flow page. Open a Flow project in the VidFlow window, then press Start again.",
+      message: `VidFlow doesn't recognise this Flow page. Open a Flow project in the VidFlow window, then ${press}.`,
     };
   }
   return { ok: true };
@@ -201,9 +220,60 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     };
   }
 
+  const centre = (el: Element) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+  };
+
+  function snapshot(): FlowSnapshot {
+    const cards = resultCards();
+    return {
+      promptText: squash(q(SEL.promptBox)?.textContent),
+      inProgress: cards.filter((c) => c.progress !== null).length,
+      keys: cards.map((c) => c.key).filter((k) => !k.startsWith('pending-')),
+    };
+  }
+
+  function started(before: FlowSnapshot): boolean {
+    const now = snapshot();
+    if (before.promptText !== '' && now.promptText === '') return true;
+    if (now.inProgress > before.inProgress) return true;
+    return now.keys.some((k) => !before.keys.includes(k));
+  }
+
   return {
     read,
     resultCards,
+    snapshot,
+
+    async waitForStart(before, timeoutMs) {
+      try {
+        await until(() => started(before), timeoutMs, 'not started');
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async waitUntilReady(timeoutMs) {
+      try {
+        await until(() => read().ready, timeoutMs, 'not ready');
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    newProjectButton() {
+      const button = [...doc.querySelectorAll('button, [role="button"], a')].find((b) =>
+        /\bnew project\b/i.test(squash(b.textContent)),
+      );
+      return button ? centre(button) : null;
+    },
+
+    setImageMode() {
+      return chooseSetting('Image', () => findRadio('Image')?.getAttribute('aria-checked') === 'true');
+    },
 
     setAspect(a) {
       const icon = ASPECT_ICON[a];
@@ -215,8 +285,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     async attachReference() {
-      // Spike S5 did not explore Flow's ingredient upload; a later task adds it.
-      throw new Error('Adding a reference picture to Flow is not available yet.');
+      // Deferred to Plan 2 (spike S5 did not explore Flow's ingredient upload). Nothing calls this yet.
+      throw new Error("Adding a reference picture isn't available yet.");
     },
 
     async prepareSubmit(prompt) {
@@ -236,9 +306,9 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
         opts.timeoutMs ?? GENERATE_TIMEOUT_MS,
         "Flow's Generate button didn't become ready in 30 seconds.",
       );
-      const r = button.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) throw new Error("Flow's Generate button isn't visible.");
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      const at = centre(button);
+      if (!at) throw new Error("Flow's Generate button isn't visible.");
+      return at;
     },
   };
 }

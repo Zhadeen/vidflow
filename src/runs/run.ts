@@ -25,6 +25,8 @@ export interface RunState {
   resumeAt?: number | null;
   inFlight: string[];
   sceneStates: Record<string, SceneState>;
+  /** The fresh Flow project this run works in (spec §16.5). Unset until the run creates it; a new run starts without. */
+  flowProjectUrl?: string;
 }
 
 /** Every scene without a done/refused state starts (again) as pending. */

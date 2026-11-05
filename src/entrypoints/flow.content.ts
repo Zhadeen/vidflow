@@ -1,11 +1,15 @@
 /// <reference types="chrome" />
-import { checkCanStart, createFlowDriver, type FlowResultCard } from '../flow/driver';
+import { checkCanStart, createFlowDriver, type FlowResultCard, type FlowSnapshot } from '../flow/driver';
 import {
+  FLOW_CONFIRM,
   FLOW_EVENT,
+  FLOW_NEW_PROJECT,
   FLOW_PILL,
   FLOW_PILL_TOGGLE,
   FLOW_PREPARE,
   FLOW_TILES,
+  type ConfirmResponse,
+  type NewProjectRequest,
   type PillResponse,
   type PrepareRequest,
   type PrepareResponse,
@@ -17,6 +21,8 @@ import type { RunEvent } from '../runs/run';
 import { getExpectedAccount } from '../settings';
 
 const OBSERVE_THROTTLE_MS = 1_000;
+const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
+const CONFIRM_WAIT_MS = 8_000;
 
 export default defineContentScript({
   matches: ['https://flow.google.com/*', 'https://labs.google/fx/*'],
@@ -34,24 +40,65 @@ export default defineContentScript({
     };
     const report = (event: RunEvent) => send({ type: FLOW_EVENT, event });
 
+    /** Taken right after typing, so the background's confirm can tell whether its press started a picture. */
+    let beforePress: FlowSnapshot | null = null;
+    const failure = (err: unknown): PrepareResponse => ({
+      kind: 'error',
+      message: err instanceof Error ? err.message : String(err),
+    });
+
     async function prepare(req: PrepareRequest): Promise<PrepareResponse> {
       try {
+        await driver.waitUntilReady(READY_WAIT_MS);
         const state = driver.read();
-        const check = checkCanStart(state, await getExpectedAccount());
+        const check = checkCanStart(state, await getExpectedAccount(), req.verb ?? 'Start');
         if (!check.ok) return { kind: 'blocked', event: { type: 'needsOwner', reason: check.reason, message: check.message } };
         if (state.limitMessage) return { kind: 'blocked', event: { type: 'limit', message: state.limitMessage, resumeAt: null } };
+        await driver.setImageMode();
         if (req.aspect) await driver.setAspect(req.aspect);
         if (req.outputs) await driver.setOutputs(req.outputs);
         const at = await driver.prepareSubmit(req.prompt);
+        beforePress = driver.snapshot();
         return { kind: 'ready', ...at };
       } catch (err) {
-        return { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
     }
 
+    async function newProject(req: NewProjectRequest): Promise<PrepareResponse> {
+      try {
+        const deadline = Date.now() + READY_WAIT_MS;
+        while (!driver.newProjectButton() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
+        // The home page has no prompt bar, so only the account and dialog checks apply here.
+        const check = checkCanStart({ ...driver.read(), ready: true }, await getExpectedAccount(), req.verb);
+        if (!check.ok) return { kind: 'blocked', event: { type: 'needsOwner', reason: check.reason, message: check.message } };
+        const at = driver.newProjectButton();
+        if (!at) {
+          const message = `VidFlow can't find Flow's New project button. Open Flow's home page in the VidFlow window, then press ${req.verb}.`;
+          return { kind: 'blocked', event: { type: 'needsOwner', reason: 'page-not-recognised', message } };
+        }
+        return { kind: 'ready', ...at };
+      } catch (err) {
+        return failure(err);
+      }
+    }
+
+    async function confirm(): Promise<ConfirmResponse> {
+      if (!beforePress) return { started: false };
+      const started = await driver.waitForStart(beforePress, CONFIRM_WAIT_MS);
+      beforePress = null;
+      return { started };
+    }
+
     chrome.runtime.onMessage.addListener((message: { type?: string }, _sender, sendResponse) => {
-      if (message?.type !== FLOW_PREPARE) return;
-      void prepare(message as PrepareRequest).then(sendResponse);
+      const handlers: Record<string, () => Promise<unknown>> = {
+        [FLOW_PREPARE]: () => prepare(message as PrepareRequest),
+        [FLOW_NEW_PROJECT]: () => newProject(message as NewProjectRequest),
+        [FLOW_CONFIRM]: () => confirm(),
+      };
+      const handle = message?.type ? handlers[message.type] : undefined;
+      if (!handle) return;
+      void handle().then(sendResponse);
       return true; // answer asynchronously
     });
 

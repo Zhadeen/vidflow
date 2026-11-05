@@ -121,6 +121,19 @@ describe('checkCanStart', () => {
     });
   });
 
+  it('names Resume when asked to, keeping the wording otherwise', () => {
+    expect(checkCanStart({ ...idle, signedInEmail: 'someone@example.com' }, 'unscripted4ce@gmail.com', 'Resume')).toEqual({
+      ok: false,
+      reason: 'wrong-account',
+      message:
+        'Flow is signed in to someone@example.com, but VidFlow is set to use unscripted4ce@gmail.com. Switch Flow to unscripted4ce@gmail.com, then press Resume.',
+    });
+    for (const s of [{ ...idle, signedInEmail: null }, { ...idle, policyDialog: true }, { ...idle, ready: false }]) {
+      const check = checkCanStart(s, 'unscripted4ce@gmail.com', 'Resume');
+      expect(check.ok ? '' : check.message).toMatch(/then press Resume\.$/);
+    }
+  });
+
   it('blocks start on a page it does not recognise', () => {
     expect(checkCanStart({ ...idle, ready: false }, 'unscripted4ce@gmail.com')).toMatchObject({
       ok: false,
@@ -138,6 +151,25 @@ describe('FlowDriver settings', () => {
     await driver.setOutputs(4);
     expect($(SEL.settingsTrigger).textContent).toContain('crop_16_9');
     expect($(SEL.settingsTrigger).textContent).toContain('x4');
+  });
+
+  it('switches Flow to Image and confirms the radio is checked', async () => {
+    load('prompt-bar.html');
+    fakeRadios();
+    const image = [...document.querySelectorAll('[role="radio"]')].find((r) => r.textContent!.includes('Image'))!;
+    const video = [...document.querySelectorAll('[role="radio"]')].find((r) => r.textContent!.includes('Video'))!;
+    image.setAttribute('aria-checked', 'false');
+    video.setAttribute('aria-checked', 'true');
+    await createFlowDriver(document, { pollMs: 5, timeoutMs: 200 }).setImageMode();
+    expect(image.getAttribute('aria-checked')).toBe('true');
+    expect(video.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('fails when Image does not take', async () => {
+    load('prompt-bar.html'); // no fake radios
+    const image = [...document.querySelectorAll('[role="radio"]')].find((r) => r.textContent!.includes('Image'))!;
+    image.setAttribute('aria-checked', 'false');
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).setImageMode()).rejects.toThrow(/Image/);
   });
 
   it('opens the settings popover when it is closed', async () => {
@@ -209,6 +241,53 @@ describe('FlowDriver.prepareSubmit', () => {
   });
 });
 
+describe('FlowDriver.waitForStart', () => {
+  const typed = () => {
+    load('prompt-bar.html', 'tiles.html');
+    $(SEL.promptBox).innerHTML = '<p>A stickman waves</p>';
+    return createFlowDriver(document, { pollMs: 5 });
+  };
+
+  it('confirms when Flow clears the prompt box', async () => {
+    const driver = typed();
+    const snap = driver.snapshot();
+    setTimeout(() => ($(SEL.promptBox).innerHTML = '<p><br></p>'), 20);
+    expect(await driver.waitForStart(snap, 500)).toBe(true);
+  });
+
+  it('confirms when a new in-progress tile appears', async () => {
+    const driver = typed();
+    const snap = driver.snapshot();
+    setTimeout(() => {
+      const tile = document.createElement('div');
+      tile.innerHTML = '<div>0%</div><span>A stickman waves</span>';
+      $(SEL.tileList).prepend(tile);
+    }, 20);
+    expect(await driver.waitForStart(snap, 500)).toBe(true);
+  });
+
+  it('reports false when nothing changes in time', async () => {
+    const driver = typed();
+    expect(await driver.waitForStart(driver.snapshot(), 50)).toBe(false);
+  });
+});
+
+describe('FlowDriver home page', () => {
+  it('finds the New project button and its centre', () => {
+    load('home.html');
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent!.includes('New project'))!;
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({ left: 40, top: 200, width: 160, height: 48 } as DOMRect);
+    const driver = createFlowDriver();
+    expect(driver.read()).toMatchObject({ ready: false, signedInEmail: 'owner@example.com' });
+    expect(driver.newProjectButton()).toEqual({ x: 120, y: 224 });
+  });
+
+  it('finds no New project button on a project page', () => {
+    load('prompt-bar.html');
+    expect(createFlowDriver().newProjectButton()).toBeNull();
+  });
+});
+
 describe('FlowDriver.resultCards', () => {
   it('lists each card with caption and image', () => {
     load('tiles.html');
@@ -250,6 +329,8 @@ describe('FlowDriver.resultCards', () => {
 describe('FlowDriver.attachReference', () => {
   it('says it is not available yet', async () => {
     load('prompt-bar.html');
-    await expect(createFlowDriver().attachReference(new Blob(['x']))).rejects.toThrow(/not available yet/);
+    await expect(createFlowDriver().attachReference(new Blob(['x']))).rejects.toThrow(
+      "Adding a reference picture isn't available yet.",
+    );
   });
 });

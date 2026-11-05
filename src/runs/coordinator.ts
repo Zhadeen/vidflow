@@ -1,5 +1,7 @@
 /// <reference types="chrome" />
-import { FlowBlockedError, type SubmitOptions } from '../flow/messages';
+import type { StartVerb } from '../flow/driver';
+import { FlowBlockedError, type Point, type SubmitOptions } from '../flow/messages';
+import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { pillView, type PillView } from '../flow/pill';
 import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt } from '../prompts/build';
@@ -16,9 +18,19 @@ import {
   type RunState,
 } from './run';
 
-/** How the coordinator talks to Flow; src/flow/port.ts implements it. Throws FlowBlockedError when the run must pause. */
+/**
+ * How the coordinator talks to Flow; src/flow/port.ts implements it. prepare/findNewProject throw FlowBlockedError when
+ * the run must pause. Pressing is separate so the coordinator re-checks the run right before every press.
+ */
 export interface FlowPort {
-  submit(tabId: number, sceneId: string, prompt: string, options?: SubmitOptions): Promise<void>;
+  /** Types the prompt (and sets mode/aspect/outputs); answers with where Generate is. Does not press. */
+  prepare(tabId: number, sceneId: string, prompt: string, options?: SubmitOptions): Promise<Point>;
+  /** On Flow's home page: checks the account, answers with where "New project" is. */
+  findNewProject(tabId: number, verb: StartVerb): Promise<Point>;
+  /** Trusted press at a point in the tab. */
+  press(tabId: number, x: number, y: number): Promise<void>;
+  /** After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s). */
+  confirmStarted(tabId: number): Promise<boolean>;
 }
 
 // Plain dark square; the extension has no icon files yet (chrome requires an iconUrl on basic notifications).
@@ -34,6 +46,12 @@ const FLOW_URL = 'https://flow.google.com/';
 const MAX_IN_FLIGHT = 3;
 const PACE_MIN_MS = 4000;
 const PACE_MAX_MS = 7000;
+const URL_WAIT_MS = 30_000;
+const URL_POLL_MS = 500;
+// A blocked run is always left paused, so owner-facing messages from the pump name Resume.
+const PUMP_VERB: StartVerb = 'Resume';
+export const NOT_STARTED_MESSAGE = "VidFlow pressed Generate but Flow didn't start. Check the Flow window, then press Resume.";
+const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then press Resume.";
 
 interface FlowWindow {
   windowId: number;
@@ -98,7 +116,10 @@ async function ensureFlowTab(): Promise<number> {
   if (saved) {
     try {
       const tab = await chrome.tabs.get(saved.tabId);
-      if (tab.windowId === saved.windowId && (isFlowUrl(tab.url) || isFlowUrl(tab.pendingUrl))) return saved.tabId;
+      if (tab.windowId === saved.windowId && (isFlowUrl(tab.url) || isFlowUrl(tab.pendingUrl))) {
+        await resetZoom(saved.tabId);
+        return saved.tabId;
+      }
     } catch {
       // The tab is gone; open a new window below.
     }
@@ -108,7 +129,37 @@ async function ensureFlowTab(): Promise<number> {
   const tabId = created?.tabs?.[0]?.id;
   if (created?.id === undefined || tabId === undefined) throw new Error('no window');
   await chrome.storage.local.set({ [WINDOW_KEY]: { windowId: created.id, tabId } satisfies FlowWindow });
+  await resetZoom(tabId);
   return tabId;
+}
+
+/** Page zoom changes what CSS pixels mean to the debugger's input; keep VidFlow's tab at 100% (the port scales otherwise). */
+async function resetZoom(tabId: number): Promise<void> {
+  try {
+    await chrome.tabs.setZoom(tabId, 1);
+  } catch {
+    // The port scales by getZoom instead.
+  }
+}
+
+async function tabUrl(tabId: number): Promise<string | undefined> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab.pendingUrl ?? tab.url;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Polls the tab until its URL satisfies `ok`; returns that URL, or null after URL_WAIT_MS. */
+async function waitForUrl(tabId: number, ok: (url: string) => boolean): Promise<string | null> {
+  const deadline = Date.now() + URL_WAIT_MS;
+  for (;;) {
+    const url = await tabUrl(tabId);
+    if (url && ok(url)) return url;
+    if (Date.now() >= deadline) return null;
+    await sleep(URL_POLL_MS);
+  }
 }
 
 // ---- State changes -------------------------------------------------------
@@ -183,6 +234,43 @@ function pauseWith(message: string): Promise<void> {
 
 // ---- Submitting ----------------------------------------------------------
 
+/** True while the run that the pump is working for is still running. Checked right before every press. */
+function stillRunning(projectId: string): boolean {
+  return state?.status === 'running' && state.projectId === projectId;
+}
+
+/**
+ * Puts the Flow tab on this run's own project, creating a fresh one on the run's first scene (spec §16.5).
+ * Returns false when the run stopped meanwhile (nothing pressed). Throws FlowBlockedError when the owner must act.
+ */
+async function ensureFlowProject(tabId: number, projectId: string): Promise<boolean> {
+  const action = flowProjectAction(state?.flowProjectUrl, await tabUrl(tabId));
+  if (action.kind === 'ok') return true;
+  if (action.kind === 'navigate') {
+    await chrome.tabs.update(tabId, { url: action.url });
+    if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === action.url))) {
+      throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: NO_PROJECT_MESSAGE });
+    }
+    return true;
+  }
+  if (action.goHome) {
+    await chrome.tabs.update(tabId, { url: FLOW_URL });
+    await waitForUrl(tabId, isFlowHome);
+  }
+  const at = await port!.findNewProject(tabId, PUMP_VERB);
+  if (!stillRunning(projectId)) return false;
+  await port!.press(tabId, at.x, at.y);
+  const url = await waitForUrl(tabId, (u) => projectUrlOf(u) !== null);
+  const flowProjectUrl = projectUrlOf(url ?? undefined);
+  if (!flowProjectUrl) {
+    throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: NO_PROJECT_MESSAGE });
+  }
+  await enqueue(async () => {
+    if (state?.projectId === projectId) await commit({ ...state, flowProjectUrl });
+  });
+  return true;
+}
+
 async function pump(): Promise<void> {
   if (pumping) return;
   pumping = true;
@@ -190,7 +278,8 @@ async function pump(): Promise<void> {
     await ready;
     for (;;) {
       if (!state || state.status !== 'running') return;
-      const project = await getProject(state.projectId);
+      const projectId = state.projectId;
+      const project = await getProject(projectId);
       if (!project) return void (await pauseWith('This project is no longer in VidFlow.'));
       const sceneId = nextSceneToSubmit(state, project.scenes.map((s) => s.id), MAX_IN_FLIGHT);
       if (!sceneId) return;
@@ -205,10 +294,19 @@ async function pump(): Promise<void> {
         return void (await pauseWith("VidFlow couldn't open its Flow window. Check Chrome, then press Resume."));
       }
       try {
-        await port.submit(tabId, sceneId, buildImagePrompt(scene, projectStyle(project), project.character), {
+        if (!(await ensureFlowProject(tabId, projectId))) return; // stopped meanwhile; scene stays pending
+        const at = await port.prepare(tabId, sceneId, buildImagePrompt(scene, projectStyle(project), project.character), {
           aspect: project.aspect,
           outputs: project.outputsPerPrompt,
+          verb: PUMP_VERB,
         });
+        // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
+        if (!stillRunning(projectId)) return;
+        await port.press(tabId, at.x, at.y);
+        if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
+        if (!(await port.confirmStarted(tabId))) {
+          return void (await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE }));
+        }
         await dispatch({ type: 'submitted', sceneId });
       } catch (err) {
         // The page needs the owner (wrong account, limit, policy dialog…): pause, and leave the scene queued.

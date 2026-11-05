@@ -1,18 +1,30 @@
 /// <reference types="chrome" />
 import type { FlowPort } from '../runs/coordinator';
-import { FlowBlockedError, FLOW_PREPARE, type PrepareRequest, type PrepareResponse } from './messages';
+import type { StartVerb } from './driver';
+import {
+  FlowBlockedError,
+  FLOW_CONFIRM,
+  FLOW_NEW_PROJECT,
+  FLOW_PREPARE,
+  type ConfirmResponse,
+  type Point,
+  type PrepareResponse,
+  type ToFlowTab,
+} from './messages';
 import { pressAt } from './press';
 
 export interface PortDeps {
-  send(tabId: number, message: PrepareRequest): Promise<PrepareResponse | undefined>;
+  send(tabId: number, message: ToFlowTab): Promise<unknown>;
   press(tabId: number, x: number, y: number): Promise<void>;
   wait(ms: number): Promise<void>;
+  getZoom(tabId: number): Promise<number>;
 }
 
 const defaultDeps: PortDeps = {
-  send: (tabId, message) => chrome.tabs.sendMessage(tabId, message) as Promise<PrepareResponse | undefined>,
+  send: (tabId, message) => chrome.tabs.sendMessage(tabId, message),
   press: pressAt,
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+  getZoom: (tabId) => chrome.tabs.getZoom(tabId),
 };
 
 const HELPER_ATTEMPTS = 20;
@@ -20,14 +32,17 @@ const HELPER_RETRY_MS = 1_000;
 const helperMissing = (err: unknown) =>
   /receiving end does not exist|could not establish connection/i.test(err instanceof Error ? err.message : String(err));
 
-/** The coordinator's FlowPort: the Flow helper prepares the prompt, then the background presses Generate. */
+/**
+ * The coordinator's FlowPort. The Flow helper (content script) does the DOM work and answers with coordinates; the
+ * background presses. Preparing and pressing are separate so the coordinator can re-check the run in between.
+ */
 export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
-  async function prepare(tabId: number, message: PrepareRequest): Promise<PrepareResponse | undefined> {
+  async function ask(tabId: number, message: ToFlowTab): Promise<unknown> {
     for (let attempt = 1; ; attempt++) {
       try {
         return await deps.send(tabId, message);
       } catch (err) {
-        // A freshly opened Flow window may not have loaded the helper yet.
+        // A freshly opened or navigated Flow tab may not have loaded the helper yet.
         if (!helperMissing(err)) throw err;
         if (attempt >= HELPER_ATTEMPTS) {
           throw new FlowBlockedError({
@@ -41,13 +56,37 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
     }
   }
 
+  async function point(tabId: number, message: ToFlowTab): Promise<Point> {
+    const reply = (await ask(tabId, message)) as PrepareResponse | undefined;
+    if (!reply) throw new Error('The Flow page gave no answer.');
+    if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event);
+    if (reply.kind === 'error') throw new Error(reply.message);
+    return { x: reply.x, y: reply.y };
+  }
+
   return {
-    async submit(tabId, _sceneId, prompt, options = {}) {
-      const reply = await prepare(tabId, { type: FLOW_PREPARE, prompt, ...options });
-      if (!reply) throw new Error('The Flow page gave no answer.');
-      if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event);
-      if (reply.kind === 'error') throw new Error(reply.message);
-      await deps.press(tabId, reply.x, reply.y);
+    prepare: (tabId, _sceneId, prompt, options = {}) => point(tabId, { type: FLOW_PREPARE, prompt, ...options }),
+
+    findNewProject: (tabId, verb: StartVerb) => point(tabId, { type: FLOW_NEW_PROJECT, verb }),
+
+    async press(tabId, x, y) {
+      // Coordinates are CSS px; CDP wants them at the tab's zoom. VidFlow sets zoom to 100%, this covers it failing.
+      let zoom = 1;
+      try {
+        zoom = (await deps.getZoom(tabId)) || 1;
+      } catch {
+        zoom = 1;
+      }
+      await deps.press(tabId, x * zoom, y * zoom);
+    },
+
+    async confirmStarted(tabId) {
+      try {
+        const reply = (await ask(tabId, { type: FLOW_CONFIRM })) as ConfirmResponse | undefined;
+        return reply?.started === true;
+      } catch {
+        return false;
+      }
     },
   };
 }

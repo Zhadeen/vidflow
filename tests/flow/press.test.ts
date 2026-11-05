@@ -28,19 +28,19 @@ describe('pressAt', () => {
     ]);
   });
 
-  it('does not attach again when already attached to that tab', async () => {
-    const { debuggerApi } = mockDebugger([{ tabId: 7, attached: true }]);
+  it('carries on when VidFlow is already attached to that tab', async () => {
+    const { debuggerApi } = mockDebugger();
+    debuggerApi.attach.mockRejectedValueOnce(new Error('Another debugger is already attached to the tab with id: 7.'));
     await pressAt(7, 1, 2);
-    expect(debuggerApi.attach).not.toHaveBeenCalled();
     expect(debuggerApi.sendCommand).toHaveBeenCalledTimes(3);
   });
 
-  it('attaches and retries once when the tab turns out not to be attached', async () => {
-    const { debuggerApi } = mockDebugger([{ tabId: 7, attached: true }]); // e.g. DevTools, not VidFlow
+  it('does not re-attach and retry on its own when a command fails', async () => {
+    const { debuggerApi } = mockDebugger();
     debuggerApi.sendCommand.mockRejectedValueOnce(new Error('Debugger is not attached to the tab with id: 7.'));
-    await pressAt(7, 1, 2);
-    expect(debuggerApi.attach).toHaveBeenCalledWith({ tabId: 7 }, '1.3');
-    expect(debuggerApi.sendCommand).toHaveBeenCalledTimes(4);
+    await expect(pressAt(7, 1, 2)).rejects.toThrow(/not attached/);
+    expect(debuggerApi.attach).toHaveBeenCalledTimes(1);
+    expect(debuggerApi.sendCommand).toHaveBeenCalledTimes(1);
   });
 });
 
