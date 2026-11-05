@@ -14,6 +14,11 @@ export interface SceneState {
   chosenPictureId?: string;
   /** While generating: the order and exact prompt this scene went to Flow with (result matching). */
   submission?: { seq: number; at: number; prompt: string };
+  /**
+   * Whether these pictures were made with the hero reference attached in Flow (the Queue's "hero ✓"). Absent for
+   * pictures saved before VidFlow recorded it: no mark rather than a guess.
+   */
+  withHero?: boolean;
   /** Flow media ids of the cards saved as this scene's pictures; never matched again. */
   cardKeys?: string[];
   /**

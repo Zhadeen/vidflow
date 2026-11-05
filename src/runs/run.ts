@@ -6,7 +6,8 @@ export type RunEvent =
   | { type: 'resume' }
   | { type: 'restore' } // after a real browser restart: pages are gone, so submitted scenes go back in the queue
   | { type: 'submitted'; sceneId: string; prompt?: string; at?: number }
-  | { type: 'pictures'; sceneId: string; mediaIds: string[]; cardKeys?: string[] }
+  /** `withHero`: the run had the hero reference attached in Flow when these were made. */
+  | { type: 'pictures'; sceneId: string; mediaIds: string[]; cardKeys?: string[]; withHero?: boolean }
   /**
    * Generate is about to be pressed (recorded first, so a worker suspended mid-press looks before pressing again), or
    * was pressed but Flow's start wasn't seen. The scene stays pending until `submitted`; `at` starts its wait limit.
@@ -218,6 +219,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
           pictureIds: event.mediaIds,
           chosenPictureId: undefined, // new pictures: the best-picture choice is made again (Plan 2)
           message: undefined,
+          withHero: event.withHero === true,
           ...(event.cardKeys ? { cardKeys: event.cardKeys } : {}),
         }),
       );

@@ -1552,3 +1552,157 @@ describe('Queue tab: Skip and ▶ Run (spec §19)', () => {
     expect(run.sceneStates.s2).toMatchObject({ status: 'refused' });
   });
 });
+
+describe('Queue review fixes', () => {
+  const okFetch = () => {
+    const fetchMock = vi.fn(async (url: string) => ({ ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  /** A fake port whose tile presses open that card's detail page, which shows `detail(key)` as its prompt. */
+  function detailPort(ctx: Awaited<ReturnType<typeof setup>>, detail: (key: string) => string, over: Partial<FlowPort> = {}) {
+    let opened = '';
+    const keys: string[] = [];
+    const port = ctx.fakePort({
+      tilePoint: vi.fn(async (_tab: number, key: string) => {
+        if (!keys.includes(key)) keys.push(key);
+        return { x: TILE_X, y: keys.indexOf(key) + 1 };
+      }),
+      press: vi.fn(async (_tab: number, x: number, y: number) => {
+        if (x === 5) ctx.chromeMock.tab.url = PROJECT_URL;
+        if (x === TILE_X) {
+          opened = keys[y - 1]!;
+          ctx.chromeMock.tab.url = `${PROJECT_URL}/edit/gen-${opened}`;
+        }
+      }),
+      readDetail: vi.fn(async () => ({ prompt: detail(opened), mediaId: opened })),
+      ...over,
+    });
+    ctx.coordinator.setFlowPort(port);
+    return port;
+  }
+  const promptOf = (port: FlowPort, sceneId: string) => vi.mocked(port.prepare).mock.calls.find((c) => c[1] === sceneId)?.[2] ?? '';
+
+  it('saved pictures record whether the hero reference was attached in Flow', async () => {
+    const ctx = await setup(1);
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(ctx.project.id))!;
+    await ctx.media.put(saved.id, 'hero-reference', new Blob(['png'], { type: 'image/png' }));
+    saved.character = { description: 'A stickman', referenceMediaId: `${saved.id}/hero-reference` };
+    await store.saveProject(saved);
+    okFetch();
+    const port = detailPort(ctx, () => promptOf(port, 's1'));
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await ctx.coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'done', 'saved');
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1!.withHero).toBe(true);
+    expect((await store.getProject(ctx.project.id))!.sceneStates.s1!.withHero).toBe(true);
+  });
+
+  it('pictures made without a reference say so', async () => {
+    const ctx = await setup(1);
+    okFetch();
+    const port = detailPort(ctx, () => promptOf(port, 's1'));
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await ctx.coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'done', 'saved');
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1!.withHero).toBe(false);
+  });
+
+  it('a scene skipped while its pictures are being fetched writes nothing to the media store', async () => {
+    const ctx = await setup(1);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let fetching = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        fetching = true;
+        await gate;
+        return { ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) };
+      }),
+    );
+    const put = vi.spyOn(ctx.media, 'put');
+    const port = detailPort(ctx, () => promptOf(port, 's1'));
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await ctx.coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => fetching, 'fetching the picture');
+    await ctx.coordinator.skipCurrent();
+    release();
+    await ctx.coordinator.settledForTests();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(put).not.toHaveBeenCalled();
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you', pictureIds: [] });
+  });
+
+  it("a skipped submission older than the scene deadline no longer holds a later scene's picture", async () => {
+    const ctx = await setup(1);
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(ctx.project.id))!;
+    saved.scenes = [...saved.scenes, { ...saved.scenes[0]!, id: 's2', slide: 2, imagePrompt: 'A stickman sits' }];
+    await store.saveProject(saved);
+    okFetch();
+    const port = detailPort(ctx, () => promptOf(port, 's2'));
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 'both in Flow');
+    await ctx.coordinator.settledForTests();
+    ctx.chromeMock.storage.local.data['vidflow.step'] = { projectId: ctx.project.id, sceneId: 's1', text: 'x', target: 'tile', at: Date.now() };
+    await ctx.coordinator.skipCurrent();
+    expect(ctx.coordinator.getRunState()!.skippedPrompts).toHaveLength(1);
+
+    // Scene 1 never comes; 11 minutes later only scene 2's picture is in the grid.
+    const real = Date.now.bind(Date);
+    vi.spyOn(Date, 'now').mockImplementation(() => real() + 11 * 60_000);
+    await ctx.coordinator.handleTiles([card('k2', 0)]);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s2?.status === 'done', 'scene 2 saved');
+    expect(ctx.coordinator.getRunState()!.sceneStates.s2!.cardKeys).toEqual(['k2']);
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it("on Resume, a skipped submission whose tiles were already there before the press isn't counted as owed", async () => {
+    const ctx = await setup(1);
+    let tiles: FlowResultCard[] = [];
+    let started = true;
+    const port = detailPort(ctx, () => promptOf(port, 's1'), {
+      tiles: vi.fn(async () => tiles),
+      confirmStarted: vi.fn(async () => started),
+    });
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await ctx.coordinator.skipCurrent();
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'finished', 'finished');
+
+    // Scene 1's skipped picture is in the grid; Try again sends it again, but Flow's start isn't seen.
+    tiles = [card('k1', 0)];
+    started = false;
+    await ctx.coordinator.retryScene(ctx.project.id, 's1');
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused', 'paused: not started');
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1?.unconfirmed?.keysBefore).toEqual(['k1']);
+
+    // It did start: a new tile with its prompt. Resume must take it, not press Generate again.
+    tiles = [card('k1b', 0), card('k1', 1)];
+    started = true;
+    await ctx.coordinator.resumeRun();
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 'taken as submitted');
+    expect(port.prepare).toHaveBeenCalledTimes(2); // the first send and Try again; never a third press
+  });
+
+  it('▶ Run on a paused run with nothing else left resumes it, so the scene is made', async () => {
+    const ctx = await setup(1);
+    const port = ctx.fakePort({ confirmStarted: vi.fn(async () => true) });
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await ctx.coordinator.pauseRun();
+    await ctx.coordinator.handleFlowEvent({ type: 'refused', sceneId: 's1', message: 'no' });
+    const before = ctx.coordinator.getRunState()!;
+    expect(before.status).toBe('paused'); // paused with nothing left: not live, so ▶ Run is offered
+
+    await ctx.coordinator.retryScene(ctx.project.id, 's1');
+    expect(ctx.coordinator.getRunState()!.status).toBe('running');
+    await waitFor(() => vi.mocked(port.prepare).mock.calls.length === 2, 'sent again');
+  });
+});

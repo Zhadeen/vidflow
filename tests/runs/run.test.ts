@@ -303,3 +303,12 @@ describe('Skip (spec §19)', () => {
     expect(s.sceneStates['scene-01']!.submission).toMatchObject({ seq: 2 });
   });
 });
+
+describe('which pictures have the hero (Queue "hero ✓")', () => {
+  it('records on the scene whether its pictures were made with the hero reference attached', () => {
+    let s = apply(initRun(project(2)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01' }, { type: 'submitted', sceneId: 'scene-02' });
+    s = apply(s, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m'], withHero: true }, { type: 'pictures', sceneId: 'scene-02', mediaIds: ['n'] });
+    expect(s.sceneStates['scene-01']!.withHero).toBe(true);
+    expect(s.sceneStates['scene-02']!.withHero).toBe(false);
+  });
+});

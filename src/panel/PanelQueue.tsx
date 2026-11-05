@@ -18,11 +18,12 @@ import { usePictureUrls } from '../studio/usePictureUrls';
 import type { PanelBusy } from './Panel';
 
 /** The upgrade marks of one scene (spec §19): only the true ones are shown. */
-export function sceneMarks(state: SceneState | undefined, project: Project): { checked: boolean; hero: boolean; options: number } {
+export function sceneMarks(state: SceneState | undefined, _project: Project): { checked: boolean; hero: boolean; options: number } {
   const done = state?.status === 'done';
   const options = state?.pictureIds.length ?? 0;
-  // Every saved picture was checked against its prompt in Flow's detail view before it was saved.
-  return { checked: done && options > 0, hero: done && !!project.character?.referenceMediaId, options };
+  // Every saved picture was checked against its prompt in Flow's detail view before it was saved. "hero ✓" is what
+  // was true when the pictures were made (the reference attached in Flow), not what the hero is now.
+  return { checked: done && options > 0, hero: done && state?.withHero === true, options };
 }
 
 type Filter = 'all' | 'drawing' | 'togo' | 'failed' | 'done';
@@ -303,6 +304,7 @@ export function PanelQueue(props: Props) {
 
   // ▶ Run and Retry failed use the retry path: refused while any run is live, so they wait and say why.
   const whyId = `${ids}-why`;
+  const skipWhyId = `${ids}-skip-why`;
   const why = !anyLive
     ? null
     : live
@@ -482,8 +484,14 @@ export function PanelQueue(props: Props) {
         </p>
       )}
 
+      {paused && (
+        // Paused, nothing is being worked on: there is no current scene to skip.
+        <p className="vf-pn-note vf-pn-end" id={skipWhyId}>
+          Skip works while VidFlow is making pictures.
+        </p>
+      )}
       {live ? (
-        <div className="vf-pn-actions vf-pn-end">
+        <div className={paused ? 'vf-pn-actions' : 'vf-pn-actions vf-pn-end'}>
           {paused ? (
             <Button variant="primary" onClick={props.onResume} loading={busy === 'resume'} disabled={busy === 'stop'}>
               Resume
@@ -496,7 +504,12 @@ export function PanelQueue(props: Props) {
           <Button onClick={props.onStop} loading={busy === 'stop'} disabled={busy !== null && busy !== 'stop'}>
             Stop
           </Button>
-          <Button onClick={props.onSkip} loading={busy === 'skip'} disabled={busy !== null && busy !== 'skip'}>
+          <Button
+            onClick={props.onSkip}
+            loading={busy === 'skip'}
+            disabled={paused || (busy !== null && busy !== 'skip')}
+            aria-describedby={paused ? skipWhyId : undefined}
+          >
             Skip
           </Button>
         </div>

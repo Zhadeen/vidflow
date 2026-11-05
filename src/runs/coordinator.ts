@@ -489,12 +489,12 @@ function stillRunning(projectId: string): boolean {
   return state?.status === 'running' && state.projectId === projectId;
 }
 
-/** True while this run is running or paused: results already in Flow are still collected (nothing new is sent). */
 /** Still waiting to be sent (not skipped meanwhile): Generate is only pressed for such a scene. */
 function stillPending(sceneId: string): boolean {
   return state?.sceneStates[sceneId]?.status === 'pending';
 }
 
+/** True while this run is running or paused: results already in Flow are still collected (nothing new is sent). */
 function stillCollecting(projectId: string): boolean {
   return (state?.status === 'running' || state?.status === 'paused') && state.projectId === projectId;
 }
@@ -572,6 +572,8 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
 const isFinished = (c: FlowResultCard) => c.imageUrl !== null && c.progress === null && !c.key.startsWith('pending-');
 /** A skipped submission's place in matching: never a scene id. */
 const SKIPPED_SLOT = 'skipped:';
+/** Skipped submissions still within a scene's deadline (older ones are closed: Flow won't draw them now). */
+const liveSkipped = (run: RunState, now: number) => (run.skippedPrompts ?? []).filter((x) => now - x.at < DEADLINE_MINUTES * 60_000);
 const oldestFirst = (cards: FlowResultCard[]) => [...cards].sort((a, b) => b.domIndex - a.domIndex);
 
 /** Flow card keys already saved for a scene, or the hero reference's own tile; never matched to a scene. */
@@ -741,13 +743,27 @@ async function findUnconfirmedStart(
   if (!state) return null;
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
-  const fresh = oldestFirst(await port!.tiles(tabId)).filter(
-    (c) => !before.has(c.key) && !claimed.has(c.key) && notReference(state!)(c),
-  );
+  const all = (await port!.tiles(tabId)).filter((c) => !claimed.has(c.key) && notReference(state!)(c));
+  const fresh = oldestFirst(all).filter((c) => !before.has(c.key));
+  const outputs = outputsOf(state, project);
+  // A skipped submission whose tiles were already in the grid before this press owes nothing new: place the in-flight
+  // and skipped submissions on the tiles seen before the press, and count only the skipped ones still open.
+  const sameSkipped = liveSkipped(state, Date.now()).filter((x) => verifyMatch(u.prompt, x.prompt));
+  let skippedOwed = sameSkipped.length;
+  if (skippedOwed > 0) {
+    const subs: Submission[] = [
+      ...state.inFlight.flatMap((id) => {
+        const sub = state?.sceneStates[id]?.submission;
+        return sub ? [{ sceneId: id, prompt: sub.prompt, seq: sub.seq, submittedAt: sub.at }] : [];
+      }),
+      ...sameSkipped.map((x) => ({ sceneId: `${SKIPPED_SLOT}${x.seq}`, prompt: x.prompt, seq: x.seq, submittedAt: x.at })),
+    ];
+    const placed = matchResults(subs, all.filter((c) => before.has(c.key)), claimed, outputs, state.detailPrompts ?? {});
+    skippedOwed -= placed.filter((m) => m.sceneId.startsWith(SKIPPED_SLOT) && m.kind !== 'unconfirmed').length;
+  }
   const samePromptInFlight =
-    state.inFlight.filter((id) => verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? '')).length +
-    (state.skippedPrompts ?? []).filter((x) => verifyMatch(u.prompt, x.prompt)).length;
-  const owedToOthers = samePromptInFlight * outputsOf(state, project);
+    state.inFlight.filter((id) => verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? '')).length + skippedOwed;
+  const owedToOthers = samePromptInFlight * outputs;
   let hits = 0;
   let generating = 0;
   const attempt = -++unconfirmedAttempt; // each Resume check is its own attempt (tile reports count up from 1)
@@ -934,7 +950,9 @@ async function matchOnce(): Promise<void> {
     });
     if (submissions.length === 0) return;
     // Skipped submissions keep their place in the order (their tiles never shift onto later scenes); never saved.
-    const skipped: Submission[] = (run.skippedPrompts ?? []).map((x) => ({
+    // A skipped submission Flow hasn't drawn within a scene's deadline never will: it stops holding a place.
+    const now = Date.now();
+    const skipped: Submission[] = liveSkipped(run, now).map((x) => ({
       sceneId: `${SKIPPED_SLOT}${x.seq}`,
       prompt: x.prompt,
       seq: x.seq,
@@ -998,6 +1016,10 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
   const sheet = sceneId === HERO_SHEET_ID && isHeroSheetRun(state);
   const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
   const base = sheet ? HERO_SHEET_ID : `scene-${nn}`;
+  // Skipped or stopped meanwhile: nothing is written (its files would replace the scene's pictures).
+  const wanted = () => state?.projectId === project.id && state.inFlight.includes(sceneId);
+  // The reference uploaded into this run's Flow project was attached to every prompt sent in it.
+  const withHero = !sheet && !!state?.reference && state.reference.flowProjectUrl === state.flowProjectUrl;
   try {
     const mediaIds: string[] = [];
     for (const [i, key] of cardKeys.entries()) {
@@ -1007,11 +1029,14 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
         await dispatch({ type: 'failed', sceneId, message: UNTRUSTED_PICTURE_MESSAGE });
         return;
       }
+      if (!wanted()) return;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`picture fetch ${res.status}`);
-      mediaIds.push(await getMediaStore().put(project.id, `${base}-option-${i + 1}`, await res.blob()));
+      const blob = await res.blob();
+      if (!wanted()) return;
+      mediaIds.push(await getMediaStore().put(project.id, `${base}-option-${i + 1}`, blob));
     }
-    await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys });
+    await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys, withHero });
   } catch {
     await dispatch({ type: 'failed', sceneId, message: SAVE_FAILED_MESSAGE });
   }
@@ -1180,6 +1205,8 @@ export async function discardFinishedRun(projectId: string): Promise<void> {
 export async function retryScene(projectId: string, sceneId: string): Promise<void> {
   await ready;
   if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) {
+    // Paused with nothing left to make (not live): ▶ Run is offered, and the scene must then be made, so it resumes.
+    const resumeAfter = state.status === 'paused' && !isLive(state);
     if (!(sceneId in state.sceneStates)) {
       // Not one of this run's scenes (▶ Run on a scene the run left out): it joins the run as it is saved.
       const project = await getProject(projectId);
@@ -1193,7 +1220,9 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
         await commit(joined.status === 'pending' && next.status === 'finished' ? { ...next, status: 'running' } : next);
       });
     }
-    return dispatch({ type: 'retry', sceneId });
+    await dispatch({ type: 'retry', sceneId });
+    if (resumeAfter && state?.status === 'paused' && isLive(state)) await resumeRun();
+    return;
   }
   return startRun(projectId, sceneId); // refused while a model sheet is being made
 }

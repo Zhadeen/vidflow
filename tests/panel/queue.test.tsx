@@ -92,7 +92,8 @@ describe('side panel: the Queue tab', () => {
   it('each row shows thumbnail, number, sentence, timecode and only the true marks "✓ checked · hero ✓ · 2 options"', async () => {
     const p = await seed('Phone Bill Story', 3, (x) => {
       x.character = { description: 'A stickman', referenceMediaId: 'hero/ref' };
-      x.sceneStates = { [sceneId(1)]: done(1), [sceneId(2)]: done(2, 1) };
+      // Both made with the hero reference attached in Flow.
+      x.sceneStates = { [sceneId(1)]: { ...done(1), withHero: true }, [sceneId(2)]: { ...done(2, 1), withHero: true } };
     });
     await getMediaStore().put(p.id, '1-1', new Blob(['one']));
     stubChrome();
@@ -113,10 +114,27 @@ describe('side panel: the Queue tab', () => {
     expect(row(3).textContent).not.toContain('checked');
     expect(row(3).querySelector('img')).toBeNull();
 
-    expect(sceneMarks(done(1), p)).toEqual({ checked: true, hero: true, options: 2 });
+    expect(sceneMarks({ ...done(1), withHero: true }, p)).toEqual({ checked: true, hero: true, options: 2 });
     expect(sceneMarks(undefined, p)).toEqual({ checked: false, hero: false, options: 0 });
-    expect(sceneMarks(done(1), { ...p, character: null })).toEqual({ checked: true, hero: false, options: 2 });
-    expect(sceneMarks({ ...done(1), cardKeys: undefined, pictureIds: [] }, p)).toEqual({ checked: false, hero: true, options: 0 });
+    expect(sceneMarks({ ...done(1), cardKeys: undefined, pictureIds: [] }, p)).toEqual({ checked: false, hero: false, options: 0 });
+  });
+
+  it('"hero ✓" is true for that scene: made with the reference attached, whatever the hero is now', async () => {
+    const p = await seed('Phone Bill Story', 2, (x) => {
+      // Scene 1 was made without a reference; the hero's reference was added afterwards.
+      x.character = { description: 'A stickman', referenceMediaId: 'hero/ref' };
+      x.sceneStates = { [sceneId(1)]: { ...done(1), withHero: false }, [sceneId(2)]: done(2) };
+    });
+    stubChrome();
+    render(<Panel client={fakeBackground(null).client()} />);
+    await openQueue();
+    expect(row(1).textContent).not.toContain('hero ✓');
+    // Saved before VidFlow recorded it: no mark rather than a guess.
+    expect(row(2).textContent).not.toContain('hero ✓');
+    expect(sceneMarks({ ...done(1), withHero: false }, p).hero).toBe(false);
+    // Made with the reference, then the reference was removed: the scene's pictures still have the hero.
+    expect(sceneMarks({ ...done(1), withHero: true }, { ...p, character: null }).hero).toBe(true);
+    expect(sceneMarks({ sceneId: sceneId(1), status: 'failed', pictureIds: [], withHero: true }, p).hero).toBe(false);
   });
 
   it('shows the thumbnail of the chosen picture', async () => {
@@ -294,6 +312,10 @@ describe('side panel: the Queue tab', () => {
     await act(async () => fireEvent.click(pause));
     expect(client.pause).toHaveBeenCalled();
     const resume = await screen.findByRole('button', { name: 'Resume' });
+    // Paused: nothing is being worked on, so there is nothing to skip; it says why.
+    const skip = screen.getByRole('button', { name: 'Skip' }) as HTMLButtonElement;
+    expect(skip.disabled).toBe(true);
+    expect(document.getElementById(skip.getAttribute('aria-describedby') ?? '')?.textContent).toBe('Skip works while VidFlow is making pictures.');
     expect(resume.getAttribute('data-variant')).toBe('primary');
     expect(screen.getByText('Paused · press Resume to carry on')).toBeTruthy();
     expect(document.querySelectorAll('[data-variant="primary"]')).toHaveLength(1);
