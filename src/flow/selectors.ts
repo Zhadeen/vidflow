@@ -15,6 +15,17 @@ export const SEL = {
   detailStep: '.editor-history-content div.history-step, div.history-step',
   detailPromptText: 'flow-expandable-prompt div.prompt-text span.text-part',
   mediaId: '[data-media-id]',
+  /** The ingredients picker, from spike S7 (docs/superpowers/spikes/s7-flow-ingredient-upload.md); opened by `ingredients`. */
+  overlay: '.cdk-overlay-container',
+  assetList: '[role="listbox"][aria-label="Asset list"]',
+  assetOption: '[role="option"]',
+  /** Flow appends this to <body> when "Upload media" is pressed, and keeps it there. */
+  fileInput: 'body > input[type="file"]',
+  /** One per ingredient attached to the prompt. */
+  ingredientChip: 'button.chip-container[aria-label="Ingredient"]',
+  clearPrompt: 'button[aria-label="Clear prompt"]',
+  /** Flow's Agent chip while Agent mode is on: prompts then go to the Agent instead of making pictures. */
+  agentModeOn: '.agent-mode-chip[aria-pressed="true"]',
   dialog: '[role="dialog"], [role="alertdialog"], dialog[open], mat-dialog-container',
   notice: '[role="alert"], [role="status"], [aria-live], mat-snack-bar-container, .mat-mdc-snack-bar-container',
 } as const;

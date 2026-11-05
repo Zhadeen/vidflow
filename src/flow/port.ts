@@ -9,7 +9,10 @@ import {
   FLOW_PREPARE,
   FLOW_TILE_POINT,
   FLOW_TILES_NOW,
+  FLOW_UPLOAD_REFERENCE,
+  encodeBytes,
   type ConfirmResponse,
+  type UploadReferenceResponse,
   type DetailResponse,
   type TilesNowResponse,
   type Point,
@@ -92,6 +95,18 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
     },
 
     tilePoint: (tabId, key) => point(tabId, { type: FLOW_TILE_POINT, key }),
+
+    async uploadReference(tabId, name, image) {
+      // Retrying after a dropped channel is safe too: the helper skips the upload when the asset is already there.
+      const data = encodeBytes(new Uint8Array(await image.arrayBuffer()));
+      const reply = (await ask(tabId, { type: FLOW_UPLOAD_REFERENCE, name, mimeType: image.type || 'image/png', data })) as
+        | UploadReferenceResponse
+        | undefined;
+      if (!reply) throw new Error('The Flow page gave no answer.');
+      if (reply.kind === 'blocked') throw new FlowBlockedError(reply.event);
+      if (reply.kind === 'error') throw new Error(reply.message);
+      return reply.mediaId;
+    },
 
     async tiles(tabId) {
       const reply = (await ask(tabId, { type: FLOW_TILES_NOW })) as TilesNowResponse | undefined;

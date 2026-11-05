@@ -105,6 +105,7 @@ async function setup(outputs: 1 | 2 | 4 = 4) {
     tiles: vi.fn(async (): Promise<FlowResultCard[]> => []),
     tilePoint: vi.fn(async () => ({ x: TILE_X, y: 300 })),
     readDetail: vi.fn(async () => ({ prompt: null as string | null, mediaId: null as string | null })),
+    uploadReference: vi.fn(async (_tabId: number, _name: string, _image: Blob): Promise<string | null> => 'ref-media-1'),
     ...over,
   });
   return { chromeMock, coordinator, project, media, FlowBlockedError, createFlowPort, pressAt, fakePort };
@@ -1056,5 +1057,130 @@ describe("the scene's chosen picture", () => {
     s = reduceRun(s, { type: 'pictures', sceneId: 's1', mediaIds: ['m/c', 'm/d'] });
     expect(s.sceneStates.s1?.pictureIds).toEqual(['m/c', 'm/d']);
     expect(s.sceneStates.s1?.chosenPictureId).toBeUndefined();
+  });
+});
+
+describe('the hero reference in Flow', () => {
+  const NAME = 'vidflow-hero-3f1c2a9e.png'; // the first 8 characters of the Flow project id
+  const ATTACH_MESSAGE = "VidFlow couldn't attach the hero reference in Flow. Check the Flow window, then press Resume.";
+
+  /** A two-scene project whose hero has a reference picture in the media store (unless `stored` is false). */
+  async function withReference(outputs: 1 | 2 | 4 = 1, stored = true) {
+    const ctx = await setup(outputs);
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(ctx.project.id))!;
+    const picture = new Blob(['png-bytes'], { type: 'image/png' });
+    if (stored) await ctx.media.put(saved.id, 'hero-reference', picture);
+    saved.character = { description: 'A stickman with a red cap', referenceMediaId: `${saved.id}/hero-reference` };
+    saved.scenes = [...saved.scenes, { ...saved.scenes[0]!, id: 's2', slide: 2, imagePrompt: 'A stickman sits' }];
+    await store.saveProject(saved);
+    return { ...ctx, picture };
+  }
+
+  it('uploads the reference once per run, right after the new project opens, and attaches it to every prompt', async () => {
+    const { coordinator, project, fakePort } = await withReference();
+    const port = fakePort();
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 's2 submitted');
+
+    expect(port.uploadReference).toHaveBeenCalledTimes(1);
+    const [tabId, name, image] = vi.mocked(port.uploadReference).mock.calls[0]!;
+    expect([tabId, name]).toEqual([7, NAME]);
+    expect(await image.text()).toBe('png-bytes');
+    const order = (fn: { mock: { invocationCallOrder: number[] } }) => fn.mock.invocationCallOrder[0]!;
+    expect(order(vi.mocked(port.press))).toBeLessThan(order(vi.mocked(port.uploadReference))); // New project first
+    expect(order(vi.mocked(port.uploadReference))).toBeLessThan(order(vi.mocked(port.prepare)));
+    expect(vi.mocked(port.prepare).mock.calls.map(([, sceneId, prompt, options]) => [sceneId, prompt.includes('reference picture'), options])).toEqual([
+      ['s1', true, { aspect: '9:16', outputs: 1, verb: 'Resume', reference: { name: NAME } }],
+      ['s2', true, { aspect: '9:16', outputs: 1, verb: 'Resume', reference: { name: NAME } }],
+    ]);
+    expect(coordinator.getRunState()!.reference).toEqual({ name: NAME, flowProjectUrl: PROJECT_URL, cardKeys: ['ref-media-1'] });
+  });
+
+  it('pauses instead of sending without the reference', async () => {
+    const { chromeMock, coordinator, project, fakePort, FlowBlockedError } = await withReference();
+    const blocked = () => new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: ATTACH_MESSAGE });
+    const port = fakePort({ prepare: vi.fn(async () => Promise.reject(blocked())) }); // the chip didn't show
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused' && chromeMock.debugger.detach.mock.calls.length > 0);
+    expect(coordinator.getRunState()!.pauseReason).toBe(ATTACH_MESSAGE);
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('pending');
+    expect(vi.mocked(port.press).mock.calls).toEqual([[7, 5, 5]]); // New project only: Generate was never pressed
+  });
+
+  it('pauses when the upload fails, and uploads again on Resume before sending', async () => {
+    const { coordinator, project, fakePort, FlowBlockedError } = await withReference();
+    const port = fakePort();
+    vi.mocked(port.uploadReference).mockRejectedValueOnce(
+      new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: ATTACH_MESSAGE }),
+    );
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'the run to pause');
+    expect(coordinator.getRunState()!.pauseReason).toBe(ATTACH_MESSAGE);
+    expect(port.prepare).not.toHaveBeenCalled();
+    await coordinator.resumeRun();
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    expect(port.uploadReference).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(port.prepare).mock.calls[0]![3]).toMatchObject({ reference: { name: NAME } });
+  });
+
+  it('pauses with a plain message when the reference picture is no longer stored', async () => {
+    const { coordinator, project, fakePort } = await withReference(1, false);
+    const port = fakePort();
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'the run to pause');
+    expect(coordinator.getRunState()!.pauseReason).toBe(
+      "VidFlow can't find the hero's reference picture. Add it again in the Script step, or remove it, then press Resume.",
+    );
+    expect(port.uploadReference).not.toHaveBeenCalled();
+    expect(port.prepare).not.toHaveBeenCalled();
+  });
+
+  it('scenes without a reference send as before', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(project.id))!;
+    saved.character = { description: 'A stickman with a red cap' }; // a hero, but no reference picture
+    await store.saveProject(saved);
+    const port = fakePort();
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    expect(port.uploadReference).not.toHaveBeenCalled();
+    expect(port.prepare).toHaveBeenCalledWith(7, 's1', expect.not.stringContaining('reference'), { aspect: '9:16', outputs: 4, verb: 'Resume' });
+    expect(coordinator.getRunState()!.reference).toBeUndefined();
+  });
+
+  it.each([
+    ['its recorded media id', 'ref-media-1', 'ref-media-1', 'Stickman title'],
+    ['its file-name caption', null, 'ref-media-2', NAME],
+  ])('the reference tile is never matched (by %s)', async (_how, uploadedKey, refKey, refCaption) => {
+    const { chromeMock, coordinator, project, fakePort } = await withReference(1);
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(project.id))!;
+    saved.scenes = saved.scenes.slice(0, 1); // one scene
+    await store.saveProject(saved);
+    const port = fakePort({ uploadReference: vi.fn(async () => uploadedKey) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) })));
+    let opened = '';
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ((opened = key), { x: TILE_X, y: 1 }));
+    vi.mocked(port.press).mockImplementation(async (_tab, x) => {
+      if (x === TILE_X) chromeMock.tab.url = `${PROJECT_URL}/edit/gen-${opened}`;
+    });
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt: opened === 'k1' ? prompt : null, mediaId: opened }));
+
+    // The reference was uploaded first, so it is the oldest tile: by position alone it would be s1's picture.
+    await coordinator.handleTiles([card('k1', 0), { ...card(refKey, 1), caption: refCaption }]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 done');
+    expect(coordinator.getRunState()!.sceneStates.s1?.cardKeys).toEqual(['k1']);
+    expect(vi.mocked(port.tilePoint).mock.calls.map(([, key]) => key)).not.toContain(refKey);
   });
 });

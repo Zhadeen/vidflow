@@ -48,6 +48,11 @@ export interface RunState {
   nextSeq?: number;
   /** Full prompts read from Flow cards' detail views, by card key (verification before saving). */
   detailPrompts?: Record<string, string>;
+  /**
+   * The hero reference uploaded into this run's Flow project (spike S7), by its asset name. The upload is a tile in
+   * Flow's grid too: its card keys (and any tile captioned with its name) are never matched to a scene.
+   */
+  reference?: { name: string; flowProjectUrl: string; cardKeys: string[] };
 }
 
 /** Every scene without a done/refused state starts (again) as pending. */

@@ -42,6 +42,11 @@ export interface FlowPort {
   tilePoint(tabId: number, key: string): Promise<Point>;
   /** On a picture's detail page: the full prompt it shows, and the picture's media id when the page has one. */
   readDetail(tabId: number): Promise<{ prompt: string | null; mediaId: string | null }>;
+  /**
+   * Uploads the hero reference into the Flow project as an asset named `name` (skipped when it's already there);
+   * answers with the media id of the grid tile it makes, or null when that didn't show.
+   */
+  uploadReference(tabId: number, name: string, image: Blob): Promise<string | null>;
 }
 
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
@@ -86,6 +91,8 @@ const SAVE_FAILED_MESSAGE = "VidFlow couldn't save this scene's pictures. Press 
 const UNTRUSTED_PICTURE_MESSAGE = "Flow gave VidFlow a picture from an address it doesn't trust, so it wasn't saved. Press Try again.";
 export const WINDOW_CLOSED_MESSAGE = "VidFlow's Flow window was closed. Press Resume to open it again.";
 const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then press Resume.";
+export const REFERENCE_MISSING_MESSAGE =
+  "VidFlow can't find the hero's reference picture. Add it again in the Script step, or remove it, then press Resume.";
 
 export const BUSY_MESSAGE = 'Another project is making pictures right now. Pause it or wait for it to finish, then try again.';
 
@@ -455,9 +462,44 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
 const isFinished = (c: FlowResultCard) => c.imageUrl !== null && c.progress === null && !c.key.startsWith('pending-');
 const oldestFirst = (cards: FlowResultCard[]) => [...cards].sort((a, b) => b.domIndex - a.domIndex);
 
-/** Flow card keys already saved for a scene; never matched again. */
+/** Flow card keys already saved for a scene, or the hero reference's own tile; never matched to a scene. */
 function claimedKeys(s: RunState): Set<string> {
-  return new Set(Object.values(s.sceneStates).flatMap((x) => x.cardKeys ?? []));
+  return new Set([...Object.values(s.sceneStates).flatMap((x) => x.cardKeys ?? []), ...(s.reference?.cardKeys ?? [])]);
+}
+
+/** The uploaded hero reference's grid tile keeps its file name as caption: never a scene's picture, even unrecorded. */
+const notReference = (s: RunState) => (c: FlowResultCard) => !s.reference || !c.caption.includes(s.reference.name);
+
+const REFERENCE_EXTENSION: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+
+/** vidflow-hero-<first 8 characters of the Flow project id>.<ext>: one per Flow project, recognisable in its assets. */
+function referenceName(flowProjectUrl: string, type: string): string {
+  const id = (flowProjectUrl.split('/project/')[1] ?? '').replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
+  return `vidflow-hero-${id}.${REFERENCE_EXTENSION[type] ?? 'png'}`;
+}
+
+/**
+ * Once per run, right after its fresh Flow project opens (or on Resume if that didn't finish): uploads the hero's
+ * reference picture into it. Returns its asset name for prepare to attach, or null for a hero without a reference
+ * (hero-sheet runs never have one). Throws FlowBlockedError when the owner must act. Holds the tab.
+ */
+async function ensureReference(tabId: number, project: Project): Promise<string | null> {
+  const mediaId = project.character?.referenceMediaId;
+  const flowProjectUrl = state?.flowProjectUrl;
+  if (!mediaId || !state || !flowProjectUrl) return null;
+  if (state.reference?.flowProjectUrl === flowProjectUrl) return state.reference.name;
+  const image = await getMediaStore()
+    .get(mediaId)
+    .catch(() => undefined);
+  if (!image) throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: REFERENCE_MISSING_MESSAGE });
+  const name = referenceName(flowProjectUrl, image.type);
+  note(project, null, 'Adding the hero reference picture to Flow', 'project');
+  const key = await port!.uploadReference(tabId, name, image);
+  const reference = { name, flowProjectUrl, cardKeys: key ? [key] : [] };
+  await enqueue(async () => {
+    if (state?.projectId === project.id && state.flowProjectUrl === flowProjectUrl) await commit({ ...state, reference });
+  });
+  return name;
 }
 
 /**
@@ -468,6 +510,8 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
   const projectId = project.id;
   try {
     if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop'; // stopped meanwhile; scene stays pending
+    const reference = await ensureReference(tabId, project);
+    if (!stillRunning(projectId)) return 'stop';
     const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
     if (unconfirmed) {
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
@@ -494,6 +538,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
       aspect: project.aspect,
       outputs: project.outputsPerPrompt,
       verb: PUMP_VERB,
+      ...(reference ? { reference: { name: reference } } : {}),
     });
     // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
     if (!stillRunning(projectId)) return 'stop';
@@ -543,7 +588,9 @@ async function findUnconfirmedStart(
   if (!state) return null;
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
-  const fresh = oldestFirst(await port!.tiles(tabId)).filter((c) => !before.has(c.key) && !claimed.has(c.key));
+  const fresh = oldestFirst(await port!.tiles(tabId)).filter(
+    (c) => !before.has(c.key) && !claimed.has(c.key) && notReference(state!)(c),
+  );
   const samePromptInFlight = state.inFlight.filter((id) =>
     verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? ''),
   ).length;
@@ -734,7 +781,7 @@ async function matchOnce(): Promise<void> {
     });
     if (submissions.length === 0) return;
     const report = latestReport;
-    const cards = report.cards;
+    const cards = report.cards.filter(notReference(run));
     const details = run.detailPrompts ?? {};
     const matches = matchResults(submissions, cards, claimedKeys(run), project.outputsPerPrompt, details);
     // A report taken while the grid may still be redrawing (just back from a detail page) can't make VidFlow give up.

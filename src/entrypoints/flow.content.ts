@@ -12,7 +12,12 @@ import {
   FLOW_TILES,
   FLOW_TILE_POINT,
   FLOW_TILES_NOW,
+  FLOW_UPLOAD_REFERENCE,
+  FlowBlockedError,
+  decodeBytes,
   type ConfirmResponse,
+  type UploadReferenceRequest,
+  type UploadReferenceResponse,
   type DetailResponse,
   type NewProjectRequest,
   type PillResponse,
@@ -51,10 +56,11 @@ export default defineContentScript({
 
     /** Taken right after typing, so the background's confirm can tell whether its press started a picture. */
     let beforePress: FlowSnapshot | null = null;
-    const failure = (err: unknown): PrepareResponse => ({
-      kind: 'error',
-      message: err instanceof Error ? err.message : String(err),
-    });
+    // A FlowBlockedError (e.g. the hero reference wouldn't attach) pauses the run; anything else fails the scene.
+    const failure = (err: unknown): PrepareResponse =>
+      err instanceof FlowBlockedError
+        ? { kind: 'blocked', event: err.event }
+        : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
 
     async function prepare(req: PrepareRequest): Promise<PrepareResponse> {
       try {
@@ -66,7 +72,10 @@ export default defineContentScript({
         await driver.setImageMode();
         if (req.aspect) await driver.setAspect(req.aspect);
         if (req.outputs) await driver.setOutputs(req.outputs);
-        const at = await driver.prepareSubmit(req.prompt);
+        await driver.turnOffAgentMode(); // sticky in Flow: with it on, the prompt would go to the Agent
+        // Generate clears the chip, so the reference is attached again for every prompt (spike S7).
+        if (req.reference) await driver.attachReference(req.reference.name);
+        const at = await driver.prepareSubmit(req.prompt, { reference: !!req.reference });
         beforePress = driver.snapshot();
         return { kind: 'ready', ...at };
       } catch (err) {
@@ -89,6 +98,16 @@ export default defineContentScript({
         return { kind: 'ready', ...at };
       } catch (err) {
         return failure(err);
+      }
+    }
+
+    async function uploadReference(req: UploadReferenceRequest): Promise<UploadReferenceResponse> {
+      try {
+        await driver.waitUntilReady(READY_WAIT_MS);
+        const file = new File([decodeBytes(req.data)], req.name, { type: req.mimeType });
+        return { kind: 'done', mediaId: await driver.uploadReference(file) };
+      } catch (err) {
+        return failure(err) as UploadReferenceResponse;
       }
     }
 
@@ -131,6 +150,7 @@ export default defineContentScript({
         [FLOW_TILES_NOW]: async (): Promise<TilesNowResponse> => ({ cards: driver.resultCards() }),
         [FLOW_TILE_POINT]: () => tilePoint(message as TilePointRequest),
         [FLOW_DETAIL]: () => detail(),
+        [FLOW_UPLOAD_REFERENCE]: () => uploadReference(message as UploadReferenceRequest),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;

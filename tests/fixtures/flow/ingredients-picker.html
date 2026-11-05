@@ -1,0 +1,20 @@
+<!--
+  Hand-built from Flow's "Add ingredients" picker observed live 5 Nov 2026 (spike S7). Flow puts it in
+  .cdk-overlay-container when "Add ingredients to the prompt box" is clicked. Each asset is a role="option" button whose
+  text reads "<name> Image" (newest first); an upload in progress reads "Uploading <name>".
+-->
+<div class="cdk-overlay-pane">
+  <div class="ingredients-panel">
+    <div class="asset-filters">
+      <button type="button">All</button><button type="button">Images</button><button type="button">Videos</button>
+      <button type="button">Voices</button><button type="button">Characters</button><button type="button">Avatars</button>
+      <button type="button">Uploads</button>
+    </div>
+    <button type="button" class="upload-media"><mat-icon>upload</mat-icon><span>Upload media</span></button>
+    <div role="listbox" aria-label="Asset list">
+      <button type="button" role="option" aria-selected="false"><span class="asset-name">Generating preview</span><span class="asset-type">Untitled</span></button>
+      <button type="button" role="option" aria-selected="false"><span class="asset-name">Stickman waving</span><span class="asset-type">Image</span></button>
+    </div>
+    <button type="button" class="add-to-prompt">Add to prompt</button>
+  </div>
+</div>

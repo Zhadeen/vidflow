@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkCanStart, createFlowDriver, tileContainer, tileImage, type FlowPageState } from '../../src/flow/driver';
+import { FlowBlockedError } from '../../src/flow/messages';
 import { SEL } from '../../src/flow/selectors';
 
 const fixture = (name: string) => readFileSync(resolve(__dirname, '../fixtures/flow', name), 'utf8');
@@ -429,12 +430,205 @@ describe('FlowDriver picture detail', () => {
   });
 });
 
-describe('FlowDriver.attachReference', () => {
-  it('says it is not available yet', async () => {
+const REFERENCE = 'vidflow-hero-3f1c2a9e.png';
+const ATTACH_MESSAGE = "VidFlow couldn't attach the hero reference in Flow. Check the Flow window, then press Resume.";
+
+/** jsdom has no DataTransfer: a stand-in whose files are the File objects added to it. */
+class FakeDataTransfer {
+  private list: File[] = [];
+  items = { add: (f: File) => void this.list.push(f) };
+  get files() {
+    return this.list as unknown as FileList;
+  }
+}
+
+/**
+ * Stand-in for Flow's ingredients picker, behaving as spike S7 recorded it: the trigger opens the picker in the overlay;
+ * "Upload media" appends an input[type=file] to <body> and clicks it; a change shows "Uploading <name>", then
+ * "<name> Image" plus a grid tile with its own media id; option → "Add to prompt" puts one Ingredient chip in the bar.
+ */
+function fakePicker(opts: { uploadMs?: number; neverFinishes?: boolean; addsChip?: boolean } = {}) {
+  vi.stubGlobal('DataTransfer', FakeDataTransfer);
+  const overlay = document.createElement('div');
+  overlay.className = 'cdk-overlay-container';
+  document.body.append(overlay);
+  const uploaded: File[] = [];
+  const fileClicks: boolean[] = []; // whether each click on the file input was allowed to open the file window
+  let selected: string | null = null;
+  const assets: string[] = []; // names VidFlow uploaded, kept across picker openings like Flow's project assets
+  const uploading = new Set<string>();
+
+  function render() {
+    const list = overlay.querySelector('[role="listbox"]');
+    if (!list) return;
+    list.querySelectorAll('[data-uploaded]').forEach((o) => o.remove());
+    for (const name of assets) {
+      const o = document.createElement('button');
+      o.setAttribute('role', 'option');
+      o.dataset.uploaded = '';
+      o.innerHTML = uploading.has(name)
+        ? `<span class="asset-name">Uploading</span><span class="asset-type">${name}</span>`
+        : `<span class="asset-name">${name}</span><span class="asset-type">Image</span>`;
+      o.addEventListener('click', () => (selected = name));
+      list.prepend(o);
+    }
+  }
+
+  function open() {
+    overlay.innerHTML = fixture('ingredients-picker.html');
+    selected = null;
+    render();
+    overlay.querySelector('.upload-media')!.addEventListener('click', () => {
+      let input = document.querySelector<HTMLInputElement>('body > input[type="file"]');
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'file';
+        let files: FileList | null = null;
+        Object.defineProperty(input, 'files', { get: () => files, set: (v: FileList) => void (files = v) });
+        input.addEventListener('click', (e) => fileClicks.push(!e.defaultPrevented));
+        input.addEventListener('change', () => {
+          const file = (input!.files as unknown as File[])[0]!;
+          uploaded.push(file);
+          assets.push(file.name);
+          uploading.add(file.name);
+          render();
+          if (opts.neverFinishes) return;
+          setTimeout(() => {
+            uploading.delete(file.name);
+            render();
+            document.body.insertAdjacentHTML(
+              'beforeend',
+              `<flow-grid-tile-container><div>${file.name}</div><img data-media-id="ref-media-1" src="https://flow-content.google/ref"></flow-grid-tile-container>`,
+            );
+          }, opts.uploadMs ?? 10);
+        });
+        document.body.append(input);
+      }
+      input.click();
+    });
+    overlay.querySelector('.add-to-prompt')!.addEventListener('click', () => {
+      if (!selected) return;
+      overlay.innerHTML = '';
+      if (opts.addsChip === false) return;
+      $(SEL.promptBar).insertAdjacentHTML(
+        'beforeend',
+        '<button class="chip-container" aria-label="Ingredient"><img class="chip-image" alt="Ingredient image"></button>',
+      );
+    });
+  }
+
+  $(SEL.ingredients).addEventListener('click', () => (overlay.querySelector('[role="listbox"]') ? (overlay.innerHTML = '') : open()));
+  return { uploaded, fileClicks, assets, chips: () => document.querySelectorAll(SEL.ingredientChip).length };
+}
+
+describe('FlowDriver hero reference', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
+  const png = () => new File([new Uint8Array([137, 80, 78, 71])], REFERENCE, { type: 'image/png' });
+
+  it('uploads the reference through the picker without opening the file window, and reads its tile media id', async () => {
     load('prompt-bar.html');
-    await expect(createFlowDriver().attachReference(new Blob(['x']))).rejects.toThrow(
-      "Adding a reference picture isn't available yet.",
-    );
+    const picker = fakePicker();
+    await expect(driver().uploadReference(png())).resolves.toBe('ref-media-1');
+    expect(picker.uploaded.map((f) => f.name)).toEqual([REFERENCE]);
+    expect(picker.uploaded[0]!.type).toBe('image/png');
+    expect(picker.fileClicks).toEqual([false]); // the Mac file window never opens
+  });
+
+  it('attaches the reference through the picker', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker();
+    const d = driver();
+    await d.uploadReference(png());
+    await d.attachReference(REFERENCE);
+    expect(picker.chips()).toBe(1);
+    expect(d.hasReference()).toBe(true);
+    expect(document.querySelector('[role="listbox"]')).toBeNull(); // Add to prompt closed the picker
+  });
+
+  it("doesn't upload twice when it's already in the project's assets", async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker();
+    const d = driver();
+    await d.uploadReference(png());
+    await d.attachReference(REFERENCE);
+    await d.uploadReference(png()); // e.g. a retry after the page reloaded mid-upload
+    expect(picker.uploaded).toHaveLength(1);
+    expect(picker.assets).toEqual([REFERENCE]);
+  });
+
+  it('re-attaching clears a chip left in the bar, so exactly one ingredient remains', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker();
+    const d = driver();
+    await d.uploadReference(png());
+    await d.attachReference(REFERENCE);
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button aria-label="Clear prompt">close</button>');
+    $(SEL.clearPrompt).addEventListener('click', () => document.querySelectorAll(SEL.ingredientChip).forEach((c) => c.remove()));
+    await d.attachReference(REFERENCE);
+    expect(picker.chips()).toBe(1);
+    expect(picker.uploaded).toHaveLength(1);
+  });
+
+  it('throws a FlowBlockedError when the picker isn\'t found', async () => {
+    load('prompt-bar.html');
+    $(SEL.ingredients).remove();
+    const err = await driver().attachReference(REFERENCE).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as FlowBlockedError).event).toEqual({ type: 'needsOwner', reason: 'page-not-recognised', message: ATTACH_MESSAGE });
+    await expect(driver().uploadReference(png())).rejects.toBeInstanceOf(FlowBlockedError);
+  });
+
+  it('pauses when the upload never finishes', async () => {
+    load('prompt-bar.html');
+    fakePicker({ neverFinishes: true });
+    const err = await driver().uploadReference(png()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(ATTACH_MESSAGE);
+  });
+
+  it('pauses when Add to prompt leaves no chip', async () => {
+    load('prompt-bar.html');
+    const d = driver();
+    fakePicker({ addsChip: false });
+    await d.uploadReference(png());
+    await expect(d.attachReference(REFERENCE)).rejects.toBeInstanceOf(FlowBlockedError);
+  });
+
+  it('never answers ready for a prompt that needs the reference when the chip is gone', async () => {
+    load('prompt-bar.html');
+    fakeEditor();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    const err = await driver().prepareSubmit('Match the reference', { reference: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(ATTACH_MESSAGE);
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Ingredient"></button>');
+    await expect(driver().prepareSubmit('Match the reference', { reference: true })).resolves.toEqual({ x: 5, y: 5 });
+  });
+});
+
+describe('FlowDriver Agent mode', () => {
+  it('turns Agent mode off before typing, and never turns it on', async () => {
+    load('prompt-bar.html');
+    const chip = $('.agent-mode-chip');
+    const clicks = vi.fn(() => chip.setAttribute('aria-pressed', chip.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'));
+    chip.addEventListener('click', clicks);
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 200 });
+    await d.turnOffAgentMode();
+    expect(clicks).not.toHaveBeenCalled(); // already off: left alone
+    chip.setAttribute('aria-pressed', 'true');
+    await d.turnOffAgentMode();
+    expect(clicks).toHaveBeenCalledTimes(1);
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it("pauses when Agent mode won't turn off", async () => {
+    load('prompt-bar.html');
+    $('.agent-mode-chip').setAttribute('aria-pressed', 'true');
+    const err = await createFlowDriver(document, { pollMs: 5, timeoutMs: 100 }).turnOffAgentMode().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toMatch(/Agent/);
   });
 });
 
