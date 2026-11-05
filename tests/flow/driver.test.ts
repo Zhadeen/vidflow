@@ -282,6 +282,18 @@ describe('FlowDriver home page', () => {
     expect(driver.newProjectButton()).toEqual({ x: 120, y: 224 });
   });
 
+  it('finds the live New project button whose icon name runs into its label', () => {
+    // Live Flow (5 Nov 2026): <button><mat-icon>add</mat-icon><span>New project</span></button> → textContent "addNew project"; below the fold.
+    document.body.innerHTML =
+      '<flow-projects-page><button type="button"><mat-icon>add</mat-icon><span>New project</span></button></flow-projects-page>';
+    const button = document.querySelector('button')!;
+    const scroll = vi.fn();
+    button.scrollIntoView = scroll;
+    vi.spyOn(button, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 1800, width: 192, height: 128 } as DOMRect);
+    expect(createFlowDriver().newProjectButton()).toEqual({ x: 96, y: 1864 });
+    expect(scroll).toHaveBeenCalledWith({ block: 'center' });
+  });
+
   it('finds no New project button on a project page', () => {
     load('prompt-bar.html');
     expect(createFlowDriver().newProjectButton()).toBeNull();
