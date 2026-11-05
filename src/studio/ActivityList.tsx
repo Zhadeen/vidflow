@@ -1,7 +1,7 @@
 /// <reference types="chrome" />
 import { useEffect, useState } from 'react';
 import { ACTIVITY_KEY, readActivity, sceneNumber, stepLine, type ActivityEntry } from '../runs/activity';
-import { getLiveActivity, setLiveActivity } from '../settings';
+import { getLiveActivity, LIVE_ACTIVITY_KEY, setLiveActivity } from '../settings';
 import type { Project } from '../store/projects';
 
 const DEFAULT_LIMIT = 50;
@@ -10,6 +10,18 @@ const pad = (n: number) => String(n).padStart(2, '0');
 function clock(at: number): string {
   const d = new Date(at);
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** "Scene 3" in bold, then " · text"; just the text when the line isn't about one scene. */
+function line(e: ActivityEntry, project: Pick<Project, 'scenes'> | undefined) {
+  const n = project ? sceneNumber(project, e.sceneId) : null;
+  if (n === null) return e.text;
+  return (
+    <>
+      <b>Scene {n}</b>
+      {stepLine(n, e.text).slice(`Scene ${n}`.length)}
+    </>
+  );
 }
 
 interface Props {
@@ -37,8 +49,10 @@ export function ActivityList({ projectId, limit = DEFAULT_LIMIT, project }: Prop
       (on) => alive && setLive(on),
       () => undefined,
     );
-    const onChanged = (changes: Record<string, unknown>, area: string) => {
-      if (area === 'local' && ACTIVITY_KEY in changes) void load();
+    const onChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area !== 'local') return;
+      if (ACTIVITY_KEY in changes) void load();
+      if (LIVE_ACTIVITY_KEY in changes) setLive(changes[LIVE_ACTIVITY_KEY]!.newValue !== false);
     };
     chrome.storage.onChanged.addListener(onChanged);
     return () => {
@@ -80,7 +94,7 @@ export function ActivityList({ projectId, limit = DEFAULT_LIMIT, project }: Prop
           {entries.map((e, i) => (
             <li key={`${e.at}-${i}`}>
               <span className="vf-activity-time">{clock(e.at)}</span>
-              <span>{project ? stepLine(sceneNumber(project, e.sceneId), e.text) : e.text}</span>
+              <span>{line(e, project)}</span>
             </li>
           ))}
         </ul>

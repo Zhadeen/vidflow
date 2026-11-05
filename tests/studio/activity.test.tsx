@@ -93,4 +93,22 @@ describe('ActivityList', () => {
     expect(await screen.findByText('Nothing yet — press Start to begin.')).toBeTruthy();
     expect(within(document.body).queryAllByRole('listitem')).toHaveLength(0);
   });
+
+  it('renders the scene prefix in bold', async () => {
+    data[ACTIVITY_KEY] = [entry(at(10, 0, 0), 'Opened'), entry(at(10, 0, 1), 'Pressing Generate', 'c')];
+    render(<ActivityList projectId="p1" project={project} />);
+    const rows = await screen.findAllByRole('listitem');
+    expect(rows[0]!.querySelector('b')?.textContent).toBe('Scene 3');
+    expect(rows[1]!.querySelector('b')).toBeNull();
+  });
+
+  it('the switch follows changes made elsewhere', async () => {
+    render(<ActivityList projectId="p1" />);
+    const sw = await screen.findByRole('switch');
+    await waitFor(() => expect(sw.getAttribute('aria-checked')).toBe('true'));
+    act(() => listeners.forEach((l) => l({ [LIVE_ACTIVITY_KEY]: { newValue: false } }, 'local')));
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    act(() => listeners.forEach((l) => l({ [LIVE_ACTIVITY_KEY]: { newValue: true } }, 'local')));
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+  });
 });
