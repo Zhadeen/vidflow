@@ -3,11 +3,12 @@ import type { FlowResultCard, StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import { FlowBlockedError, type Point, type SubmitOptions } from '../flow/messages';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
-import { pillView, type PillView } from '../flow/pill';
+import { liveView } from '../flow/live';
+import type { LiveView } from '../flow/messages';
 import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
-import { logActivity, setStep, type StepTarget } from './activity';
+import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
 import {
   initRun,
@@ -172,13 +173,6 @@ const paceMs = () => timings.paceMinMs + Math.random() * (timings.paceMaxMs - ti
 
 function notify(message: string): void {
   void chrome.notifications.create({ type: 'basic', iconUrl: notificationIcon(), title: 'VidFlow', message });
-}
-
-/** The number shown for a scene ("Scene 3"): its slide, else its place in the project. */
-function sceneNo(project: Project, sceneId: string | null): number | null {
-  if (!sceneId) return null;
-  const i = project.scenes.findIndex((s) => s.id === sceneId);
-  return i < 0 ? null : (project.scenes[i]!.slide ?? i + 1);
 }
 
 /**
@@ -477,7 +471,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     }
     const n = project.outputsPerPrompt;
     note(project, null, `Set Flow to Image · ${project.aspect} · ${pictures(n)}`, 'setting');
-    note(project, sceneId, 'Typing the prompt into Flow', 'prompt');
+    note(project, sceneId, 'Typing the prompt', 'prompt');
     const at = await port!.prepare(tabId, sceneId, prompt, {
       aspect: project.aspect,
       outputs: project.outputsPerPrompt,
@@ -890,9 +884,13 @@ export async function handleFlowEvent(event: RunEvent): Promise<void> {
 }
 
 /** What the pill in a Flow tab should show: only VidFlow's own Flow tab, only while a run is going. */
-export async function pillFor(tabId: number | undefined): Promise<PillView | null> {
+export async function pillFor(tabId: number | undefined): Promise<LiveView | null> {
   await ready;
-  return (await isFlowTab(tabId)) ? pillView(state) : null;
+  if (!(await isFlowTab(tabId)) || !state) return null;
+  const run = state;
+  const step = ((await chrome.storage.local.get(STEP_KEY))[STEP_KEY] ?? null) as Step | null;
+  const project = (await getProject(run.projectId)) ?? null;
+  return liveView(run, step, project);
 }
 
 async function load(): Promise<void> {

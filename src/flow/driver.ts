@@ -114,6 +114,12 @@ const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
+/** Flow's "New project" button on its home page. */
+export function findNewProjectButton(doc: Document): Element | null {
+  // Flow's icon ligature runs into the label ("addNew project"), so no word boundary before "new".
+  return [...doc.querySelectorAll('button, [role="button"], a')].find((b) => /new\s*project\b/i.test(squash(b.textContent))) ?? null;
+}
+
 function isShown(el: Element): boolean {
   if (!el.isConnected || el.closest('[hidden], [aria-hidden="true"]')) return false;
   const check = (el as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility;
@@ -307,10 +313,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     newProjectButton() {
-      // Flow's icon ligature runs into the label ("addNew project"), so no word boundary before "new".
-      const button = [...doc.querySelectorAll('button, [role="button"], a')].find((b) =>
-        /new\s*project\b/i.test(squash(b.textContent)),
-      );
+      const button = findNewProjectButton(doc);
       if (!button) return null;
       // The button sits below the fold on Flow's home page; bring it on screen before measuring.
       button.scrollIntoView?.({ block: 'center' });

@@ -857,7 +857,7 @@ describe('live step and activity log', () => {
     expect(texts.slice(0, 7)).toEqual([
       'Opened a new Flow project',
       'Set Flow to Image · 9:16 · 1 picture',
-      'Typing the prompt into Flow',
+      'Typing the prompt',
       'Pressing Generate',
       'Sent to Flow',
       'Checking picture 1 of 1 matches its prompt',

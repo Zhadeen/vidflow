@@ -1,4 +1,5 @@
 /// <reference types="chrome" />
+import type { Project } from '../store/projects';
 
 /** What the Flow panel shows about the run: the step it is on now, and a capped log of what it did. */
 export type StepTarget = 'project' | 'setting' | 'prompt' | 'generate' | 'tile' | null;
@@ -24,6 +25,13 @@ export const ACTIVITY_MAX = 300;
 /** "Scene 3 · Pressing Generate", or just the text when it isn't about one scene. */
 export function stepLine(sceneNumber: number | null, text: string): string {
   return sceneNumber === null ? text : `Scene ${sceneNumber} · ${text}`;
+}
+
+/** The number shown for a scene ("Scene 3"): its slide, else its place in the project. */
+export function sceneNumber(project: Pick<Project, 'scenes'>, sceneId: string | null): number | null {
+  if (!sceneId) return null;
+  const i = project.scenes.findIndex((s) => s.id === sceneId);
+  return i < 0 ? null : (project.scenes[i]!.slide ?? i + 1);
 }
 
 /** Storage writes take turns, so two quick calls never overwrite each other (read-modify-write). */

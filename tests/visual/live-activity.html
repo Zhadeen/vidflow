@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VidFlow live activity — build check</title>
+    <style>
+      /* A stand-in for Flow's dark project page (the overlays are VidFlow's; this page is not). */
+      body { margin: 0; background: #0b0b0c; color: #e8e8ea; font: 13px/1.4 -apple-system, 'Inter', system-ui, sans-serif; height: 100vh; overflow: hidden; }
+      .side { position: absolute; left: 0; top: 0; bottom: 0; width: 150px; padding: 14px; color: #aaa; font-size: 12px; line-height: 2.1; }
+      .cdk-virtual-scroll-content-wrapper { position: absolute; left: 160px; right: 14px; top: 20px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+      flow-grid-tile-container { position: relative; display: block; border-radius: 10px; overflow: hidden; height: 120px; background: #1e1e22; }
+      flow-grid-tile-container img { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .pct { display: flex; height: 100%; align-items: center; justify-content: center; color: #888; }
+      flow-base-prompt-box { position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px; width: 520px; background: #1c1c1f; border-radius: 16px; padding: 12px 14px; display: block; }
+      [role='textbox'] { color: #ddd; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+      .row button { background: none; border: 0; color: #aaa; font-size: 11px; }
+      [aria-label='Start generation'] { width: 30px !important; height: 30px; border-radius: 50%; background: #e8e8ea !important; color: #111 !important; display: flex; align-items: center; justify-content: center; font-size: 14px !important; }
+    </style>
+  </head>
+  <body>
+    <div class="side">⌂ Nov 05 · Test run 5<br />▦ All media<br />🖼 Images</div>
+    <div class="cdk-virtual-scroll-content-wrapper">
+      <flow-grid-tile-container><div class="pct">34%</div></flow-grid-tile-container>
+      <flow-grid-tile-container><img data-media-id="k-check" src="./stick2.jpg" /></flow-grid-tile-container>
+      <flow-grid-tile-container><img data-media-id="k-saved-1" src="./stick1.jpg" /></flow-grid-tile-container>
+      <flow-grid-tile-container><img data-media-id="k-saved-2" src="./stick2.jpg" /></flow-grid-tile-container>
+    </div>
+    <flow-base-prompt-box>
+      <div role="textbox" aria-label="What do you want to create?">MANDATORY ART STYLE: classic whiteboard stickman… Scene: The hero jogs along a sidewalk toward a street corner…</div>
+      <div class="row">
+        <button>Agent</button>
+        <span style="display: flex; align-items: center; gap: 10px">
+          <button aria-label="Settings trigger">🍌 Nano Banana 2.1 ▭ x2</button>
+          <button aria-label="Start generation" id="generate">→</button>
+        </span>
+      </div>
+    </flow-base-prompt-box>
+    <script type="module" src="./live-activity.ts"></script>
+  </body>
+</html>
