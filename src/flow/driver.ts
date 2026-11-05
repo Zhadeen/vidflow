@@ -134,8 +134,14 @@ function textNodes(root: Element): string[] {
 }
 
 function radioLabel(radio: Element): string {
-  // Radios read like "crop_16_9 16:9" or "x2": the label is the last word.
-  return squash(radio.textContent).split(' ').pop() ?? '';
+  // Live Flow wraps the label in .toggle-text next to a <mat-icon> whose ligature name runs into it
+  // ("imageImage", "crop_16_916:9"), so read the label element, or the text without icons.
+  const label = radio.querySelector('.toggle-text');
+  if (label) return squash(label.textContent);
+  const copy = radio.cloneNode(true) as Element;
+  copy.querySelectorAll('mat-icon, [aria-hidden="true"]').forEach((icon) => icon.remove());
+  // Older/fixture markup reads like "crop_16_9 16:9" or "x2": the label is the last word.
+  return squash(copy.textContent).split(' ').pop() ?? '';
 }
 
 export function createFlowDriver(doc: Document = document, opts: DriverOptions = {}): FlowDriver {

@@ -165,6 +165,23 @@ describe('FlowDriver settings', () => {
     expect(video.getAttribute('aria-checked')).toBe('false');
   });
 
+  it('reads the live radio markup, whose icon name runs into the label', async () => {
+    // Live Flow (5 Nov 2026): textContent is "imageImage", "videocamVideo", "crop_16_916:9".
+    const radio = (icon: string | null, text: string, checked: boolean) =>
+      `<button role="radio" aria-checked="${checked}"><span class="mat-button-toggle-label-content"><span class="toggle-label">${
+        icon ? `<mat-icon aria-hidden="true" data-mat-icon-type="font">${icon}</mat-icon>` : ''
+      }<span class="toggle-text">${text}</span></span></span></button>`;
+    document.body.innerHTML = `<button aria-label="Settings trigger">Video · 720p · 4s crop_16_9 x1</button>
+      <div role="radiogroup">${radio('image', 'Image', false)}${radio('videocam', 'Video', true)}</div>`;
+    const [image, video] = document.querySelectorAll<HTMLElement>('[role="radio"]');
+    image.addEventListener('click', () => {
+      image.setAttribute('aria-checked', 'true');
+      video.setAttribute('aria-checked', 'false');
+    });
+    await createFlowDriver(document, { pollMs: 5, timeoutMs: 200 }).setImageMode();
+    expect(image.getAttribute('aria-checked')).toBe('true');
+  });
+
   it('fails when Image does not take', async () => {
     load('prompt-bar.html'); // no fake radios
     const image = [...document.querySelectorAll('[role="radio"]')].find((r) => r.textContent!.includes('Image'))!;
