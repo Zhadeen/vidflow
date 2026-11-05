@@ -38,3 +38,17 @@ After **Video**: groups are Mode **Frames** / Ingredients (default Ingredients) 
 
 - `[aria-label="Account details"]` (on the project grid page, not the clip editor) opens a `[role="dialog"]` with `span` "1,043 Google Flow credits" (inside `.credits-link`) and `span` "Resets on 13 Nov at 13:50"; it closes with `[aria-label="Close account panel"]` (Escape doesn't close it).
 - The balance still read **1,043 right after the 7-credit clip** — the panel may update late. VidFlow therefore reads the balance once before a Motion run and **tracks its own spending** from each clip's popover cost; it never trusts a re-read mid-run.
+
+## Agent panel (recorded live, 5 Nov 2026, after Task 3)
+
+- Turning on `.agent-mode-chip` and sending opens `flow-agent-panel` > `div.agent-panel-wrapper` > `div.agent-panel-content` > `flow-chat-view` > `flow-chat-scroller` > `div.scroll-viewport` > `div.messages-list`.
+- Messages are `div.message-row` rows: the owner's are `.message-row.user-row` (text in `span.structured-prompt-text`), the Agent's are `.message-row.agent-row` > `flow-chat-bubble` > `div.agent-bubble` > `div.agent-message-content` > `flow-a2ui-message-renderer` > … > `flow-markdown-content` > `div.markdown-container` > `p` (the answer text, e.g. "OK"). A "Show thinking" toggle sits above some answers. Each answer has buttons Good response / Bad response / Copy / Flag output.
+- Read the reply as the text of the **last `.agent-row`** added after sending (count rows before sending; wait for a new one with non-empty `.markdown-container`). ~15 s for a one-word answer.
+- Panel header buttons: `Open session history`, **`Start new session`** (use it before each Auto-pick pass so earlier answers can't sway the next), **`Close`** (closes the panel).
+- When the panel is open, the prompt bar moves into it: it keeps the same `[role="textbox"][aria-label="What do you want to create?"]`, `[aria-label="Add ingredients to the prompt box"]` and send button `[aria-label="Start generation"]`; attached pictures show as `button.chip-container[aria-label="Image ingredient"]`. Clear any leftover chip before attaching.
+- After Close, turn `.agent-mode-chip` off (`aria-pressed="false"`).
+
+## Flow announcements
+
+- Flow can show a "What's new" announcement over the page (5 Nov: "Introducing Omni 1.2!", buttons "View all changelogs" and **"Get started"**). It isn't a policy or billing notice. VidFlow should close it ("Get started") and carry on, logging "Closed Flow's announcement".
+- Omni 1.2 ("rolling out over the next few weeks") promises video lengths up to 15 s with an exact number of seconds. On 5 Nov the settings still showed Omni 1.1 Flash with 4/6/8/10 s. When the length control changes, Plan 3's clip-length rule must be revisited (an exact length would let a clip match its slide without trimming).
