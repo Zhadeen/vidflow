@@ -2,10 +2,9 @@ import { useId, useState, type DragEvent } from 'react';
 import type { CharacterSpec } from '../prompts/build';
 import { buildClaudePrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
-import { parseSceneFile } from '../scenes/parse';
-import type { ParseIssue, Scene } from '../scenes/types';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
+import { useScriptDraft } from './useScriptDraft';
 
 export type ProjectPatch = Partial<Pick<Project, 'script' | 'scenes' | 'style' | 'customStyle' | 'character' | 'aspect' | 'outputsPerPrompt'>>;
 
@@ -36,41 +35,14 @@ type CopyState = { kind: 'idle' } | { kind: 'copied' } | { kind: 'failed' };
 export function ScriptStep({ project, locked, hasPictures, onChange, onContinue }: Props) {
   const ids = useId();
   const [script, setScript] = useState(project.script ?? '');
-  const [reply, setReply] = useState('');
-  const [issues, setIssues] = useState<ParseIssue[]>([]);
-  const [readCount, setReadCount] = useState<number | null>(null);
   const [copy, setCopy] = useState<CopyState>({ kind: 'idle' });
   const [over, setOver] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
-  /** Scenes read from the reply but not used yet (they replace the project's only on "Use these scenes"). */
-  const [pending, setPending] = useState<Scene[] | null>(null);
-  const [confirming, setConfirming] = useState(false);
-
-  function readReply(text: string) {
-    setReply(text);
-    setConfirming(false);
-    if (!text.trim()) {
-      setIssues([]);
-      setReadCount(null);
-      setPending(null);
-      return;
-    }
-    const { scenes, issues: found } = parseSceneFile(text);
-    setIssues(found);
-    setReadCount(scenes.length);
-    setPending(scenes.length > 0 ? scenes : null);
-  }
-
-  function useScenes() {
-    if (!pending) return;
-    if (hasPictures && project.scenes.length > 0 && !confirming) {
-      setConfirming(true);
-      return;
-    }
-    onChange({ scenes: pending });
-    setPending(null);
-    setConfirming(false);
-  }
+  /** The pasted reply: its scenes replace the project's only on "Use these scenes". */
+  const draft = useScriptDraft(project, (scenes) => onChange({ scenes }));
+  const { text: reply, setText: readReply, pending, needsConfirm: confirming } = draft;
+  const issues = draft.preview?.issues ?? [];
+  const readCount = draft.preview ? draft.preview.scenes.length : null;
 
   async function copyPrompt() {
     try {
@@ -336,13 +308,13 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
       <div className="vf-actions">
         {confirming ? (
           <>
-            <Button variant="primary" onClick={useScenes}>
+            <Button variant="primary" onClick={draft.confirm}>
               Yes, replace them
             </Button>
-            <Button onClick={() => setConfirming(false)}>Keep the old scenes</Button>
+            <Button onClick={draft.cancel}>Keep the old scenes</Button>
           </>
         ) : pending ? (
-          <Button variant="primary" onClick={useScenes} disabled={locked}>
+          <Button variant="primary" onClick={draft.apply} disabled={locked}>
             Use these scenes
           </Button>
         ) : (

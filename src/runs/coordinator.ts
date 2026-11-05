@@ -2,11 +2,14 @@
 import type { FlowResultCard, StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import { FlowBlockedError, type Point, type SubmitOptions } from '../flow/messages';
+import { isFlowUrl } from '../flow/hosts';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
-import { pillView, type PillView } from '../flow/pill';
+import { liveView } from '../flow/live';
+import type { LiveView } from '../flow/messages';
 import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
+import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
 import {
   initRun,
@@ -173,6 +176,38 @@ function notify(message: string): void {
   void chrome.notifications.create({ type: 'basic', iconUrl: notificationIcon(), title: 'VidFlow', message });
 }
 
+/**
+ * Records what the run is doing for the Flow panel: the current step (only while running) and a line in the log.
+ * Fire and forget: a storage failure is logged and never reaches the run, and nothing here waits on the queue.
+ */
+function note(project: Project, sceneId: string | null, text: string, target: StepTarget = null, key?: string): void {
+  const at = Date.now();
+  const writes = [logActivity({ at, projectId: project.id, sceneId, text })];
+  if (target !== null && stillRunning(project.id)) writes.push(setStep({ projectId: project.id, sceneId, text, target, ...(key ? { key } : {}), at }));
+  for (const w of writes) w.catch((err) => console.warn('[VidFlow] activity write failed', err));
+}
+
+const pictures = (n: number) => `${n} picture${n === 1 ? '' : 's'}`;
+
+/** Log lines for what changed between two run states (scene results and the run's own status). */
+function noteChanges(prev: RunState | null, next: RunState, project: Project): void {
+  for (const [sceneId, now] of Object.entries(next.sceneStates)) {
+    const before = prev?.sceneStates[sceneId]?.status;
+    if (before === now.status) continue;
+    if (now.status === 'submitted') note(project, sceneId, 'Sent to Flow');
+    else if (now.status === 'done') note(project, sceneId, `✓ Saved ${pictures(now.pictureIds.length)}`);
+    else if (now.status === 'refused' || now.status === 'failed') note(project, sceneId, now.message ?? 'Needs a look');
+  }
+  if (prev?.status === next.status) return;
+  if (next.status === 'paused') {
+    note(project, null, next.pauseReason && next.pauseReason !== USER_PAUSE_REASON ? `Paused: ${next.pauseReason}` : 'Paused by you');
+  } else if (next.status === 'running' && prev?.status === 'paused') note(project, null, 'Resumed');
+  else if (next.status === 'finished') {
+    const { done } = runSummary(next);
+    note(project, null, `Finished: pictures ready for ${done} of ${Object.keys(next.sceneStates).length} scenes`);
+  }
+}
+
 function projectStyle(project: Project) {
   return project.style === 'custom' ? customStyle(project.customStyle ?? '') : STYLE_PRESETS[project.style];
 }
@@ -190,10 +225,6 @@ async function forgetFlowWindow(): Promise<void> {
 /** True only for the tab VidFlow opened as its own Flow tab. */
 export async function isFlowTab(tabId: number | undefined): Promise<boolean> {
   return tabId !== undefined && (await savedFlowWindow())?.tabId === tabId;
-}
-
-function isFlowUrl(url: string | undefined): boolean {
-  return !!url && (url.startsWith('https://flow.google.com/') || url.startsWith('https://labs.google/'));
 }
 
 let openingFlowTab: Promise<number> | null = null;
@@ -229,6 +260,26 @@ async function findOrOpenFlowTab(): Promise<number> {
   await chrome.storage.local.set({ [WINDOW_KEY]: { windowId: created.id, tabId } satisfies FlowWindow });
   await resetZoom(tabId);
   return tabId;
+}
+
+/**
+ * Flow ignores debugger presses while VidFlow's tab is not the active tab of its window (plan-1b live check). Right
+ * before every press, bring the tab to the front of its own window — only if it isn't already, and never by focusing
+ * the window (the owner keeps working wherever they are).
+ */
+async function frontTab(tabId: number): Promise<void> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) await chrome.tabs.update(tabId, { active: true });
+  } catch {
+    // The tab is gone; the press fails and the run pauses as usual.
+  }
+}
+
+/** Every press goes through here: the tab is made active in its window first. */
+async function pressIn(tabId: number, x: number, y: number): Promise<void> {
+  await frontTab(tabId);
+  await port!.press(tabId, x, y);
 }
 
 /**
@@ -312,7 +363,9 @@ async function commit(next: RunState): Promise<void> {
   if (project) {
     project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
     await saveProject(project);
+    noteChanges(prev, next, project);
   }
+  if (next.status !== 'running') setStep(null).catch((err) => console.warn('[VidFlow] step clear failed', err));
 
   if (next.status === 'running') chrome.power.requestKeepAwake('system');
   else {
@@ -368,7 +421,7 @@ function stillCollecting(projectId: string): boolean {
  * Puts the Flow tab on this run's own project, creating a fresh one on the run's first scene (spec §16.5).
  * Returns false when the run stopped meanwhile (no Generate press follows). Throws FlowBlockedError when the owner must act.
  */
-async function ensureFlowProject(tabId: number, projectId: string): Promise<boolean> {
+async function ensureFlowProject(tabId: number, projectId: string, onOpened?: () => void): Promise<boolean> {
   const action = flowProjectAction(state?.flowProjectUrl, await tabUrl(tabId));
   if (action.kind === 'ok') return true;
   if (action.kind === 'navigate') {
@@ -384,7 +437,7 @@ async function ensureFlowProject(tabId: number, projectId: string): Promise<bool
   }
   const at = await port!.findNewProject(tabId, PUMP_VERB);
   if (!stillRunning(projectId)) return false;
-  await port!.press(tabId, at.x, at.y);
+  await pressIn(tabId, at.x, at.y);
   if (!stillRunning(projectId)) await detachFlowDebugger(tabId); // paused or stopped during the press
   const url = await waitForUrl(tabId, (u) => projectUrlOf(u) !== null);
   const flowProjectUrl = projectUrlOf(url ?? undefined);
@@ -394,6 +447,7 @@ async function ensureFlowProject(tabId: number, projectId: string): Promise<bool
   await enqueue(async () => {
     if (state?.projectId === projectId) await commit({ ...state, flowProjectUrl });
   });
+  onOpened?.();
   return stillRunning(projectId); // paused or stopped meanwhile: the project is kept, nothing more is typed
 }
 
@@ -412,7 +466,7 @@ function claimedKeys(s: RunState): Set<string> {
 async function submitScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
   const projectId = project.id;
   try {
-    if (!(await ensureFlowProject(tabId, projectId))) return 'stop'; // stopped meanwhile; scene stays pending
+    if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop'; // stopped meanwhile; scene stays pending
     const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
     if (unconfirmed) {
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
@@ -432,6 +486,9 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
         return 'next';
       }
     }
+    const n = project.outputsPerPrompt;
+    note(project, null, `Set Flow to Image · ${project.aspect} · ${pictures(n)}`, 'setting');
+    note(project, sceneId, 'Typing the prompt', 'prompt');
     const at = await port!.prepare(tabId, sceneId, prompt, {
       aspect: project.aspect,
       outputs: project.outputsPerPrompt,
@@ -445,7 +502,8 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     // this scene's tiles before pressing again (no surplus batch). `submitted` clears it.
     await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
     if (!stillRunning(projectId)) return 'stop';
-    await port!.press(tabId, at.x, at.y);
+    note(project, sceneId, 'Pressing Generate', 'generate');
+    await pressIn(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
     if (!(await port!.confirmStarted(tabId))) {
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
@@ -562,7 +620,7 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
     }
     const at = await port.tilePoint(tabId, key);
     if (!stillCollecting(projectId)) return null;
-    await port.press(tabId, at.x, at.y);
+    await pressIn(tabId, at.x, at.y);
     if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
     const { prompt, mediaId } = await port.readDetail(tabId);
     // Trust the prompt only when the page's one picture is this card; missing or different means unread.
@@ -697,6 +755,7 @@ async function matchOnce(): Promise<void> {
         const [key] = unverifiedKeys(m, details);
         if (key !== undefined) {
           // Check it in Flow's detail view, then match again with what that showed.
+          note(project, m.sceneId, `Checking picture ${m.cardKeys.indexOf(key) + 1} of ${m.cardKeys.length} matches its prompt`, 'tile', key);
           const detail = await detailOf(tabId, run.projectId, key, report.id);
           if (detail === null || detail === 'unread') return; // stopped, or try again on the next tile report
           if (detail === '') await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
@@ -842,9 +901,13 @@ export async function handleFlowEvent(event: RunEvent): Promise<void> {
 }
 
 /** What the pill in a Flow tab should show: only VidFlow's own Flow tab, only while a run is going. */
-export async function pillFor(tabId: number | undefined): Promise<PillView | null> {
+export async function pillFor(tabId: number | undefined): Promise<LiveView | null> {
   await ready;
-  return (await isFlowTab(tabId)) ? pillView(state) : null;
+  if (!(await isFlowTab(tabId)) || !state) return null;
+  const run = state;
+  const step = ((await chrome.storage.local.get(STEP_KEY))[STEP_KEY] ?? null) as Step | null;
+  const project = (await getProject(run.projectId)) ?? null;
+  return liveView(run, step, project);
 }
 
 async function load(): Promise<void> {

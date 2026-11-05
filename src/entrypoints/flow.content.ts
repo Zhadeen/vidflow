@@ -22,10 +22,11 @@ import {
   type TilesNowResponse,
   type ToBackground,
 } from '../flow/messages';
-import { placePill, renderPill } from '../flow/pill';
+import { createRefresher, placeLive, renderLive } from '../flow/live';
 import { LIMIT_PATTERN, POLICY_DIALOG_PATTERN, SEL } from '../flow/selectors';
 import type { RunEvent } from '../runs/run';
-import { getExpectedAccount } from '../settings';
+import { STEP_KEY } from '../runs/activity';
+import { getExpectedAccount, getLiveActivity, LIVE_ACTIVITY_KEY } from '../settings';
 
 const OBSERVE_THROTTLE_MS = 1_000;
 const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
@@ -137,22 +138,39 @@ export default defineContentScript({
       return true; // answer asynchronously
     });
 
-    // ---- Pill ---------------------------------------------------------------
-    async function refreshPill(): Promise<void> {
-      let view: PillResponse = null;
-      try {
-        view = (await chrome.runtime.sendMessage({ type: FLOW_PILL } satisfies ToBackground)) as PillResponse;
-      } catch {
-        view = null;
-      }
-      active = view !== null;
-      renderPill(document, view, (action) => send({ type: FLOW_PILL_TOGGLE, action }));
-      if (active) observe();
+    // ---- Pill and live activity (ring, tags, saved badges) ------------------
+    let view: PillResponse = null;
+    let liveOn = true;
+    const refreshPill = createRefresher(
+      async () => (await chrome.runtime.sendMessage({ type: FLOW_PILL } satisfies ToBackground)) as PillResponse,
+      getLiveActivity,
+      (next, on) => {
+        view = next;
+        active = view !== null;
+        if (active) liveOn = on;
+        renderLive(document, view, liveOn, (action) => send({ type: FLOW_PILL_TOGGLE, action }));
+        if (active) observe();
+      },
+    );
+    /** Keeps the ring and badges on their targets: at most once a frame, only while this tab is VidFlow's. */
+    let placing = false;
+    function placeSoon(): void {
+      if (!active || placing) return;
+      placing = true;
+      requestAnimationFrame(() => {
+        placing = false;
+        placeLive(document, view, liveOn);
+      });
     }
+    // The run and the Flow window decide whether this is VidFlow's tab; the step and the switch only matter if it is.
+    const RUN_KEYS = ['vidflow.run', 'vidflow.flowWindow'];
+    const LIVE_KEYS = [STEP_KEY, LIVE_ACTIVITY_KEY];
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && ('vidflow.run' in changes || 'vidflow.flowWindow' in changes)) void refreshPill();
+      if (area !== 'local') return;
+      if (RUN_KEYS.some((key) => key in changes) || (active && LIVE_KEYS.some((key) => key in changes))) void refreshPill();
     });
-    window.addEventListener('resize', () => placePill(document));
+    window.addEventListener('resize', placeSoon);
+    window.addEventListener('scroll', placeSoon, { capture: true, passive: true }); // Flow scrolls inner lists
     void refreshPill();
 
     // Development-only end-to-end bridge: this branch is removed from the normal build.
@@ -168,7 +186,6 @@ export default defineContentScript({
 
     function check(): void {
       if (!active) return;
-      placePill(document);
       const cards: FlowResultCard[] = driver.resultCards();
       const tiles = JSON.stringify(cards);
       if (tiles !== lastTiles) {
@@ -202,6 +219,7 @@ export default defineContentScript({
     function observe(): void {
       if (observer) return;
       observer = new MutationObserver(() => {
+        placeSoon(); // Flow re-drew something: the ring and badges follow within a frame
         timer ??= setTimeout(() => {
           timer = null;
           check();

@@ -26,4 +26,11 @@ describe('manifest', () => {
     );
     expect(manifest.permissions).not.toContain('cookies');
   });
+
+  it('opens its side panel beside Flow', () => {
+    expect(manifest.permissions).toContain('sidePanel');
+    expect(manifest.side_panel).toEqual({ default_path: 'sidepanel.html' });
+    // No popup: the toolbar click must reach the background (side panel on Flow, the studio elsewhere).
+    expect(manifest.action).not.toHaveProperty('default_popup');
+  });
 });

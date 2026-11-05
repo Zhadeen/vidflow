@@ -1,6 +1,8 @@
+import type { StepTarget } from '../runs/activity';
 import type { RunEvent, RunState } from '../runs/run';
 import type { AspectRatio } from '../store/projects';
 import type { FlowResultCard, StartVerb } from './driver';
+import type { PillView } from './pill';
 
 /** Messages between the background and the Flow helper (content script). */
 export const FLOW_PREPARE = 'flow/prepare';
@@ -104,7 +106,15 @@ export interface FlowTilesMessage {
 export interface PillRequest {
   type: typeof FLOW_PILL;
 }
-export type PillResponse = { n: number; total: number; paused: boolean } | null;
+/** What VidFlow is touching on the page now (the ring), and the scene it is for. */
+export interface LiveHighlight {
+  target: Exclude<StepTarget, null>;
+  key?: string;
+  scene: number | null;
+}
+/** The pill, plus the ring target and the saved pictures (card key → scene number) for the live activity overlays. */
+export type LiveView = PillView & { highlight: LiveHighlight | null; savedCards: Array<[string, number]> };
+export type PillResponse = LiveView | null;
 
 /** Flow tab → background: the pill's Pause/Resume button. */
 export interface PillToggle {

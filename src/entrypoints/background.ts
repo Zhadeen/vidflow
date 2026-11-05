@@ -1,4 +1,5 @@
 /// <reference types="chrome" />
+import { isOwnPage, registerToolbar } from '../background/action';
 import { registerE2e } from '../e2e/background';
 import {
   FLOW_EVENT,
@@ -81,9 +82,7 @@ export default defineBackground(() => {
   // Set synchronously on every worker start, so a plain wake never finds the run "not connected".
   setFlowPort(createFlowPort());
 
-  const studioUrl = browser.runtime.getURL('/studio.html');
-
-  // Every run change goes to the studio tab (if one is open; nothing listening is fine).
+  // Every run change goes to the studio tab and the side panel (if open; nothing listening is fine).
   onRunState((state) => {
     const message: RunStateMessage = { type: RUN_STATE, state };
     chrome.runtime.sendMessage(message).catch(() => undefined);
@@ -91,8 +90,8 @@ export default defineBackground(() => {
 
   chrome.runtime.onMessage.addListener((message: ToBackground | StudioRequest, sender, sendResponse) => {
     if (STUDIO_TYPES.has(message?.type)) {
-      // Only VidFlow's own studio page may control runs (content scripts in Flow tabs share this channel).
-      if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(studioUrl)) return;
+      // Only VidFlow's own pages may control runs (content scripts in Flow tabs share this channel).
+      if (!isOwnPage(sender)) return;
       void answerStudio(message as StudioRequest).then(sendResponse);
       return true; // answer asynchronously
     }
@@ -121,15 +120,6 @@ export default defineBackground(() => {
     }
   });
 
-  browser.action.onClicked.addListener(async () => {
-    const [existing] = await browser.tabs.query({ url: studioUrl });
-    if (existing?.id !== undefined) {
-      await browser.tabs.update(existing.id, { active: true });
-      if (existing.windowId !== undefined) {
-        await browser.windows.update(existing.windowId, { focused: true });
-      }
-      return;
-    }
-    await browser.tabs.create({ url: studioUrl });
-  });
+  // Toolbar: the side panel on a Flow tab, the studio anywhere else.
+  registerToolbar();
 });

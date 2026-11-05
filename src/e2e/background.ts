@@ -84,7 +84,10 @@ async function status(m: E2eStatus) {
       pictureIds: st?.pictureIds ?? [],
     };
   });
-  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, lastSendError: await getLastSendError() };
+  const flowWindow = (await chrome.storage.local.get('vidflow.flowWindow'))['vidflow.flowWindow'] as { windowId: number; tabId: number } | undefined;
+  const flowTab = flowWindow ? await chrome.tabs.get(flowWindow.tabId).catch(() => null) : null;
+  const tab = flowTab && { id: flowTab.id, windowId: flowTab.windowId, url: flowTab.url, active: flowTab.active, status: flowTab.status };
+  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, lastSendError: await getLastSendError(), flowWindow, flowTab: tab };
 }
 
 async function picture(m: E2ePicture) {
