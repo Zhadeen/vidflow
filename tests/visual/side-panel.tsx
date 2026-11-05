@@ -8,6 +8,7 @@ import { Panel } from '../../src/panel/Panel';
 import { initRun, reduceRun, type RunState } from '../../src/runs/run';
 import { parseSceneFile } from '../../src/scenes/parse';
 import { createProject, deleteProject, listProjects, saveProject, setMediaStore } from '../../src/store/projects';
+import type { CheckRow } from '../../src/runs/checks';
 import type { RunClient } from '../../src/studio/runClient';
 import '../../src/studio/theme/studio.css';
 import '../../src/panel/panel.css';
@@ -25,13 +26,26 @@ const REPLY = [
 const screen = new URLSearchParams(location.search).get('screen') ?? 'setup';
 const id = (i: number) => `scene-${String(i).padStart(2, '0')}`;
 
+const ROWS: CheckRow[] = [
+  { id: 'account', label: 'Google account', ok: true, detail: 'unscripted4ce@gmail.com' },
+  { id: 'page', label: 'Flow page & project', ok: true, detail: 'Flow project open' },
+  { id: 'promptBox', label: 'Prompt box', ok: true, detail: 'Found' },
+  { id: 'generate', label: 'Generate button', ok: true, detail: 'Found' },
+  { id: 'agentOff', label: 'Agent mode off', ok: true, detail: 'Off' },
+  { id: 'settings', label: 'Flow settings', ok: true, detail: 'Nano Banana 2.1 · 16:9 · x2' },
+  { id: 'hero', label: 'Hero reference', ok: true, detail: 'Reference picture ready · attached to every scene' },
+  { id: 'credits', label: 'Credits', ok: true, detail: '1,043 credits · 0 needed for pictures' },
+];
+
 async function main() {
-  setMediaStore({ put: async () => '', get: async () => new Blob(), remove: async () => undefined, removeProject: async () => undefined });
+  const hero = await (await fetch('./stick1.jpg')).blob();
+  setMediaStore({ put: async () => '', get: async () => hero, remove: async () => undefined, removeProject: async () => undefined });
   for (const p of await listProjects()) await deleteProject(p.id);
   const older = await createProject('Why cats knock things over');
   await saveProject(older);
   const project = await createProject('Phone Bill Story');
-  project.character = null;
+  project.script = 'Every month my phone bill went up. So I read every line.';
+  project.character = { description: 'A short stickman with a red cap', referenceMediaId: `${project.id}/hero-reference` };
   if (screen === 'running') project.scenes = parseSceneFile(REPLY).scenes;
   await saveProject(project);
 
@@ -67,7 +81,7 @@ async function main() {
   };
 
   const reply = async (): Promise<RunReply> => ({ ok: true, state: run });
-  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, choose: reply, heroSheet: reply, checks: async () => ({ ok: true, flowOpen: true, rows: [] }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
+  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, choose: reply, heroSheet: reply, checks: async () => ({ ok: true, flowOpen: true, rows: ROWS }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
   createRoot(document.getElementById('root')!).render(<Panel client={client} />);
   Object.assign(window, { REPLY, ready: true });
 }

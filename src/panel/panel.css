@@ -1,14 +1,14 @@
 /*
- * The side panel beside Flow (docs/design/approved/side-panel.html): a narrow column on navy with the coral glow,
- * cream text, one coral primary. Uses the studio's tokens; sizes follow the approved mockup (13px body, 12px captions).
+ * The side panel beside Flow (docs/design/approved/side-panel-v2.html): a narrow column on navy with the coral glow,
+ * cream text, a health line, four tabs and one coral primary per tab. Uses the studio's tokens; sizes follow the
+ * approved mockup (13px body, 12px captions, 11px notes).
  */
 
 .vf-pn {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
+  padding: 12px 14px;
   background: var(--vf-glow), var(--vf-navy);
   background-attachment: fixed;
   color: var(--vf-cream);
@@ -44,10 +44,126 @@
   color: var(--vf-cream);
 }
 
+/* ---- Health line and tabs (every tab) ---- */
+
+.vf-pn-health {
+  margin-top: 8px;
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream-muted);
+}
+
+.vf-pn-health ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-pn-health li[data-ok] {
+  color: var(--vf-cream);
+}
+
+.vf-pn-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  border-bottom: 1px solid var(--vf-navy-line);
+}
+
+.vf-pn-tab {
+  margin: 0 0 -1px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--vf-muted);
+  font: inherit;
+  font-size: var(--vf-text-xs);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.vf-pn-tab:hover {
+  color: var(--vf-cream-muted);
+}
+
+.vf-pn-tab[aria-selected='true'] {
+  color: var(--vf-cream);
+  border-bottom-color: var(--vf-cream);
+  font-weight: 600;
+}
+
+.vf-pn-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding-top: 12px;
+}
+
 .vf-pn-group {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
+}
+
+/* Small notes (summary, hero status, copied) and links inside text */
+.vf-pn-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--vf-muted);
+}
+
+.vf-pn-note[hidden] {
+  display: none;
+}
+
+.vf-pn-inline {
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.vf-pn-inline:hover {
+  color: var(--vf-cream);
+}
+
+.vf-pn-inline:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.vf-pn-field-hint {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--vf-muted);
+}
+
+/* Outlined secondaries in pairs (Copy prompts, Upload / Make model sheet, Show me / Test one prompt) */
+.vf-pn-pair {
+  display: flex;
+  gap: 6px;
+}
+
+.vf-pn .vf-btn[data-variant].vf-pn-sec {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 7px 6px;
+  border-width: 1.5px;
+  white-space: nowrap;
+  border-radius: var(--vf-radius-md);
+  font-size: var(--vf-text-xs);
+  font-weight: 600;
 }
 
 .vf-pn-label {
@@ -74,28 +190,6 @@
 
 .vf-pn-field::placeholder,
 .vf-pn-field input::placeholder {
-  color: var(--vf-muted);
-}
-
-.vf-pn-hero {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.vf-pn-hero input {
-  flex: 1;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  outline: none;
-}
-
-/* Empty hero: the whole line reads as the hint, as in the mockup */
-.vf-pn-hero:has(input:placeholder-shown) > span {
   color: var(--vf-muted);
 }
 
@@ -128,7 +222,10 @@
 }
 
 .vf-pn-select:focus-within,
-.vf-pn-hero:focus-within,
+.vf-pn-pastebox:focus-within,
+.vf-pn-hero-name:focus-visible,
+.vf-pn-inline:focus-visible,
+.vf-pn-tab:focus-visible,
 .vf-pn-field:focus-visible,
 .vf-pn-chip:focus-within,
 .vf-pn-chip-select:focus-visible,
@@ -137,13 +234,40 @@
   box-shadow: var(--vf-focus);
 }
 
+/* The paste box: the hint (with the upload link) sits where the placeholder would */
+.vf-pn-pastebox {
+  position: relative;
+  padding: 0;
+}
+
 .vf-pn-paste {
-  height: 86px;
-  padding: 10px;
-  resize: vertical;
-  color: var(--vf-muted);
+  display: block;
+  width: 100%;
+  height: 74px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  background: none;
+  color: var(--vf-cream);
+  font: inherit;
   font-size: var(--vf-text-xs);
   line-height: 1.45;
+  resize: vertical;
+  outline: none;
+}
+
+.vf-pn-paste-hint {
+  position: absolute;
+  inset: 8px 10px auto;
+  margin: 0;
+  font-size: var(--vf-text-xs);
+  line-height: 1.45;
+  color: var(--vf-muted);
+  pointer-events: none;
+}
+
+.vf-pn-paste-hint button {
+  pointer-events: auto;
 }
 
 .vf-pn-custom {
@@ -166,8 +290,11 @@
 }
 
 .vf-pn-found {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   margin: 0;
-  font-size: var(--vf-text-xs);
+  font-size: 11px;
   color: var(--vf-cream);
 }
 
@@ -236,9 +363,9 @@
 }
 
 .vf-pn-summary {
-  margin: auto 0 0;
-  font-size: var(--vf-text-xs);
-  color: var(--vf-cream-muted);
+  margin: 0;
+  font-size: 11px;
+  color: var(--vf-muted);
 }
 
 .vf-pn-notice {
@@ -366,4 +493,200 @@
 
 .vf-pn-end {
   margin-top: auto;
+}
+
+/* ---- Setup: the hero ---- */
+
+.vf-pn-hero-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.vf-pn-thumb {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-cream);
+  overflow: hidden;
+}
+
+.vf-pn-thumb[data-empty] {
+  background: var(--vf-navy-pill);
+  box-shadow: inset 0 0 0 1px var(--vf-navy-line-strong);
+}
+
+.vf-pn-thumb-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-navy);
+  color: var(--vf-cream);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.vf-pn-thumb-remove:focus-visible {
+  outline: none;
+  box-shadow: var(--vf-focus);
+}
+
+.vf-pn-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vf-pn-hero-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.vf-pn-hero-name {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: none;
+  color: var(--vf-cream);
+  font: inherit;
+  font-size: var(--vf-text-xs);
+  text-overflow: ellipsis;
+  outline: none;
+}
+
+.vf-pn-hero-name::placeholder {
+  color: var(--vf-muted);
+}
+
+/* The studio's model sheet, at the panel's size: no title or hint (the panel has its own Make model sheet) */
+.vf-pn .vf-hero-sheet-compact {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.vf-pn .vf-hero-sheet-compact:empty {
+  display: none;
+}
+
+.vf-pn .vf-hero-sheet-compact .vf-status,
+.vf-pn .vf-hero-sheet-compact .vf-hint,
+.vf-pn .vf-hero-sheet-compact .vf-notice {
+  font-size: var(--vf-text-xs);
+}
+
+.vf-pn .vf-hero-sheet-pictures {
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.vf-pn .vf-hero-sheet-picture figcaption {
+  padding: 6px;
+  font-size: 11px;
+}
+
+/* ---- Checks ---- */
+
+.vf-pn-label-gap {
+  margin-top: 4px;
+}
+
+.vf-pn-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-pn-check {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-sm);
+  font-size: var(--vf-text-xs);
+}
+
+.vf-pn-check > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vf-pn-check[data-ok='false'] {
+  align-items: flex-start;
+}
+
+.vf-pn-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vf-pn-check-problem {
+  color: var(--vf-cream-soft);
+}
+
+.vf-pn-check-fix {
+  font-size: 11px;
+  color: var(--vf-muted);
+}
+
+.vf-pn-check-idle {
+  flex: none;
+  max-width: 55%;
+  font-size: 11px;
+  color: var(--vf-muted);
+  text-align: right;
+}
+
+.vf-pn-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-cream);
+  color: var(--vf-navy);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.vf-pn-badge[data-tone='warn'] {
+  background: none;
+  color: var(--vf-cream);
+  box-shadow: inset 0 0 0 1px var(--vf-coral);
+  font-weight: 600;
+}
+
+.vf-pn-flow-closed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vf-pn-flow-closed .vf-pn-sub {
+  margin: 0;
+}
+
+.vf-pn .vf-pn-flow-closed .vf-btn[data-variant].vf-pn-sec {
+  flex: none;
 }

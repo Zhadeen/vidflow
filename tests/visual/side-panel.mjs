@@ -18,17 +18,21 @@ const server = await createServer({ root: here, configFile: false, plugins: [rea
 await server.listen();
 const browser = await chromium.launch({ channel: 'chrome' });
 
-for (const screen of ['setup', 'running']) {
-  const page = await browser.newPage({ viewport: { width: 320, height: 560 }, deviceScaleFactor: 2 });
-  await page.goto(`http://localhost:5197/side-panel.html?screen=${screen}`);
+for (const screen of ['setup', 'checks', 'running']) {
+  const page = await browser.newPage({ viewport: { width: 320, height: { setup: 680, checks: 760, running: 560 }[screen] }, deviceScaleFactor: 2 });
+  await page.goto(`http://localhost:5197/side-panel.html?screen=${screen === 'checks' ? 'setup' : screen}`);
   await page.waitForFunction(() => window.ready === true);
-  if (screen === 'setup') {
+  if (screen === 'setup' || screen === 'checks') {
     // Paste Claude's reply, then use the scenes: the mockup's "before starting" state.
     const REPLY = await page.evaluate(() => window.REPLY);
     await page.getByRole('textbox', { name: "Paste Claude's reply" }).fill(REPLY);
     await page.getByRole('button', { name: 'Use these scenes' }).click();
     await page.getByRole('button', { name: 'Start making pictures' }).waitFor();
-  } else {
+  }
+  if (screen === 'checks') {
+    await page.getByRole('tab', { name: 'Checks' }).click();
+    await page.getByRole('button', { name: 'Check again' }).waitFor();
+  } else if (screen === 'running') {
     await page.getByRole('button', { name: 'Pause' }).waitFor();
   }
   await page.waitForTimeout(300);
@@ -38,9 +42,9 @@ for (const screen of ['setup', 'running']) {
 
 if (mockOut) {
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 }, deviceScaleFactor: 2 });
-  await page.goto(`http://localhost:5197/@fs${path.join(repo, 'docs/design/approved/side-panel.html')}`);
-  const panels = page.locator('div[style*="width:320px"]');
-  for (const [i, name] of ['setup', 'running'].entries()) await panels.nth(i).screenshot({ path: path.join(mockOut, `mock-${name}.png`) });
+  await page.goto(`http://localhost:5197/@fs${path.join(repo, 'docs/design/approved/side-panel-v2.html')}`);
+  const panels = page.locator('.vp');
+  for (const [i, name] of ['setup', 'queue', 'checks', 'files'].entries()) await panels.nth(i).screenshot({ path: path.join(mockOut, `mock-${name}.png`) });
   await page.close();
 }
 

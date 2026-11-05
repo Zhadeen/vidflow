@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const pdfText = vi.fn(async (_data: Uint8Array) => '');
+vi.mock('../../src/scenes/pdfText', () => ({ pdfText: (data: Uint8Array) => pdfText(data) }));
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Panel } from '../../src/panel/Panel';
+import { buildClaudePrompt, buildRapidBeatPrompt } from '../../src/prompts/claude';
 import { getProject, listProjects, saveProject } from '../../src/store/projects';
 import { clearProjects, fakeBackground, REPLY_6, runningState, seed, STUDIO, stubChrome } from './helpers';
 
@@ -67,9 +71,11 @@ describe('side panel: before starting', () => {
     fireEvent.change(await screen.findByRole('textbox', { name: "Paste Claude's reply" }), { target: { value: REPLY_6 } });
 
     expect(screen.getByText('✓ 6 scenes found · no problems')).toBeTruthy();
+    // As in the approved panel: "Use these scenes" is a link beside the count; the coral Start waits for it.
     const use = screen.getByRole('button', { name: 'Use these scenes' });
+    expect(use.getAttribute('data-variant')).toBeNull();
     expect(primaries(container)).toHaveLength(1);
-    expect(use.getAttribute('data-variant')).toBe('primary');
+    expect((screen.getByRole('button', { name: 'Start making pictures' }) as HTMLButtonElement).disabled).toBe(true);
     // Pasting only previews: nothing is saved yet.
     await new Promise((r) => setTimeout(r, 20));
     expect((await getProject(p.id))!.scenes).toHaveLength(0);
@@ -77,7 +83,7 @@ describe('side panel: before starting', () => {
     fireEvent.click(use);
     await waitFor(async () => expect((await getProject(p.id))!.scenes).toHaveLength(6));
     expect(client.forget).toHaveBeenCalledWith(p.id);
-    expect(screen.getByRole('button', { name: 'Start making pictures' })).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Start making pictures' }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it('a new paste asks before replacing scenes that have pictures', async () => {
@@ -103,7 +109,7 @@ describe('side panel: before starting', () => {
     p.character = { description: 'a cap', referenceMediaId: `${p.id}/hero-reference` };
     await saveProject(p);
     render(<Panel client={fakeBackground(null).client()} />);
-    expect(await screen.findByText('Reference picture ✓')).toBeTruthy();
+    expect(await screen.findByText('Reference picture ✓ · attached to every scene')).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Hero' }), { target: { value: 'a red cap' } });
     await waitFor(async () =>
       expect((await getProject(p.id))!.character).toEqual({ description: 'a red cap', referenceMediaId: `${p.id}/hero-reference` }),
@@ -137,11 +143,19 @@ describe('side panel: before starting', () => {
     await waitFor(async () => expect((await getProject(p.id))!.customStyle).toBe('Blue ballpoint'));
   });
 
-  it('summary reads "12 pictures · 0 Flow credits"', async () => {
+  it('summary reads "48 pictures · 0 Flow credits · ~8 min"', async () => {
     stubChrome();
-    await seed('Phone Bill Story', 6);
+    await seed('Phone Bill Story', 24);
     render(<Panel client={fakeBackground(null).client()} />);
-    expect(await screen.findByText('12 pictures · 0 Flow credits · Chrome shows a “debugging” bar while it runs')).toBeTruthy();
+    // 24 scenes × 2 pictures; about 20 s per scene.
+    expect(await screen.findByText('48 pictures · 0 Flow credits · ~8 min')).toBeTruthy();
+  });
+
+  it('a short video still reads at least "~1 min"', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 1);
+    render(<Panel client={fakeBackground(null).client()} />);
+    expect(await screen.findByText('2 pictures · 0 Flow credits · ~1 min')).toBeTruthy();
   });
 
   it('Start uses the run client, then shows the run', async () => {
@@ -221,12 +235,12 @@ describe('side panel: before starting', () => {
     await screen.findByRole('button', { name: 'Pause' });
 
     // No studio tab yet: it opens in the other window, not the current one (VidFlow's).
-    fireEvent.click(screen.getByRole('button', { name: /Open full studio/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open full studio ↗' }));
     await waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({ url: `${STUDIO}#/project/${p.id}`, windowId: 9, active: true }));
 
     // A studio tab left inside VidFlow's window is moved out before it is shown.
     chrome.tabs.query.mockResolvedValue([{ id: 5, windowId: FLOW_WINDOW, url: STUDIO }]);
-    fireEvent.click(screen.getByRole('button', { name: /Open full studio/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open full studio ↗' }));
     await waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(5, { active: true, url: `${STUDIO}#/project/${p.id}` }));
     expect(chrome.tabs.move).toHaveBeenCalledWith(5, { windowId: 9, index: -1 });
     expect(chrome.tabs.move.mock.invocationCallOrder[0]!).toBeLessThan(chrome.tabs.update.mock.invocationCallOrder[0]!);
@@ -258,16 +272,147 @@ describe('side panel: before starting', () => {
 
     // Before starting: no studio tab yet, so one opens on this video.
     await screen.findByRole('button', { name: 'Start making pictures' });
-    fireEvent.click(screen.getByRole('button', { name: /Open full studio/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open full studio ↗' }));
     await waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({ url: `${STUDIO}#/project/${p.id}` }));
 
     // While it runs: the open studio tab is brought forward and moved to this video.
     act(() => void bg.announce(runningState(p, 1)));
     await screen.findByRole('button', { name: 'Pause' });
     chrome.tabs.query.mockResolvedValue([{ id: 5, windowId: 2, url: STUDIO }]);
-    fireEvent.click(screen.getByRole('button', { name: /Open full studio/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open full studio ↗' }));
     await waitFor(() => expect(chrome.tabs.update).toHaveBeenCalledWith(5, { active: true, url: `${STUDIO}#/project/${p.id}` }));
     expect(chrome.windows.update).toHaveBeenCalledWith(2, { focused: true });
     expect(chrome.tabs.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('side panel: Setup tab', () => {
+  function stubClipboard() {
+    const writeText = vi.fn(async (_t: string) => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    return writeText;
+  }
+
+  it("copies the Claude prompt and the rapid-beat prompt with the video's script", async () => {
+    stubChrome();
+    const writeText = stubClipboard();
+    await seed('Phone Bill Story', 0, (x) => (x.script = 'My phone bill went up every month.'));
+    render(<Panel client={fakeBackground(null).client()} />);
+
+    const copyClaude = await screen.findByRole('button', { name: 'Copy Claude prompt' });
+    await act(async () => fireEvent.click(copyClaude));
+    expect(writeText).toHaveBeenLastCalledWith(buildClaudePrompt('My phone bill went up every month.'));
+    expect(await screen.findByText('Copied')).toBeTruthy();
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Copy rapid-beat prompt' })));
+    expect(writeText).toHaveBeenLastCalledWith(buildRapidBeatPrompt('My phone bill went up every month.'));
+    expect(writeText).toHaveBeenCalledTimes(2);
+  });
+
+  it('says so when the clipboard refuses', async () => {
+    stubChrome();
+    const writeText = stubClipboard();
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    await seed('Phone Bill Story', 0, (x) => (x.script = 'A script.'));
+    render(<Panel client={fakeBackground(null).client()} />);
+    const copyClaude = await screen.findByRole('button', { name: 'Copy Claude prompt' });
+    await act(async () => fireEvent.click(copyClaude));
+    expect(await screen.findByText("VidFlow couldn't copy the prompt. Try again.")).toBeTruthy();
+  });
+
+  it('asks to add the script in the full studio when there is none', async () => {
+    const chrome = stubChrome();
+    const writeText = stubClipboard();
+    const p = await seed('Phone Bill Story', 0);
+    render(<Panel client={fakeBackground(null).client()} />);
+    expect(await screen.findByText('Add your script in the full studio first')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copy Claude prompt' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy rapid-beat prompt' })).toBeNull();
+    expect(writeText).not.toHaveBeenCalled();
+    // No script box in the panel: the link opens the full studio on this video.
+    fireEvent.click(screen.getByRole('button', { name: 'Open full studio' }));
+    await waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledWith({ url: `${STUDIO}#/project/${p.id}` }));
+  });
+
+  it('an uploaded CSV fills the paste box and still needs Use these scenes', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 0);
+    render(<Panel client={fakeBackground(null).client()} />);
+    const file = await screen.findByLabelText('Upload a scene file');
+    expect((file as HTMLInputElement).accept).toBe('.csv,.tsv,.txt,.pdf,text/csv,text/tab-separated-values,text/plain,application/pdf');
+    await act(async () => {
+      fireEvent.change(file, { target: { files: [new File([REPLY_6], 'scenes.csv', { type: 'text/csv' })] } });
+    });
+    const paste = screen.getByRole('textbox', { name: "Paste Claude's reply" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(paste.value).toBe(REPLY_6));
+    expect(screen.getByText('✓ 6 scenes found · no problems')).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await getProject(p.id))!.scenes).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Use these scenes' }));
+    await waitFor(async () => expect((await getProject(p.id))!.scenes).toHaveLength(6));
+  });
+
+  it('a scanned PDF shows the plain message', async () => {
+    stubChrome();
+    pdfText.mockResolvedValueOnce('');
+    await seed('Phone Bill Story', 0);
+    render(<Panel client={fakeBackground(null).client()} />);
+    const file = await screen.findByLabelText('Upload a scene file');
+    await act(async () => {
+      fireEvent.change(file, { target: { files: [new File([new Uint8Array([1, 2])], 'scan.pdf', { type: 'application/pdf' })] } });
+    });
+    expect(await screen.findByText('This PDF has no text VidFlow can read. Paste the scenes instead.')).toBeTruthy();
+    expect((screen.getByRole('textbox', { name: "Paste Claude's reply" }) as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('hero shows "Reference picture ✓ · attached to every scene" or "No reference picture" with Upload', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 6, (x) => (x.character = { description: 'a short stickman with a red cap' }));
+    const view = render(<Panel client={fakeBackground(null).client()} />);
+    expect(await screen.findByText('No reference picture')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Upload picture' })).toBeTruthy();
+    expect(screen.queryByText(/Add one in the full studio/)).toBeNull();
+    expect((screen.getByRole('textbox', { name: 'Hero' }) as HTMLInputElement).value).toBe('a short stickman with a red cap');
+
+    // Upload a picture: it becomes the hero reference (as in the studio's hero section).
+    URL.createObjectURL = () => 'blob:hero';
+    URL.revokeObjectURL = () => undefined;
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Hero reference picture file'), {
+        target: { files: [new File([new Uint8Array([1, 2, 3])], 'hero.png', { type: 'image/png' })] },
+      });
+    });
+    expect(await screen.findByText('Reference picture ✓ · attached to every scene')).toBeTruthy();
+    await waitFor(async () =>
+      expect((await getProject(p.id))!.character).toEqual({
+        description: 'a short stickman with a red cap',
+        referenceMediaId: `${p.id}/hero-reference`,
+      }),
+    );
+    expect(await screen.findByRole('img', { name: 'Hero reference picture' })).toBeTruthy();
+
+    // Remove takes it off again.
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Remove picture' })));
+    expect(await screen.findByText('No reference picture')).toBeTruthy();
+    await waitFor(async () => expect((await getProject(p.id))!.character).toEqual({ description: 'a short stickman with a red cap' }));
+    view.unmount();
+  });
+
+  it('Make model sheet starts the model-sheet run', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 6, (x) => (x.character = { description: 'a tall stickman' }));
+    const client = fakeBackground(null).client();
+    render(<Panel client={client} />);
+    const make = await screen.findByRole('button', { name: 'Make model sheet' });
+    expect(make.getAttribute('data-variant')).toBe('secondary');
+    await act(async () => fireEvent.click(make));
+    expect(client.heroSheet).toHaveBeenCalledWith(p.id);
+  });
+
+  it('Make model sheet waits for a hero description', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 6);
+    render(<Panel client={fakeBackground(null).client()} />);
+    expect(((await screen.findByRole('button', { name: 'Make model sheet' })) as HTMLButtonElement).disabled).toBe(true);
   });
 });

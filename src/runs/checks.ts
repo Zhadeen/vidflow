@@ -25,7 +25,11 @@ import {
   whileTestingPrompt,
   type StartChecksKind,
 } from './coordinator';
+import { FLOW_NOT_OPEN } from './health';
 import { isLive } from './run';
+
+// The health line is pure and lives on its own, so the side panel can use it without the background's modules.
+export { FLOW_NOT_OPEN, healthLine } from './health';
 
 export type CheckId = 'account' | 'page' | 'promptBox' | 'generate' | 'agentOff' | 'settings' | 'hero' | 'credits';
 export interface CheckRow {
@@ -40,7 +44,6 @@ export interface CheckRow {
 
 export const NOT_CHECKED = 'Not checked yet';
 export const ON_PROJECT_LATER = 'Checked when a Flow project is open';
-export const FLOW_NOT_OPEN = 'Flow not open';
 export const FLOW_NOT_OPEN_MESSAGE = "VidFlow's Flow window isn't open. Press Open Flow, then try again.";
 export const NO_ANSWER_FIX = "Wait for VidFlow's Flow window to finish loading, then try again.";
 const NO_PROJECT = 'That project is no longer in VidFlow.';
@@ -344,24 +347,4 @@ export async function testOnePrompt(projectId: string): Promise<{ ok: boolean; m
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
-}
-
-/** The health line under the panel's header: "✓ Signed in · ✓ Flow ready · ✓ Hero attached", or plain warnings. */
-export function healthLine(rows: CheckRow[], flowOpen: boolean): string[] {
-  if (!flowOpen) return [FLOW_NOT_OPEN];
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const out: string[] = [];
-  const account = byId.get('account');
-  if (account?.ok === true) out.push('✓ Signed in');
-  else if (account?.ok === false) out.push(account.detail === 'Not signed in' ? 'Not signed in' : 'Wrong Google account');
-
-  const page = byId.get('page');
-  if (page?.ok === false) out.push('Flow needs a look');
-  else if (byId.get('promptBox')?.ok === false || byId.get('generate')?.ok === false) out.push('Flow page not ready');
-  else if (page?.ok === true) out.push('✓ Flow ready');
-
-  const hero = byId.get('hero');
-  if (hero?.ok === true) out.push('✓ Hero attached');
-  else if (hero?.ok === false) out.push('Hero picture missing');
-  return out;
 }

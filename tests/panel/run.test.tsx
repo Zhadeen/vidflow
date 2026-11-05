@@ -205,7 +205,7 @@ describe('studio after edits in the panel', () => {
 });
 
 describe('side panel: while the model sheet is made', () => {
-  it('says so in one line instead of the setup view and its coral Start', async () => {
+  it('the hero section says so and the coral Start waits', async () => {
     const p = await seed('Phone Bill Story', 6, (x) => (x.character = { description: 'a tall stickman' }));
     stubChrome();
     const sheetRun = {
@@ -216,8 +216,11 @@ describe('side panel: while the model sheet is made', () => {
       sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'submitted' as const, pictureIds: [] } },
     };
     render(<Panel client={fakeBackground(sheetRun).client()} />);
-    expect(await screen.findByText('Making the model sheet… Open the Script step in the full studio')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Start making pictures' })).toBeNull();
-    expect(document.querySelector('[data-variant="primary"]')).toBeNull();
+    expect(await screen.findByText('Flow is drawing the model sheet…')).toBeTruthy();
+    // Setup, not Queue: the sheet isn't a run of scenes.
+    expect(screen.getByRole('tab', { name: 'Setup' }).getAttribute('aria-selected')).toBe('true');
+    expect((screen.getByRole('button', { name: 'Start making pictures' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Make model sheet' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(document.querySelectorAll('[data-variant="primary"]')).toHaveLength(1);
   });
 });
