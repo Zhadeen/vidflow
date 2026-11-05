@@ -1127,6 +1127,33 @@ describe('the hero reference in Flow', () => {
     expect(vi.mocked(port.prepare).mock.calls[0]![3]).toMatchObject({ reference: { name: NAME } });
   });
 
+  it('pauses (scene still pending) when the upload fails with an ordinary error', async () => {
+    const { coordinator, project, fakePort } = await withReference();
+    const port = fakePort({ uploadReference: vi.fn(async () => Promise.reject(new Error('message channel closed'))) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'the run to pause');
+    expect(coordinator.getRunState()!.pauseReason).toBe(ATTACH_MESSAGE);
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('pending');
+    expect(port.prepare).not.toHaveBeenCalled();
+  });
+
+  it('does not upload when the owner paused while the reference picture was being read', async () => {
+    const { coordinator, project, fakePort, media } = await withReference();
+    const read = media.get.bind(media);
+    vi.spyOn(media, 'get').mockImplementation(async (id) => {
+      await coordinator.pauseRun();
+      return read(id);
+    });
+    const port = fakePort();
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'the run to pause');
+    await coordinator.settledForTests();
+    expect(port.uploadReference).not.toHaveBeenCalled();
+    expect(port.prepare).not.toHaveBeenCalled();
+  });
+
   it('pauses with a plain message when the reference picture is no longer stored', async () => {
     const { coordinator, project, fakePort } = await withReference(1, false);
     const port = fakePort();

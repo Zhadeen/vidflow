@@ -447,7 +447,18 @@ class FakeDataTransfer {
  * "Upload media" appends an input[type=file] to <body> and clicks it; a change shows "Uploading <name>", then
  * "<name> Image" plus a grid tile with its own media id; option → "Add to prompt" puts one Ingredient chip in the bar.
  */
-function fakePicker(opts: { uploadMs?: number; neverFinishes?: boolean; addsChip?: boolean } = {}) {
+function fakePicker(
+  opts: {
+    uploadMs?: number;
+    neverFinishes?: boolean;
+    addsChip?: boolean;
+    /** Flow makes a new input for this upload and puts it first in <body> (not reusing one already there). */
+    freshInputFirst?: boolean;
+    ignoresEscape?: boolean;
+    /** Flow fills the asset list this long after the picker opens. */
+    assetsLoadMs?: number;
+  } = {},
+) {
   vi.stubGlobal('DataTransfer', FakeDataTransfer);
   const overlay = document.createElement('div');
   overlay.className = 'cdk-overlay-container';
@@ -474,12 +485,24 @@ function fakePicker(opts: { uploadMs?: number; neverFinishes?: boolean; addsChip
     }
   }
 
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !opts.ignoresEscape) overlay.innerHTML = '';
+  });
+
   function open() {
     overlay.innerHTML = fixture('ingredients-picker.html');
     selected = null;
-    render();
+    if (opts.assetsLoadMs) {
+      const list = overlay.querySelector('[role="listbox"]')!;
+      const loaded = list.innerHTML;
+      list.innerHTML = '';
+      setTimeout(() => {
+        list.innerHTML = loaded;
+        render();
+      }, opts.assetsLoadMs);
+    } else render();
     overlay.querySelector('.upload-media')!.addEventListener('click', () => {
-      let input = document.querySelector<HTMLInputElement>('body > input[type="file"]');
+      let input = opts.freshInputFirst ? null : document.querySelector<HTMLInputElement>('body > input[type="file"]');
       if (!input) {
         input = document.createElement('input');
         input.type = 'file';
@@ -502,7 +525,8 @@ function fakePicker(opts: { uploadMs?: number; neverFinishes?: boolean; addsChip
             );
           }, opts.uploadMs ?? 10);
         });
-        document.body.append(input);
+        if (opts.freshInputFirst) document.body.prepend(input);
+        else document.body.append(input);
       }
       input.click();
     });
@@ -533,6 +557,40 @@ describe('FlowDriver hero reference', () => {
     expect(picker.uploaded.map((f) => f.name)).toEqual([REFERENCE]);
     expect(picker.uploaded[0]!.type).toBe('image/png');
     expect(picker.fileClicks).toEqual([false]); // the Mac file window never opens
+  });
+
+  it('closes the picker after the upload, and carries on when it stays open', async () => {
+    load('prompt-bar.html');
+    fakePicker();
+    await driver().uploadReference(png());
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+    document.body.innerHTML = '';
+    load('prompt-bar.html');
+    fakePicker({ ignoresEscape: true });
+    await expect(driver().uploadReference(png())).resolves.toBe('ref-media-1');
+  });
+
+  it('sets the file on the input Flow clicked, never on another file input in the page', async () => {
+    load('prompt-bar.html');
+    const stale = document.createElement('input');
+    stale.type = 'file';
+    const staleSets = vi.fn();
+    Object.defineProperty(stale, 'files', { get: () => null, set: staleSets });
+    const picker = fakePicker({ freshInputFirst: true });
+    document.body.append(stale); // e.g. left by an earlier upload, after Flow's new one in <body>
+    await driver().uploadReference(png());
+    expect(staleSets).not.toHaveBeenCalled();
+    expect(picker.uploaded.map((f) => f.name)).toEqual([REFERENCE]);
+  });
+
+  it("waits for the asset list to load before deciding it isn't uploaded yet", async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker({ assetsLoadMs: 40 });
+    const d = driver();
+    await d.uploadReference(png());
+    document.querySelector('.cdk-overlay-container')!.innerHTML = ''; // the picker closed
+    await d.uploadReference(png()); // the reopened list is empty for a moment
+    expect(picker.uploaded).toHaveLength(1);
   });
 
   it('attaches the reference through the picker', async () => {

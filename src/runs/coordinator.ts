@@ -1,7 +1,7 @@
 /// <reference types="chrome" />
 import type { FlowResultCard, StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
-import { FlowBlockedError, type Point, type SubmitOptions } from '../flow/messages';
+import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, type Point, type SubmitOptions } from '../flow/messages';
 import { isFlowUrl } from '../flow/hosts';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { liveView } from '../flow/live';
@@ -492,9 +492,17 @@ async function ensureReference(tabId: number, project: Project): Promise<string 
     .get(mediaId)
     .catch(() => undefined);
   if (!image) throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: REFERENCE_MISSING_MESSAGE });
+  if (!stillRunning(project.id)) return null; // paused or stopped meanwhile: submitScene stops before typing
   const name = referenceName(flowProjectUrl, image.type);
   note(project, null, 'Adding the hero reference picture to Flow', 'project');
-  const key = await port!.uploadReference(tabId, name, image);
+  let key: string | null;
+  try {
+    key = await port!.uploadReference(tabId, name, image);
+  } catch (err) {
+    // Without the reference no scene may be sent (its prompt names it): pause, never fail the scene.
+    if (err instanceof FlowBlockedError) throw err;
+    throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: REFERENCE_ATTACH_MESSAGE });
+  }
   const reference = { name, flowProjectUrl, cardKeys: key ? [key] : [] };
   await enqueue(async () => {
     if (state?.projectId === project.id && state.flowProjectUrl === flowProjectUrl) await commit({ ...state, reference });

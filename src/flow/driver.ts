@@ -132,6 +132,8 @@ const PICKER_TIMEOUT_MS = 5_000;
 /** Spike S7: an upload read "Uploading" for 5–10 s. */
 const UPLOAD_TIMEOUT_MS = 30_000;
 const REFERENCE_TILE_TIMEOUT_MS = 10_000;
+const ASSETS_LOAD_WAIT_MS = 1_500;
+const CLOSE_WAIT_MS = 1_000;
 const AGENT_OFF_TRIES = 3;
 const AGENT_MODE_MESSAGE =
   "Flow's Agent mode is on and VidFlow couldn't turn it off. Turn it off in the Flow window, then press Resume.";
@@ -343,22 +345,40 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     return null;
   }
 
+  /** Closes the picker (Escape, which Flow's overlay listens for on the document); carries on if it stays open. */
+  async function closePicker(): Promise<void> {
+    if (!q(SEL.assetList)) return;
+    const target = q(SEL.assetList) ?? doc;
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    await until(() => !q(SEL.assetList), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+  }
+
   async function uploadReference(file: File): Promise<string | null> {
     const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     await openPicker();
+    // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
+    await until(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS, 'empty').catch(() => undefined);
     if (!findAsset(file.name)) {
       const upload = overlayButton('Upload media');
       if (!upload) throw blocked();
-      // Flow answers "Upload media" by clicking a file input it appends to <body>. That click must never open the Mac
-      // file window: a cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners
-      // see the page's own events, so this works from the content script's isolated world.
+      const before = new Set(doc.querySelectorAll(SEL.fileInput));
+      // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file
+      // window: a cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the
+      // page's own events, so this works from the content script's isolated world. The input it clicked is the one
+      // Flow listens to; another file input left in the page is never used.
+      let clicked: HTMLInputElement | null = null;
       const noFileWindow = (e: Event) => {
-        if (e.target instanceof HTMLInputElement && e.target.type === 'file') e.preventDefault();
+        if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'file') return;
+        e.preventDefault();
+        clicked = e.target;
       };
       doc.addEventListener('click', noFileWindow, true);
       try {
         upload.click();
-        const input = await untilOrBlocked(() => [...doc.querySelectorAll<HTMLInputElement>(SEL.fileInput)].pop(), pickerWait);
+        const input = await untilOrBlocked(
+          () => clicked ?? [...doc.querySelectorAll<HTMLInputElement>(SEL.fileInput)].filter((i) => !before.has(i)).pop(),
+          pickerWait,
+        );
         const transfer = new DataTransfer();
         transfer.items.add(file);
         input.files = transfer.files;
@@ -368,6 +388,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       }
     }
     await untilOrBlocked(() => readyAsset(file.name), opts.timeoutMs ?? UPLOAD_TIMEOUT_MS);
+    await closePicker();
     try {
       return await until(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS, 'no tile');
     } catch {

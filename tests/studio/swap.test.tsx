@@ -121,6 +121,7 @@ async function openStudio(p: Project, client = backgroundClient()) {
 
 const preview = () => screen.getByRole('region', { name: 'Preview' });
 const option = (n: number) => screen.getByRole('figure', { name: new RegExp(`^Option ${n} of`) });
+const useButton = (n: number) => within(option(n)).getByRole<HTMLButtonElement>('button', { name: 'Use this picture' });
 const tileImg = (n: number) =>
   within(screen.getByRole('list', { name: 'Scenes' })).getByRole('button', { name: new RegExp(`^Scene 0?${n}\\b`) }).querySelector('img');
 
@@ -154,7 +155,7 @@ describe('one-click picture swap', () => {
     expect(client.choose).toHaveBeenCalledWith(p.id, 's2', 'm/b2');
     // The background saved it with no broadcast: the studio read it back and keeps it.
     await waitFor(async () => expect((await getProject(p.id))!.sceneStates.s2?.chosenPictureId).toBe('m/b2'));
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await waitFor(() => expect(useButton(1).disabled).toBe(false)); // the swap finished saving
     expect(option(2).getAttribute('data-best')).toBe('true');
     expect(within(option(1)).getByRole('button', { name: 'Use this picture' })).toBeTruthy();
   });
@@ -166,7 +167,8 @@ describe('one-click picture swap', () => {
     await waitFor(() => expect(option(2).getAttribute('data-best')).toBe('true'));
     expect(client.choose).toHaveBeenCalledTimes(1);
     expect(client.choose).toHaveBeenLastCalledWith(p.id, 's2', 'm/b2');
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await waitFor(async () => expect((await getProject(p.id))!.sceneStates.s2?.chosenPictureId).toBe('m/b2'));
+    await waitFor(() => expect(useButton(1).disabled).toBe(false)); // the swap finished saving
     // Enter and Space work because it is a native button in the tab order (one stop per card).
     const use = within(option(1)).getByRole('button', { name: 'Use this picture' });
     expect(use.tagName).toBe('BUTTON');
@@ -176,7 +178,8 @@ describe('one-click picture swap', () => {
     await waitFor(() => expect(option(1).getAttribute('data-best')).toBe('true'));
     expect(client.choose).toHaveBeenCalledTimes(2);
     // Pressing the card already in use does nothing.
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await waitFor(async () => expect((await getProject(p.id))!.sceneStates.s2?.chosenPictureId).toBe('m/a2'));
+    await waitFor(() => expect(useButton(2).disabled).toBe(false));
     fireEvent.click(within(option(1)).getByRole('img'));
     expect(client.choose).toHaveBeenCalledTimes(2);
   });
