@@ -22,8 +22,10 @@ import { extFor, fileName, folderName } from './names';
  * Download all and auto-save can both save the same picture if Download all is pressed while a scene is being
  * auto-saved; that is harmless: uniquify gives the second copy a " (1)" name and nothing is overwritten.
  *
- * What is recorded: project.downloaded[mediaId] is the base name Chrome really saved under (it may carry " (1)"),
- * read from the download once it completes; a download that is interrupted is not recorded.
+ * What is recorded: project.downloaded[mediaId] is first the name VidFlow asked for, as soon as Chrome accepts the
+ * download (so a download whose end VidFlow never hears — the worker slept, the panel closed — still counts, and a
+ * later Download all doesn't save it again); once it completes, the base name Chrome really saved under (it may carry
+ * " (1)"). A download that is interrupted is not recorded (its early mark is taken off again).
  */
 
 export interface DownloadResult {
@@ -148,11 +150,23 @@ async function scenePictures(project: Project, scene: Scene, both: boolean, form
   return out;
 }
 
-/** Records downloaded pictures on the stored project (one transaction, so other changes meanwhile are kept). */
-async function markDownloaded(projectId: string, marks: Record<string, string>): Promise<void> {
-  if (Object.keys(marks).length === 0) return;
+/** An early mark to take off again: the name VidFlow wrote, and what was there before (a download "again"). */
+type Unmark = { name: string; before: string | undefined };
+
+/**
+ * Records downloaded pictures on the stored project (one transaction, so other changes meanwhile are kept), and takes
+ * off `unmark`'s early marks (only while each is still the one VidFlow wrote), putting back what was there before.
+ */
+async function markDownloaded(projectId: string, marks: Record<string, string>, unmark: Record<string, Unmark> = {}): Promise<void> {
+  if (Object.keys(marks).length === 0 && Object.keys(unmark).length === 0) return;
   await updateProject(projectId, (p) => {
-    p.downloaded = { ...p.downloaded, ...marks };
+    const next = { ...p.downloaded, ...marks };
+    for (const [mediaId, { name, before }] of Object.entries(unmark)) {
+      if (next[mediaId] !== name) continue;
+      if (before === undefined) delete next[mediaId];
+      else next[mediaId] = before;
+    }
+    p.downloaded = next;
   });
 }
 
@@ -183,7 +197,7 @@ async function savePictures(project: Project, scenes: Scene[], opts: SaveOptions
       else todo.push(pic);
     }
   }
-  const pending: { mediaId: string; end: Promise<Finish> }[] = [];
+  const pending: { mediaId: string; name: string; end: Promise<Finish> }[] = [];
   for (const [i, pic] of todo.entries()) {
     opts.onProgress?.(i + 1, todo.length);
     const url = opts.urls?.[pic.mediaId];
@@ -193,22 +207,26 @@ async function savePictures(project: Project, scenes: Scene[], opts: SaveOptions
     }
     try {
       const { end } = await save(url ? { url } : { blob: pic.blob! }, `${folder}/${pic.name}`);
-      pending.push({ mediaId: pic.mediaId, end });
+      pending.push({ mediaId: pic.mediaId, name: pic.name, end });
     } catch {
       result.failed++;
     }
   }
+  // Chrome has them: mark each under the name asked for now, before waiting to hear how they end.
+  await writer(() => markDownloaded(project.id, Object.fromEntries(pending.map((d) => [d.mediaId, d.name]))));
   const marks: Record<string, string> = {};
-  for (const { mediaId, end } of pending) {
+  const unmark: Record<string, Unmark> = {};
+  for (const { mediaId, name, end } of pending) {
     const f = await end;
     if (f.state === 'interrupted') {
       result.failed++;
+      unmark[mediaId] = { name, before: project.downloaded?.[mediaId] };
       continue;
     }
     result.saved++;
-    if (f.state === 'complete') marks[mediaId] = f.name;
+    if (f.state === 'complete' && f.name !== name) marks[mediaId] = f.name;
   }
-  await writer(() => markDownloaded(project.id, marks));
+  await writer(() => markDownloaded(project.id, marks, unmark));
   return result;
 }
 

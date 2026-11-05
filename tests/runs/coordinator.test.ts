@@ -1775,3 +1775,101 @@ describe('Queue review fixes', () => {
     await waitFor(() => vi.mocked(port.prepare).mock.calls.length === 2, 'sent again');
   });
 });
+
+describe('panel upgrade: final review fixes', () => {
+  const POLICY_MESSAGE = 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Resume.';
+  const activityOf = (chromeMock: ReturnType<typeof mockChrome>, projectId: string) =>
+    ((chromeMock.storage.local.data['vidflow.activity'] ?? []) as { projectId: string; text: string }[])
+      .filter((e) => e.projectId === projectId)
+      .map((e) => e.text);
+
+  /** A run that has sent s1 and is now only waiting for its tiles. */
+  async function waiting(acceptNotice: FlowPort['acceptNotice']) {
+    const ctx = await setup();
+    const port = ctx.fakePort({ acceptNotice: vi.fn(acceptNotice) });
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    await ctx.coordinator.settledForTests();
+    return { ...ctx, port };
+  }
+
+  it('a usage notice seen while waiting for tiles is accepted and logged; the run carries on', async () => {
+    const { chromeMock, coordinator, project, port } = await waiting(async () => true);
+    await coordinator.handleFlowNotice(7);
+    expect(port.acceptNotice).toHaveBeenCalledWith(7);
+    expect(activityOf(chromeMock, project.id)).toContain("Accepted Flow's notice");
+    expect(coordinator.getRunState()!.status).toBe('running');
+  });
+
+  it("a usage notice seen while waiting that can't be accepted pauses with the usage-policy message", async () => {
+    const { coordinator, port } = await waiting(async () => false);
+    await coordinator.handleFlowNotice(7);
+    expect(port.acceptNotice).toHaveBeenCalledTimes(1);
+    expect(coordinator.getRunState()!.status).toBe('paused');
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+  });
+
+  it('a notice already gone (accepted by the run itself meanwhile) changes nothing', async () => {
+    const { chromeMock, coordinator, project } = await waiting(async () => 'gone');
+    await coordinator.handleFlowNotice(7);
+    expect(coordinator.getRunState()!.status).toBe('running');
+    expect(activityOf(chromeMock, project.id)).not.toContain("Accepted Flow's notice");
+  });
+
+  it('a notice that keeps coming back while waiting is accepted a few times at most, then pauses', async () => {
+    const { coordinator, port } = await waiting(async () => true);
+    for (let i = 0; i < 6 && coordinator.getRunState()!.status === 'running'; i++) await coordinator.handleFlowNotice(7);
+    expect(coordinator.getRunState()!.status).toBe('paused');
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+    expect(vi.mocked(port.acceptNotice).mock.calls.length).toBe(coordinator.MAX_WAITING_NOTICES);
+  });
+
+  it('with the switch off, or a paused run, a notice event accepts nothing', async () => {
+    const { chromeMock, coordinator, port } = await waiting(async () => true);
+    chromeMock.storage.local.data['vidflow.acceptNotices'] = false;
+    await coordinator.handleFlowNotice(7);
+    expect(port.acceptNotice).not.toHaveBeenCalled();
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+    chromeMock.storage.local.data['vidflow.acceptNotices'] = true;
+    await coordinator.handleFlowNotice(7); // paused now: nothing more happens
+    expect(port.acceptNotice).not.toHaveBeenCalled();
+  });
+
+  it('a billing dialog after Generate pauses with the billing message, not "didn\'t start"', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const port = fakePort({ confirmStarted: vi.fn(async () => 'billing' as const) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused');
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+    expect(coordinator.getRunState()!.pauseReason).not.toBe(coordinator.NOT_STARTED_MESSAGE);
+    expect(port.acceptNotice).not.toHaveBeenCalled(); // billing is never accepted
+  });
+
+  it("Test one prompt's Flow project uses Test wording, and refuses a paused run with the paused message", async () => {
+    const { coordinator, project, fakePort, chromeMock } = await setup();
+    const port = fakePort();
+    coordinator.setFlowPort(port);
+    vi.mocked(port.press).mockImplementation(async () => void (chromeMock.tab.url = PROJECT_URL));
+    await coordinator.openTestFlowProject(7);
+    expect(port.findNewProject).toHaveBeenCalledWith(7, 'Test');
+
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'running');
+    await coordinator.pauseRun();
+    const { TEST_WHILE_PAUSED_MESSAGE } = await import('../../src/flow/messages');
+    await expect(coordinator.openTestFlowProject(7)).rejects.toThrow(TEST_WHILE_PAUSED_MESSAGE);
+    expect(coordinator.testPromptRefusal()).toBe(TEST_WHILE_PAUSED_MESSAGE);
+  });
+
+  it('a second Test one prompt while one is running never says "press Start"', async () => {
+    const { coordinator } = await setup();
+    let release!: () => void;
+    const first = coordinator.whileTestingPrompt(() => new Promise<void>((r) => (release = r)));
+    const err = await coordinator.whileTestingPrompt(async () => undefined).catch((e: unknown) => e);
+    expect((err as Error).message).toBe('VidFlow is already testing one prompt. Wait a few seconds, then try again.');
+    release();
+    await first;
+  });
+});

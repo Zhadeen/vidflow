@@ -4,7 +4,7 @@
  */
 import type { CheckRow } from './checks';
 
-export const FLOW_NOT_OPEN = 'Flow not open';
+export const FLOW_NOT_OPEN = "VidFlow's Flow window not open";
 
 /** The health line under the panel's header: "✓ Signed in · ✓ Flow ready · ✓ Hero attached", or plain warnings. */
 export function healthLine(rows: CheckRow[], flowOpen: boolean): string[] {

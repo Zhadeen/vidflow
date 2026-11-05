@@ -123,7 +123,8 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
     async acceptNotice(tabId) {
       try {
         const reply = (await ask(tabId, { type: FLOW_ACCEPT_NOTICE })) as AcceptNoticeResponse | undefined;
-        return reply ? reply.accepted === true : null;
+        if (!reply) return null;
+        return reply.gone === true ? 'gone' : reply.accepted === true;
       } catch {
         return null; // no answer: the page may have reloaded after accepting
       }
@@ -133,6 +134,7 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
       try {
         const reply = (await ask(tabId, { type: FLOW_CONFIRM })) as ConfirmResponse | undefined;
         if (reply?.started === true) return true;
+        if (reply?.billing === true) return 'billing';
         return reply?.notice === true ? 'notice' : false;
       } catch {
         return false;

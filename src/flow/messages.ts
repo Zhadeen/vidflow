@@ -10,6 +10,8 @@ export const FLOW_PREPARE = 'flow/prepare';
 export const FLOW_NEW_PROJECT = 'flow/new-project';
 export const FLOW_CONFIRM = 'flow/confirm';
 export const FLOW_EVENT = 'flow/event';
+/** Flow tab → background: Flow's usage notice appeared while the run waits (switch on); the background accepts it. */
+export const FLOW_NOTICE = 'flow/notice';
 export const FLOW_TILES = 'flow/tiles';
 export const FLOW_TILES_NOW = 'flow/tiles-now';
 export const FLOW_TILE_POINT = 'flow/tile-point';
@@ -67,6 +69,8 @@ export interface ConfirmRequest {
 export interface ConfirmResponse {
   started: boolean;
   notice?: true;
+  /** Flow answered Generate with a billing or upgrade dialog (never accepted). */
+  billing?: true;
 }
 
 /** background → Flow tab: the result tiles in the DOM right now. */
@@ -118,6 +122,8 @@ export interface AcceptNoticeRequest {
 }
 export interface AcceptNoticeResponse {
   accepted: boolean;
+  /** No notice (and no billing dialog) is showing any more: something accepted or closed it meanwhile. */
+  gone?: true;
 }
 
 /** background → VidFlow's own Flow tab: what the Checks tab needs, read only (no menu is opened, nothing is clicked). */
@@ -254,7 +260,28 @@ export interface PillToggle {
   action: 'pause' | 'resume';
 }
 
-export type ToBackground = FlowEventMessage | FlowTilesMessage | PillRequest | PillToggle;
+/** Flow tab → background: Flow's usage notice is showing (only sent with "Accept Flow's notices automatically" on). */
+export interface FlowNoticeMessage {
+  type: typeof FLOW_NOTICE;
+}
+
+export type ToBackground = FlowEventMessage | FlowTilesMessage | FlowNoticeMessage | PillRequest | PillToggle;
+
+// ---- Test one prompt: when it is refused -----------------------------------
+
+export const TEST_WHILE_RUNNING_MESSAGE = 'VidFlow is making pictures right now. Test one prompt when the run has finished or stopped.';
+export const TEST_WHILE_PAUSED_MESSAGE = 'VidFlow has a paused run. Resume or stop it first.';
+export const TEST_WHILE_STARTING_MESSAGE = 'VidFlow is starting a run. Test one prompt when the run has finished or stopped.';
+
+/**
+ * Why Test one prompt can't use VidFlow's Flow tab now, from the run's status (the same rule in the background and in
+ * the Flow helper, which knows the run from its pill): a running run, a paused one, or null to go ahead.
+ */
+export function testPromptRefusal(status: RunState['status'] | null | undefined): string | null {
+  if (status === 'running') return TEST_WHILE_RUNNING_MESSAGE;
+  if (status === 'paused') return TEST_WHILE_PAUSED_MESSAGE;
+  return null;
+}
 
 /** The Flow page needs the owner (or a wait) before VidFlow can submit; the run pauses instead of failing the scene. */
 export class FlowBlockedError extends Error {

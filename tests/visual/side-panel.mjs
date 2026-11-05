@@ -18,7 +18,7 @@ const server = await createServer({ root: here, configFile: false, plugins: [rea
 await server.listen();
 const browser = await chromium.launch({ channel: 'chrome' });
 
-const HEIGHTS = { setup: 720, 'setup-unapplied': 760, checks: 760, running: 760, 'queue-finished': 760, 'queue-options': 900, files: 720 };
+const HEIGHTS = { setup: 720, 'setup-unapplied': 760, checks: 860, running: 760, 'queue-finished': 760, 'queue-options': 900, files: 720 };
 // Optional: only the named screens, e.g. `node tests/visual/side-panel.mjs docs/design/build-check '' files`.
 const only = process.argv.slice(4);
 const SCREENS = ['setup', 'setup-unapplied', 'checks', 'running', 'queue-finished', 'queue-options', 'files'];

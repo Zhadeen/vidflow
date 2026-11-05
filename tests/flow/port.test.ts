@@ -160,4 +160,11 @@ describe('Flow port', () => {
     expect(await port.confirmStarted(7)).toBe(true);
     expect(await port.confirmStarted(7)).toBe(false);
   });
+
+  it('a billing dialog after Generate comes back as billing; a notice already gone as gone', async () => {
+    const { port } = setup([{ started: false, billing: true }, { accepted: false, gone: true }, { accepted: false }]);
+    expect(await port.confirmStarted(7)).toBe('billing');
+    expect(await port.acceptNotice(7)).toBe('gone');
+    expect(await port.acceptNotice(7)).toBe(false);
+  });
 });

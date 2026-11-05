@@ -7,26 +7,43 @@ import { SEL } from '../../src/flow/selectors';
 type OnMessage = (message: unknown, sender: unknown, sendResponse: (r: unknown) => void) => unknown;
 let onMessage: OnMessage;
 
-beforeEach(async () => {
+interface Boot {
+  /** The page's markup (a fixture name). */
+  fixture?: string;
+  /** What the background answers for this tab's pill: null = no run here. */
+  pill?: unknown;
+  /** Extra chrome.storage.local values. */
+  stored?: Record<string, unknown>;
+}
+
+let sendMessage: ReturnType<typeof vi.fn>;
+
+/** Loads the Flow helper into jsdom: `fixture` as the page, `pill` as the background's answer for this tab. */
+async function boot({ fixture = 'prompt-bar.html', pill = null, stored = {} }: Boot = {}) {
   vi.resetModules();
-  document.body.innerHTML = readFileSync(resolve(__dirname, '../fixtures/flow/prompt-bar.html'), 'utf8');
+  document.body.innerHTML = readFileSync(resolve(__dirname, '../fixtures/flow', fixture), 'utf8');
+  const data: Record<string, unknown> = { expectedAccount: 'owner@example.com', ...stored };
   vi.stubGlobal('defineContentScript', (def: { main: () => void }) => def);
+  sendMessage = vi.fn(async (m: { type?: string }) => (m?.type === 'flow/pill' ? pill : null));
   vi.stubGlobal('chrome', {
     runtime: {
       id: 'vidflow',
-      sendMessage: vi.fn(async () => null), // no run: the pill stays hidden
+      sendMessage, // no run unless `pill` says so: the pill stays hidden
       onMessage: { addListener: (l: OnMessage) => (onMessage = l) },
     },
     storage: {
-      local: { get: vi.fn(async (key: string) => (key === 'expectedAccount' ? { expectedAccount: 'owner@example.com' } : {})) },
+      local: { get: vi.fn(async (key: string) => (key in data ? { [key]: data[key] } : {})) },
       onChanged: { addListener: vi.fn() },
     },
   });
   const script = (await import('../../src/entrypoints/flow.content')).default as unknown as { main: () => void };
   script.main();
-});
+}
+
+beforeEach(() => boot());
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
 
@@ -77,5 +94,71 @@ describe('Flow helper: checks', () => {
       noticeDialog: false,
       billingDialog: false,
     });
+  });
+});
+
+/** A run's pill as the background sends it (running unless `paused`). */
+const pillOf = (paused: boolean) => ({
+  n: 1,
+  total: 2,
+  paused,
+  step: null,
+  scene: null,
+  saved: 0,
+  drawing: 0,
+  toGo: 2,
+  highlight: null,
+  savedCards: [],
+});
+const until = async (check: () => boolean) => {
+  for (let i = 0; i < 600 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
+};
+
+describe('Flow helper: Test one prompt refusals match the run', () => {
+  it('a running run: "making pictures right now"; a paused run: "has a paused run"', async () => {
+    const { TEST_WHILE_PAUSED_MESSAGE, TEST_WHILE_RUNNING_MESSAGE } = await import('../../src/flow/messages');
+    expect(TEST_WHILE_PAUSED_MESSAGE).toBe('VidFlow has a paused run. Resume or stop it first.');
+    await boot({ pill: pillOf(false) });
+    await until(() => sendMessage.mock.calls.some(([m]) => m?.type === 'flow/pill'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await ask({ type: 'flow/test-prompt', aspect: '9:16', outputs: 2 })).toEqual({ ok: false, message: TEST_WHILE_RUNNING_MESSAGE });
+    await boot({ pill: pillOf(true) });
+    await until(() => sendMessage.mock.calls.some(([m]) => m?.type === 'flow/pill'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await ask({ type: 'flow/test-prompt', aspect: '9:16', outputs: 2 })).toEqual({ ok: false, message: TEST_WHILE_PAUSED_MESSAGE });
+  });
+
+  it("Test one prompt's home-page refusals say \"try again\", never \"press Start\"", async () => {
+    await boot({ fixture: 'home.html' });
+    document.querySelector(SEL.account)!.remove(); // signed out
+    // jsdom lays nothing out: give the New project button a place on screen.
+    const rect = { x: 10, y: 10, width: 100, height: 40, top: 10, left: 10, right: 110, bottom: 50, toJSON: () => ({}) };
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect as DOMRect);
+    const reply = (await ask({ type: 'flow/new-project', verb: 'Test' })) as { kind: string; event: { message: string } };
+    expect(reply.kind).toBe('blocked');
+    expect(reply.event.message).toBe('Flow isn\'t signed in. Sign in to Flow as owner@example.com, then try again.');
+    expect(reply.event.message).not.toMatch(/press Start/);
+  });
+});
+
+describe("Flow helper: a usage notice while VidFlow waits for tiles", () => {
+  const notice = () => readFileSync(resolve(__dirname, '../fixtures/flow/usage-notice.html'), 'utf8');
+  const sentTypes = () => sendMessage.mock.calls.map(([m]) => (m as { type?: string })?.type);
+
+  it('with the switch on, the helper tells the background (which accepts it), and never reports a pause itself', async () => {
+    await boot({ pill: pillOf(false) });
+    document.body.insertAdjacentHTML('beforeend', notice());
+    await until(() => sentTypes().includes('flow/notice'));
+    expect(sentTypes()).toContain('flow/notice');
+    expect(sendMessage.mock.calls.some(([m]) => (m as { type?: string })?.type === 'flow/event')).toBe(false);
+  });
+
+  it('with the switch off, it reports the pause as before (no notice event)', async () => {
+    await boot({ pill: pillOf(false), stored: { 'vidflow.acceptNotices': false } });
+    document.body.insertAdjacentHTML('beforeend', notice());
+    await until(() => sentTypes().includes('flow/event'));
+    const event = sendMessage.mock.calls.map(([m]) => m as { type?: string; event?: { reason?: string } }).find((m) => m.type === 'flow/event');
+    expect(event?.event?.reason).toBe('policy-dialog');
+    expect(sentTypes()).not.toContain('flow/notice');
   });
 });

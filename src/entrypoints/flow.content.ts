@@ -18,6 +18,7 @@ import {
   FLOW_DETAIL,
   FLOW_EVENT,
   FLOW_NEW_PROJECT,
+  FLOW_NOTICE,
   FLOW_PILL,
   FLOW_PILL_TOGGLE,
   FLOW_PREPARE,
@@ -28,6 +29,7 @@ import {
   FlowBlockedError,
   TEST_PROMPT_TEXT,
   decodeBytes,
+  testPromptRefusal,
   type AcceptNoticeResponse,
   type ChecksRequest,
   type FlowChecksResponse,
@@ -126,7 +128,8 @@ export default defineContentScript({
         if (!check.ok) return blockedBy(check, state);
         const at = driver.newProjectButton();
         if (!at) {
-          const message = `VidFlow can't find Flow's New project button. Open Flow's home page in the VidFlow window, then press ${req.verb}.`;
+          const then = req.verb === 'Test' ? 'try again' : `press ${req.verb}`;
+          const message = `VidFlow can't find Flow's New project button. Open Flow's home page in the VidFlow window, then ${then}.`;
           return { kind: 'blocked', event: { type: 'needsOwner', reason: 'page-not-recognised', message } };
         }
         return { kind: 'ready', ...at };
@@ -149,6 +152,9 @@ export default defineContentScript({
     async function acceptNotice(): Promise<AcceptNoticeResponse> {
       if (!active || !(await getAcceptNotices())) return { accepted: false };
       try {
+        // Nothing showing any more (the run's own step accepted it meanwhile): say so, so nothing pauses for it.
+        const state = driver.read();
+        if (!state.noticeDialog && !state.billingDialog) return { accepted: false, gone: true };
         return { accepted: await driver.acceptNotice() };
       } catch {
         return { accepted: false };
@@ -192,15 +198,17 @@ export default defineContentScript({
 
     /** Test one prompt: settings, Agent mode off, type, wait for Generate to be ready, clear. Never presses Generate. */
     async function testPrompt(req: TestPromptRequest): Promise<TestPromptResponse> {
-      if (active) return { ok: false, message: 'VidFlow is making pictures right now. Test one prompt when the run has finished or stopped.' };
+      // The same rule as the background's: a running run, or a paused one, keeps this tab.
+      const refusal = active ? testPromptRefusal(view?.paused ? 'paused' : 'running') : null;
+      if (refusal) return { ok: false, message: refusal };
       let typed = false;
       try {
         if (!(await driver.waitUntilReady(READY_WAIT_MS))) {
           return { ok: false, message: "VidFlow can't find Flow's prompt box. Check the Flow window, then try again." };
         }
         const state = driver.read();
-        const check = checkCanStart(state, await getExpectedAccount(), 'Start');
-        if (!check.ok) return { ok: false, message: check.message.replace(/,? then press Start again\.$/, '.') };
+        const check = checkCanStart(state, await getExpectedAccount(), 'Test');
+        if (!check.ok) return { ok: false, message: check.message };
         await driver.setImageMode();
         await driver.setAspect(req.aspect);
         await driver.setOutputs(req.outputs);
@@ -228,7 +236,8 @@ export default defineContentScript({
       if (!started) {
         // Flow may have answered Generate with its usage notice: say so, so the background can accept it.
         const state = driver.read();
-        if (state.noticeDialog && !state.billingDialog) return { started, notice: true };
+        if (state.billingDialog) return { started, billing: true };
+        if (state.noticeDialog) return { started, notice: true };
       }
       return { started };
     }
@@ -338,13 +347,11 @@ export default defineContentScript({
       }
       lastLimit = state.limitMessage;
       const policy = { type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage('Resume') } as const;
-      // A billing dialog always stops the run. A usage notice does only with the switch off: with it on, the next
-      // prepare finds the notice and the background accepts it.
+      // A billing dialog always stops the run. A usage notice does with the switch off; with it on, the background is
+      // told and accepts it (even while the run only waits for tiles, with no prepare to find it), or pauses.
       if (state.billingDialog && !lastBilling) report(policy);
       else if (state.noticeDialog && !lastNotice) {
-        void getAcceptNotices().then((on) => {
-          if (!on) report(policy);
-        });
+        void getAcceptNotices().then((on) => (on ? send({ type: FLOW_NOTICE }) : report(policy)));
       }
       lastBilling = state.billingDialog;
       lastNotice = state.noticeDialog;

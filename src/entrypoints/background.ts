@@ -3,6 +3,7 @@ import { isOwnPage, registerToolbar } from '../background/action';
 import { registerE2e } from '../e2e/background';
 import {
   FLOW_EVENT,
+  FLOW_NOTICE,
   FLOW_PILL,
   FLOW_PILL_TOGGLE,
   FLOW_TILES,
@@ -39,6 +40,7 @@ import {
   discardFinishedRun,
   getRunState,
   handleFlowEvent,
+  handleFlowNotice,
   onRunState,
   handleTiles,
   isFlowTab,
@@ -142,8 +144,9 @@ export default defineBackground(() => {
   }
   // Set synchronously on every worker start, so a plain wake never finds the run "not connected".
   setFlowPort(createFlowPort());
-  // Every Start runs the Checks first (spec §19). Not in the e2e build: its scripted starts drive Flow as before.
-  if (import.meta.env.MODE !== 'e2e') setStartChecks(startChecks);
+  // Every Start runs the Checks first (spec §19), in the e2e build too: its bridge starts through startRun like the
+  // studio, so the live check exercises them (cold window: open, wait for load, long read; "still loading" never blocks).
+  setStartChecks(startChecks);
 
   // Every run change goes to the studio tab and the side panel (if open; nothing listening is fine).
   onRunState((state) => {
@@ -169,6 +172,10 @@ export default defineBackground(() => {
         void isFlowTab(tabId).then((ours) => (ours ? handleFlowEvent(event) : undefined));
         return;
       }
+      case FLOW_NOTICE:
+        // Flow's usage notice while the run waits (switch on): the coordinator accepts it, or pauses. Own tab only.
+        void isFlowTab(tabId).then((ours) => (ours && tabId !== undefined ? handleFlowNotice(tabId) : undefined));
+        return;
       case FLOW_TILES:
         // Raw tile observations from VidFlow's own Flow tab; the coordinator matches them to scenes.
         void isFlowTab(tabId).then((ours) => (ours ? handleTiles(message.cards) : undefined));

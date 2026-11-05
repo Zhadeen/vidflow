@@ -151,12 +151,55 @@ describe('Download all: what Chrome really saved', () => {
     const p = await seedVideo();
     const result = downloadAll(p.id, { both: false });
     await until(() => fake.download.mock.calls.length === 2 && fake.listeners.size === 2);
-    expect((await getProject(p.id))!.downloaded).toBeUndefined();
+    // Chrome took both: they are marked under the names asked for at once (a later Download all won't save them again).
+    for (let i = 0; i < 200 && Object.keys((await getProject(p.id))!.downloaded ?? {}).length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    expect((await getProject(p.id))!.downloaded).toEqual({
+      [`${p.id}/scene-01-option-2`]: 'Slide_01_00m00s-00m03s.png',
+      [`${p.id}/scene-02-option-1`]: 'Slide_02_00m03s-00m06s.jpg',
+    });
     fake.finish(1);
     fake.interrupt(2);
     expect(await result).toEqual({ saved: 1, skipped: 0, failed: 1 });
     expect((await getProject(p.id))!.downloaded).toEqual({ [`${p.id}/scene-01-option-2`]: 'Slide_01_00m00s-00m03s.png' });
     expect(fake.listeners.size).toBe(0);
+  });
+
+  it('a download whose end is never heard (worker slept, panel closed) is still marked, so Download all skips it', async () => {
+    const { fake } = stub();
+    fake.hold();
+    fake.rename('Phone Bill Story/Slide_01_00m00s-00m03s.png', 'Phone Bill Story/Slide_01_00m00s-00m03s (1).png');
+    const p = await seedVideo();
+    void downloadAll(p.id, { both: false }); // never finishes: nothing tells VidFlow the downloads ended
+    await until(() => fake.listeners.size === 2);
+    let marks: Record<string, string> | undefined;
+    for (let i = 0; i < 200 && Object.keys(marks ?? {}).length < 2; i++) {
+      marks = (await getProject(p.id))!.downloaded;
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(marks).toEqual({
+      [`${p.id}/scene-01-option-2`]: 'Slide_01_00m00s-00m03s.png',
+      [`${p.id}/scene-02-option-1`]: 'Slide_02_00m03s-00m06s.jpg',
+    });
+    fake.download.mockClear();
+    fake.hold(false);
+    expect(await downloadAll(p.id, { both: false })).toEqual({ saved: 0, skipped: 2, failed: 0 });
+    expect(fake.download).not.toHaveBeenCalled();
+  });
+
+  it('the requested name is replaced by the real one on completion', async () => {
+    const { fake } = stub();
+    fake.hold();
+    fake.rename('Phone Bill Story/Slide_01_00m00s-00m03s.png', 'Phone Bill Story/Slide_01_00m00s-00m03s (1).png');
+    const p = await seedVideo();
+    const result = downloadAll(p.id, { both: false });
+    await until(() => fake.listeners.size === 2);
+    fake.finish(1);
+    fake.finish(2);
+    await result;
+    expect((await getProject(p.id))!.downloaded).toEqual({
+      [`${p.id}/scene-01-option-2`]: 'Slide_01_00m00s-00m03s (1).png',
+      [`${p.id}/scene-02-option-1`]: 'Slide_02_00m03s-00m06s.jpg',
+    });
   });
 
   it('revokes each object URL when its download completes', async () => {

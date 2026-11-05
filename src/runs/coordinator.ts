@@ -1,7 +1,14 @@
 /// <reference types="chrome" />
 import { policyDialogMessage, type FlowResultCard, type StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
-import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, type Point, type SubmitOptions } from '../flow/messages';
+import {
+  FlowBlockedError,
+  REFERENCE_ATTACH_MESSAGE,
+  TEST_WHILE_STARTING_MESSAGE,
+  testPromptRefusal as refusalForStatus,
+  type Point,
+  type SubmitOptions,
+} from '../flow/messages';
 import { isFlowUrl } from '../flow/hosts';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { liveView } from '../flow/live';
@@ -43,9 +50,10 @@ export interface FlowPort {
   press(tabId: number, x: number, y: number): Promise<void>;
   /**
    * After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s); 'notice' when it
-   * didn't start and Flow's usage-policy / rights notice is showing instead.
+   * didn't start and Flow's usage-policy / rights notice is showing instead; 'billing' when a billing or upgrade
+   * dialog is (never accepted).
    */
-  confirmStarted(tabId: number): Promise<boolean | 'notice'>;
+  confirmStarted(tabId: number): Promise<boolean | 'notice' | 'billing'>;
   /** The result tiles in the Flow tab's DOM right now. */
   tiles(tabId: number): Promise<FlowResultCard[]>;
   /** Where the finished tile with this media id is (scrolled into view), to open its detail view. */
@@ -59,9 +67,10 @@ export interface FlowPort {
   uploadReference(tabId: number, name: string, image: Blob): Promise<string | null>;
   /**
    * Ticks and accepts Flow's open usage-policy / rights notice in VidFlow's own Flow tab (never a billing dialog).
-   * False when it couldn't; null when the page gave no answer (e.g. it reloaded after accepting).
+   * False when it couldn't; null when the page gave no answer (e.g. it reloaded after accepting); 'gone' when no notice
+   * is showing any more (accepted or closed meanwhile).
    */
-  acceptNotice(tabId: number): Promise<boolean | null>;
+  acceptNotice(tabId: number): Promise<boolean | null | 'gone'>;
 }
 
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
@@ -507,6 +516,13 @@ export const ACCEPTED_NOTICE_TEXT = "Accepted Flow's notice";
  */
 const postPressNotices = new Map<string, number>();
 
+/**
+ * A usage notice seen while the run only waits for tiles (no prepare to find it) is accepted at most this many times
+ * between prompts Flow takes (and per Start or Resume); one more pauses, so a notice that keeps coming back can't loop.
+ */
+export const MAX_WAITING_NOTICES = 3;
+let waitingNotices = 0;
+
 function logAcceptedNotice(projectId: string, sceneId: string | null): void {
   logActivity({ at: Date.now(), projectId, sceneId, text: ACCEPTED_NOTICE_TEXT }).catch((e) =>
     console.warn('[VidFlow] activity write failed', e),
@@ -527,7 +543,7 @@ async function pastNotice<T>(tabId: number, projectId: string, sceneId: string |
     const accepted = await port!.acceptNotice(tabId).catch(() => null);
     if (accepted === false) throw err;
     // No answer (the page reloaded) still gets its one retry: if the notice is there, the retry pauses as before.
-    if (accepted) logAcceptedNotice(projectId, sceneId);
+    if (accepted === true) logAcceptedNotice(projectId, sceneId);
     return step();
   }
 }
@@ -706,10 +722,16 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
       return 'stop';
     }
     postPressNotices.delete(sceneId); // started (or a different failure): the next notice is a new one
+    if (started === 'billing') {
+      // Flow answered Generate with a billing or upgrade dialog: VidFlow never touches it. The owner reads it.
+      await dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
+      return 'stop';
+    }
     if (!started) {
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
       return 'stop';
     }
+    waitingNotices = 0; // Flow took a prompt: a notice seen while waiting starts its count again
     await dispatch({ type: 'submitted', sceneId, prompt, at: Date.now() });
     return 'next';
   } catch (err) {
@@ -1103,11 +1125,31 @@ export function setStartChecks(fn: StartChecks | null): void {
 }
 
 export const TESTING_PROMPT_MESSAGE = 'VidFlow is testing one prompt in Flow. Wait a few seconds, then press Start again.';
+/** Test one prompt pressed again while it is still testing (never "press Start": the owner pressed Test one prompt). */
+export const ALREADY_TESTING_MESSAGE = 'VidFlow is already testing one prompt. Wait a few seconds, then try again.';
 let testingPrompt = false;
+/** Starts in progress (from the press until the run is committed or refused): Test one prompt waits for them. */
+let starting = 0;
+
+/** Holds `starting` while a Start runs its checks and commits, so Test one prompt can't use the tab meanwhile. */
+async function asStart<T>(fn: () => Promise<T>): Promise<T> {
+  starting++;
+  try {
+    return await fn();
+  } finally {
+    starting--;
+  }
+}
+
+/** Why Test one prompt can't use VidFlow's Flow tab now (a start under way, a running or paused run), or null. */
+export function testPromptRefusal(): string | null {
+  return starting > 0 ? TEST_WHILE_STARTING_MESSAGE : refusalForStatus(state?.status);
+}
 
 /** Test one prompt holds this while it uses the Flow tab: no run may start meanwhile (it would type over the test). */
 export async function whileTestingPrompt<T>(fn: () => Promise<T>): Promise<T> {
-  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+  if (testingPrompt) throw new RunBlockedError(ALREADY_TESTING_MESSAGE);
+  if (starting > 0) throw new RunBlockedError(TEST_WHILE_STARTING_MESSAGE);
   testingPrompt = true;
   try {
     return await fn();
@@ -1130,7 +1172,8 @@ async function passStartChecks(projectId: string, kind: StartChecksKind): Promis
  */
 export async function openTestFlowProject(tabId: number): Promise<void> {
   await ready;
-  if (isLive(state)) throw new RunBlockedError(TEST_WHILE_RUNNING_MESSAGE);
+  const refused = testPromptRefusal();
+  if (refused) throw new RunBlockedError(refused);
   if (!port) throw new Error(NO_PORT_MESSAGE);
   await withTab(async () => {
     if (projectUrlOf(await tabUrl(tabId))) return;
@@ -1138,8 +1181,9 @@ export async function openTestFlowProject(tabId: number): Promise<void> {
       await chrome.tabs.update(tabId, { url: FLOW_URL });
       await waitForUrl(tabId, isFlowHome);
     }
-    const at = await port!.findNewProject(tabId, 'Start');
-    if (isLive(state)) throw new RunBlockedError(TEST_WHILE_RUNNING_MESSAGE);
+    const at = await port!.findNewProject(tabId, 'Test'); // its refusals say "try again", never "press Start"
+    const now = testPromptRefusal();
+    if (now) throw new RunBlockedError(now);
     try {
       await pressIn(tabId, at.x, at.y);
     } finally {
@@ -1149,7 +1193,6 @@ export async function openTestFlowProject(tabId: number): Promise<void> {
   });
 }
 
-export const TEST_WHILE_RUNNING_MESSAGE = 'VidFlow is making pictures right now. Test one prompt when the run has finished or stopped.';
 const TEST_NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then try again.";
 const NO_PORT_MESSAGE = "VidFlow can't reach the Flow page yet. Try again in a moment.";
 
@@ -1166,9 +1209,14 @@ async function startBlocker(projectId: string): Promise<string | null> {
   return null;
 }
 
-export async function startRun(projectId: string, retrySceneId?: string): Promise<void> {
+export function startRun(projectId: string, retrySceneId?: string): Promise<void> {
+  return asStart(() => startRunNow(projectId, retrySceneId));
+}
+
+async function startRunNow(projectId: string, retrySceneId?: string): Promise<void> {
   await ready;
   postPressNotices.clear();
+  waitingNotices = 0;
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
   if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
@@ -1180,6 +1228,8 @@ export async function startRun(projectId: string, retrySceneId?: string): Promis
     await passStartChecks(projectId, 'scenes');
   }
   await enqueue(async () => {
+    // Test one prompt may have begun while the checks talked to Flow: it has the tab, so this start waits for it.
+    if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
     const blocked = await startBlocker(projectId);
     if (blocked) throw new RunBlockedError(blocked);
     // Already making this project's pictures: nothing to do (a fresh start would re-send scenes in Flow).
@@ -1266,7 +1316,11 @@ export async function skipCurrent(): Promise<void> {
  * the project's outputs per prompt, saved as hero-sheet-option-K on project.heroSheet. It is its own run, so it
  * refuses (BUSY_MESSAGE) while any run is live; pressing it again after it finished (or was refused) makes it again.
  */
-export async function startHeroSheetRun(projectId: string): Promise<void> {
+export function startHeroSheetRun(projectId: string): Promise<void> {
+  return asStart(() => startHeroSheetRunNow(projectId));
+}
+
+async function startHeroSheetRunNow(projectId: string): Promise<void> {
   await ready;
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
@@ -1274,6 +1328,7 @@ export async function startHeroSheetRun(projectId: string): Promise<void> {
   if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
   if (!(state && isLive(state))) await passStartChecks(projectId, 'sheet'); // a live run refuses below, without Flow
   await enqueue(async () => {
+    if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
     if (state && isLive(state)) {
       if (isHeroSheetRun(state)) {
         if (state.projectId === projectId && state.status === 'running') return; // already at it
@@ -1319,6 +1374,7 @@ export async function chooseScenePicture(projectId: string, sceneId: string, pic
 
 export const pauseRun = () => dispatch({ type: 'pause' });
 export async function resumeRun(): Promise<void> {
+  waitingNotices = 0;
   await dispatch({ type: 'resume' });
   void pullTiles();
 }
@@ -1331,6 +1387,29 @@ export async function handleFlowEvent(event: RunEvent): Promise<void> {
   await ready;
   if ((event.type === 'limit' || event.type === 'needsOwner') && state?.status !== 'running') return;
   await dispatch(event);
+}
+
+/**
+ * Flow's usage notice appeared in VidFlow's own Flow tab while the run waits (the Flow helper sends this only with
+ * "Accept Flow's notices automatically" on). Accepted like pastNotice does it, and logged, at most MAX_WAITING_NOTICES
+ * times between prompts Flow takes; otherwise (switch off meanwhile, couldn't accept, too many) the run pauses with the
+ * usage-policy message. A notice already gone (the run's own step accepted it) changes nothing. Billing never comes here.
+ */
+export async function handleFlowNotice(tabId: number): Promise<void> {
+  await ready;
+  if (state?.status !== 'running' || !port) return;
+  const projectId = state.projectId;
+  const pause = () => dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
+  // Takes the tab's turn: a step that is typing finds and accepts the notice itself first.
+  await withTab(async () => {
+    if (!stillRunning(projectId)) return;
+    if (!(await getAcceptNotices()) || waitingNotices >= MAX_WAITING_NOTICES) return pause();
+    const accepted = await port!.acceptNotice(tabId).catch(() => null);
+    if (accepted === 'gone' || accepted === null) return; // nothing there now, or the page reloaded after accepting
+    if (accepted === false) return pause();
+    waitingNotices++;
+    logAcceptedNotice(projectId, null);
+  });
 }
 
 /** What the pill in a Flow tab should show: only VidFlow's own Flow tab, only while a run is going. */

@@ -39,7 +39,9 @@ const good = (over: Partial<FlowChecksResponse> = {}): FlowChecksResponse => ({
   ...over,
 });
 
-async function load(opts: { tab?: { tabId: number; url: string } | null; read?: FlowChecksResponse | undefined; p?: Project; live?: boolean } = {}) {
+async function load(
+  opts: { tab?: { tabId: number; url: string } | null; read?: FlowChecksResponse | undefined; p?: Project; live?: boolean; status?: 'running' | 'paused' } = {},
+) {
   vi.resetModules();
   const checks = await import('../../src/runs/checks');
   const ask = vi.fn(async (_tabId: number, _m: { type: string }): Promise<unknown> => ('read' in opts ? opts.read : good()));
@@ -53,6 +55,8 @@ async function load(opts: { tab?: { tabId: number; url: string } | null; read?: 
     expectedAccount: vi.fn(async () => OWNER),
     acceptNotices: vi.fn(async () => true),
     runLive: vi.fn(() => opts.live ?? false),
+    runStatus: vi.fn(() => opts.status ?? (opts.live ? ('running' as const) : null)),
+    waitForLoad: vi.fn(async () => undefined),
     openProject: vi.fn(async () => undefined),
   };
   checks.setChecksDepsForTests(deps);
@@ -70,7 +74,7 @@ describe('runChecks', () => {
       expect(r.detail).toBe('Not checked yet');
     }
     expect(deps.ask).not.toHaveBeenCalled(); // only VidFlow's own Flow tab is ever read
-    expect(checks.healthLine(rows, flowOpen)).toEqual(['Flow not open']);
+    expect(checks.healthLine(rows, flowOpen)).toEqual(["VidFlow's Flow window not open"]);
   });
 
   it('all good gives eight ticks', async () => {
@@ -180,7 +184,7 @@ describe('Show me in Flow / Test one prompt / Open Flow', () => {
   });
 
   it('test one prompt is refused while a run is live', async () => {
-    const { checks, deps } = await load({ live: true });
+    const { checks, deps } = await load({ live: true, status: 'running' });
     const result = await checks.testOnePrompt('p1');
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/making pictures right now/);
@@ -202,6 +206,32 @@ describe('Show me in Flow / Test one prompt / Open Flow', () => {
     await checks.openFlow();
     expect(deps.openFlowTab).toHaveBeenCalled();
     expect(deps.focusTab).toHaveBeenCalledWith(7);
+  });
+
+  it('after Open Flow opened the window, the Checks wait for it to load and give it the cold wait (once)', async () => {
+    const { checks, deps } = await load({ tab: null });
+    await checks.openFlow();
+    expect(deps.waitForLoad).toHaveBeenCalledWith(7);
+    deps.flowTab.mockResolvedValue({ tabId: 7, url: 'https://flow.google.com/' });
+    await checks.runChecks('p1');
+    expect(deps.ask).toHaveBeenLastCalledWith(7, { type: 'flow/checks', waitMs: 20_000 });
+    await checks.runChecks('p1'); // Check again later: the usual short wait
+    expect(deps.ask).toHaveBeenLastCalledWith(7, { type: 'flow/checks' });
+  });
+
+  it('Open Flow on a window that was already open: no load wait, the usual short read', async () => {
+    const { checks, deps } = await load();
+    await checks.openFlow();
+    expect(deps.waitForLoad).not.toHaveBeenCalled();
+    await checks.runChecks('p1');
+    expect(deps.ask).toHaveBeenLastCalledWith(7, { type: 'flow/checks' });
+  });
+
+  it('test one prompt refuses a paused run with the paused message', async () => {
+    const { checks, deps } = await load({ status: 'paused' });
+    const result = await checks.testOnePrompt('p1');
+    expect(result).toEqual({ ok: false, message: 'VidFlow has a paused run. Resume or stop it first.' });
+    expect(deps.openProject).not.toHaveBeenCalled();
   });
 });
 
@@ -351,6 +381,35 @@ describe('Start', () => {
     await coordinator.stopRun();
   });
 
+  it('test one prompt is refused while a Start is in progress (its checks are reading Flow)', async () => {
+    let release!: () => void;
+    const reading = new Promise<void>((r) => (release = r));
+    let asked!: () => void;
+    const askedP = new Promise<void>((r) => (asked = r));
+    const openProject = vi.fn(async () => undefined);
+    const { coordinator, p, checks } = await startSetup(good(), {
+      open: true,
+      over: {
+        openProject,
+        ask: vi.fn(async (_t: number, m: { type: string }) => {
+          if (m.type !== 'flow/checks') return { ok: true, message: 'Flow is ready.' };
+          asked();
+          await reading;
+          return good();
+        }),
+      },
+    });
+    const start = coordinator.startRun(p.id);
+    await askedP;
+    const result = await checks.testOnePrompt(p.id);
+    expect(result).toEqual({ ok: false, message: 'VidFlow is starting a run. Test one prompt when the run has finished or stopped.' });
+    expect(openProject).not.toHaveBeenCalled();
+    release();
+    await start;
+    expect(coordinator.getRunState()?.status).toBe('running');
+    await coordinator.stopRun();
+  });
+
   it('test one prompt is refused while a model sheet is being made', async () => {
     const { coordinator, p, checks, store } = await startSetup(good(), { open: true, over: { openProject: vi.fn(async () => undefined) } });
     const saved = (await store.getProject(p.id))!;
@@ -392,7 +451,7 @@ describe('Start', () => {
       (chrome.tabs.get as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7, windowId: 3, url: PROJECT_URL, active: true });
     });
     await coordinator.openTestFlowProject(7);
-    expect(port.findNewProject).toHaveBeenCalledWith(7, 'Start');
+    expect(port.findNewProject).toHaveBeenCalledWith(7, 'Test');
     expect(port.press).toHaveBeenCalledWith(7, 5, 5);
     expect(chrome.debugger.detach).toHaveBeenCalled(); // Chrome's debugging bar goes at once
     expect(coordinator.getRunState()).toBeNull(); // the run's state is never touched

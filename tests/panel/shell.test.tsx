@@ -71,12 +71,12 @@ describe('side panel: tabs', () => {
     }
   });
 
-  it('the health line says "Flow not open" without VidFlow\'s Flow window', async () => {
+  it('the health line says "VidFlow\'s Flow window not open" without VidFlow\'s Flow window', async () => {
     stubChrome();
     await seed('Phone Bill Story', 6);
     render(<Panel client={fakeBackground(null).client()} />);
     const health = await screen.findByRole('status', { name: 'Health' });
-    await waitFor(() => expect(health.textContent).toBe('Flow not open'));
+    await waitFor(() => expect(health.textContent).toBe("VidFlow's Flow window not open"));
   });
 
   it('the health line refreshes on open, on Checks, after Check again and when the run changes', async () => {

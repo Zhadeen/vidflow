@@ -20,7 +20,9 @@ vi.mock('../../src/runs/coordinator', () => ({
   startHeroSheetRun: vi.fn(async () => undefined),
   startRun: vi.fn(async () => undefined),
   stopRun: vi.fn(async () => undefined),
+  handleFlowNotice: vi.fn(async () => undefined),
 }));
+vi.mock('../../src/e2e/background', () => ({ registerE2e: vi.fn(() => true) }));
 vi.mock('../../src/flow/port', () => ({ createFlowPort: vi.fn(() => ({})) }));
 vi.mock('../../src/runs/checks', () => ({
   runChecks: vi.fn(async () => ({ flowOpen: false, rows: [] })),
@@ -145,5 +147,37 @@ describe('Checks tab messages', () => {
     const coordinator = await import('../../src/runs/coordinator');
     const checks = await import('../../src/runs/checks');
     expect(coordinator.setStartChecks).toHaveBeenCalledWith(checks.startChecks);
+  });
+});
+
+describe('the e2e build', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('runs the Checks before every Start too, so the live check exercises them', async () => {
+    vi.resetModules();
+    vi.stubEnv('MODE', 'e2e');
+    // Mocked modules outlive resetModules: forget what the normal build's start (beforeEach) did.
+    const coordinator = await import('../../src/runs/coordinator');
+    const checks = await import('../../src/runs/checks');
+    const e2e = await import('../../src/e2e/background');
+    vi.mocked(coordinator.setStartChecks).mockClear();
+    vi.mocked(e2e.registerE2e).mockClear();
+    const main = (await import('../../src/entrypoints/background')).default as unknown as () => void;
+    main();
+    expect(e2e.registerE2e).toHaveBeenCalled();
+    expect(coordinator.setStartChecks).toHaveBeenCalledWith(checks.startChecks);
+  });
+});
+
+describe("Flow's usage notice while VidFlow waits", () => {
+  it("goes to the coordinator only from VidFlow's own Flow tab", async () => {
+    const coordinator = await import('../../src/runs/coordinator');
+    vi.mocked(coordinator.isFlowTab).mockResolvedValueOnce(false);
+    onMessage({ type: 'flow/notice' }, { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 4 } }, vi.fn());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(coordinator.handleFlowNotice).not.toHaveBeenCalled();
+    vi.mocked(coordinator.isFlowTab).mockResolvedValueOnce(true);
+    onMessage({ type: 'flow/notice' }, { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 7 } }, vi.fn());
+    await vi.waitFor(() => expect(coordinator.handleFlowNotice).toHaveBeenCalledWith(7));
   });
 });

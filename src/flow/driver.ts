@@ -37,7 +37,8 @@ export interface FlowSnapshot {
   keys: string[];
 }
 
-export type StartVerb = 'Start' | 'Resume';
+/** The button the owner presses next: Start before a run, Resume for a paused one, or Test one prompt ("try again"). */
+export type StartVerb = 'Start' | 'Resume' | 'Test';
 
 export interface DetailRead {
   mediaId: string | null;
@@ -112,14 +113,14 @@ export type StartCheck =
   | { ok: true }
   | { ok: false; reason: 'wrong-account' | 'signed-out' | 'policy-dialog' | 'page-not-recognised'; message: string };
 
-const pressWord = (verb: StartVerb) => (verb === 'Start' ? 'press Start again' : 'press Resume');
+const pressWord = (verb: StartVerb) => (verb === 'Start' ? 'press Start again' : verb === 'Resume' ? 'press Resume' : 'try again');
 
 /** Said when Flow's usage notice (switch off, or it couldn't be accepted) or a billing dialog stops VidFlow. */
 export function policyDialogMessage(verb: StartVerb): string {
   return `Flow is showing a message about its usage policy or billing. Read it in the Flow window, then ${pressWord(verb)}.`;
 }
 
-/** `verb` names the button the owner will see: Start before a run, Resume for a paused one. */
+/** `verb` names the button the owner will see: Start before a run, Resume for a paused one, Test for Test one prompt. */
 export function checkCanStart(s: FlowPageState, expectedEmail: string, verb: StartVerb = 'Start'): StartCheck {
   const press = pressWord(verb);
   if (s.billingDialog || s.noticeDialog) {

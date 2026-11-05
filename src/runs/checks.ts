@@ -8,6 +8,7 @@ import {
   FLOW_CHECKS,
   FLOW_SHOW_ME,
   FLOW_TEST_PROMPT,
+  testPromptRefusal,
   type FlowChecksResponse,
   type ShowMeResponse,
   type TestPromptResponse,
@@ -17,7 +18,6 @@ import { isFlowHome, projectUrlOf } from '../flow/project';
 import { getAcceptNotices, getExpectedAccount } from '../settings';
 import { getMediaStore, getProject, type Project } from '../store/projects';
 import {
-  TEST_WHILE_RUNNING_MESSAGE,
   currentFlowTab,
   getRunState,
   openFlowTab,
@@ -26,7 +26,7 @@ import {
   type StartChecksKind,
 } from './coordinator';
 import { FLOW_NOT_OPEN } from './health';
-import { isLive } from './run';
+import { isLive, type RunState } from './run';
 
 // The health line is pure and lives on its own, so the side panel can use it without the background's modules.
 export { FLOW_NOT_OPEN, healthLine } from './health';
@@ -85,6 +85,8 @@ export interface ChecksDeps {
   expectedAccount(): Promise<string>;
   acceptNotices(): Promise<boolean>;
   runLive(): boolean;
+  /** The run's status (null with no run): Test one prompt refuses a running or a paused run. */
+  runStatus(): RunState['status'] | null;
   /** Puts the tab on a fresh Flow project unless it is on one (Test one prompt); throws with a plain message. */
   openProject(tabId: number): Promise<void>;
 }
@@ -131,6 +133,7 @@ const defaultDeps: ChecksDeps = {
   expectedAccount: getExpectedAccount,
   acceptNotices: getAcceptNotices,
   runLive: () => isLive(getRunState()),
+  runStatus: () => getRunState()?.status ?? null,
   openProject: openTestFlowProject,
 };
 
@@ -288,6 +291,9 @@ export async function runChecks(projectId: string, waitMs?: number): Promise<{ f
   const project = await projectOrThrow(projectId);
   const tab = await deps.flowTab();
   if (!tab) return { flowOpen: false, rows: notChecked(project) };
+  // The first read of a window Open Flow has just opened gets the cold wait, as Start's does (no false "didn't answer").
+  if (waitMs === undefined && justOpened === tab.tabId) waitMs = COLD_WAIT_MS;
+  justOpened = null;
   const read = (await deps.ask(tab.tabId, { type: FLOW_CHECKS, ...(waitMs ? { waitMs } : {}) })) as FlowChecksResponse | undefined;
   return { flowOpen: true, rows: await rowsFrom(read ?? undefined, tab.url, project) };
 }
@@ -312,9 +318,20 @@ export async function startChecks(projectId: string, kind: StartChecksKind): Pro
   return failing ? (failing.fix ?? failing.detail) : null;
 }
 
-/** Opens (or brings forward) VidFlow's Flow window on Flow's home page. No Flow project is made. */
+/** A Flow window Open Flow has just opened: the next read of it waits as long as Start's cold read. */
+let justOpened: number | null = null;
+
+/**
+ * Opens (or brings forward) VidFlow's Flow window on Flow's home page. No Flow project is made. A window it had to open
+ * is let finish loading first, and the Checks' next read of it gets the cold wait (as startChecks does).
+ */
 export async function openFlow(): Promise<void> {
+  const cold = !(await deps.flowTab());
   const tabId = await deps.openFlowTab();
+  if (cold) {
+    await deps.waitForLoad(tabId);
+    justOpened = tabId;
+  }
   await deps.focusTab(tabId).catch(() => undefined);
 }
 
@@ -333,10 +350,12 @@ export async function showMeInFlow(): Promise<{ missing: string[] }> {
 
 /**
  * Sets Flow's settings for this video, types a test prompt, checks Generate is ready, then clears the prompt. Never
- * presses Generate (no picture is made). Refused while a run is live. Opens a fresh Flow project if the tab isn't on one.
+ * presses Generate (no picture is made). Refused while a run is running or paused, or a Start is under way. Opens a fresh Flow project if the tab isn't on one.
  */
 export async function testOnePrompt(projectId: string): Promise<{ ok: boolean; message: string }> {
-  if (deps.runLive()) return { ok: false, message: TEST_WHILE_RUNNING_MESSAGE };
+  // The same rule as the Flow helper's: a running run, or a paused one, keeps the tab (and a Start under way, below).
+  const refused = testPromptRefusal(deps.runStatus());
+  if (refused) return { ok: false, message: refused };
   const project = await projectOrThrow(projectId);
   try {
     // Held throughout, so Start can't begin a run on the tab while the test types into it.
