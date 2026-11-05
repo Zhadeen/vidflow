@@ -3,7 +3,7 @@
 import { createProject, getMediaStore, getProject, saveProject, type AspectRatio } from '../store/projects';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { parseSceneFile } from '../scenes/parse';
-import { getRunState, resumeRun, startRun, stopRun } from '../runs/coordinator';
+import { getLastSendError, getRunState, resumeRun, startRun, stopRun } from '../runs/coordinator';
 import { runSummary } from '../runs/run';
 
 export const E2E_MARKER = 'vidflow-e2e';
@@ -84,7 +84,7 @@ async function status(m: E2eStatus) {
       pictureIds: st?.pictureIds ?? [],
     };
   });
-  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes };
+  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, lastSendError: getLastSendError() };
 }
 
 async function picture(m: E2ePicture) {

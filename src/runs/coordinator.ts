@@ -43,6 +43,10 @@ export interface FlowPort {
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
 const notificationIcon = () => chrome.runtime.getURL('icon/128.png');
 const RUN_KEY = 'vidflow.run';
+
+/** The last underlying error behind a "couldn't send" failure, for diagnosis (shown by the e2e build's status). */
+let lastSendError: { sceneId: string; error: string; at: number } | null = null;
+export const getLastSendError = () => lastSendError;
 const WINDOW_KEY = 'vidflow.flowWindow';
 const SESSION_MARKER = 'vidflow.sessionAlive';
 const RESUME_ALARM = 'vidflow-resume';
@@ -382,6 +386,8 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
       await dispatch(err.event);
       return 'stop';
     }
+    lastSendError = { sceneId, error: err instanceof Error ? err.message : String(err), at: Date.now() };
+    console.warn('[VidFlow] send failed', lastSendError);
     await dispatch({
       type: 'failed',
       sceneId,
