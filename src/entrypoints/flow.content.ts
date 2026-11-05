@@ -1,4 +1,5 @@
 /// <reference types="chrome" />
+import { installPageBridge } from '../e2e/page-bridge';
 import { checkCanStart, createFlowDriver, type FlowResultCard, type FlowSnapshot } from '../flow/driver';
 import {
   FLOW_CONFIRM,
@@ -156,9 +157,7 @@ export default defineContentScript({
 
     // Development-only end-to-end bridge: this branch is removed from the normal build.
     if (import.meta.env.MODE === 'e2e') {
-      void import('../e2e/page-bridge').then((m) =>
-        m.installPageBridge(window, (message) => chrome.runtime.sendMessage(message)),
-      );
+      installPageBridge(window, (message) => chrome.runtime.sendMessage(message));
     }
 
     // ---- Observing the page ------------------------------------------------
