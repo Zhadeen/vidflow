@@ -29,6 +29,7 @@ import {
   TEST_PROMPT_TEXT,
   decodeBytes,
   type AcceptNoticeResponse,
+  type ChecksRequest,
   type FlowChecksResponse,
   type ShowMeResponse,
   type TestPromptRequest,
@@ -56,7 +57,8 @@ const OBSERVE_THROTTLE_MS = 1_000;
 const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
 const CONFIRM_WAIT_MS = 8_000;
 const DETAIL_WAIT_MS = 10_000; // the detail page renders its History panel after the picture
-const CHECKS_WAIT_MS = 5_000; // a Flow window that just opened is still drawing its page
+const CHECKS_WAIT_MS = 5_000; // Flow may still be drawing its page
+const CHECKS_MAX_WAIT_MS = 30_000;
 const SHOW_ME_MS = 4_000; // Show me in Flow: each control is ringed in turn, about this long in all
 
 export default defineContentScript({
@@ -154,10 +156,10 @@ export default defineContentScript({
     }
 
     /** The Checks tab's facts: read only (no menu opened, nothing clicked). */
-    async function checks(): Promise<FlowChecksResponse> {
+    async function checks(req: ChecksRequest): Promise<FlowChecksResponse> {
       const seen = () =>
         !!document.querySelector(SEL.account) || !!document.querySelector(SEL.promptBox) || !!driver.newProjectButton();
-      const deadline = Date.now() + CHECKS_WAIT_MS;
+      const deadline = Date.now() + Math.min(req.waitMs ?? CHECKS_WAIT_MS, CHECKS_MAX_WAIT_MS);
       while (!seen() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
       const state = driver.read();
       return {
@@ -264,7 +266,7 @@ export default defineContentScript({
         [FLOW_DETAIL]: () => detail(),
         [FLOW_UPLOAD_REFERENCE]: () => uploadReference(message as UploadReferenceRequest),
         [FLOW_ACCEPT_NOTICE]: () => acceptNotice(),
-        [FLOW_CHECKS]: () => checks(),
+        [FLOW_CHECKS]: () => checks(message as ChecksRequest),
         [FLOW_SHOW_ME]: async () => showMe(),
         [FLOW_TEST_PROMPT]: () => testPrompt(message as TestPromptRequest),
       };

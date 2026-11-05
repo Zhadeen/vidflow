@@ -103,9 +103,8 @@ describe('runChecks', () => {
     ({ checks } = await load({ read: good({ agentOff: false }) }));
     ({ rows } = await checks.runChecks('p1'));
     const agent = rows.find((r) => r.id === 'agentOff')!;
-    expect(agent).toMatchObject({ ok: false, detail: 'Agent mode is on' });
-    expect(agent.fix).toMatch(/Turn off Agent mode in Flow/);
-    expect(checks.healthLine(rows, true)).toContain('Agent mode on');
+    expect(agent).toMatchObject({ ok: false, detail: 'Agent mode is on', fix: 'VidFlow turns it off when it starts' });
+    expect(checks.healthLine(rows, true)).toEqual(['✓ Signed in', '✓ Flow ready']); // not a warning: VidFlow handles it
 
     ({ checks } = await load({ read: good({ aspect: '16:9', outputs: 1 }) }));
     ({ rows } = await checks.runChecks('p1'));
@@ -236,7 +235,7 @@ describe('Start', () => {
   beforeEach(() => vi.unstubAllGlobals());
   afterEach(() => vi.unstubAllGlobals());
 
-  async function startSetup(read: FlowChecksResponse) {
+  async function startSetup(read: FlowChecksResponse | undefined, opts: { open?: boolean; over?: Record<string, unknown> } = {}) {
     vi.resetModules();
     mockChrome();
     const store = await import('../../src/store/projects');
@@ -264,7 +263,8 @@ describe('Start', () => {
     ];
     await store.saveProject(p);
     const ask = vi.fn(async () => read);
-    let open = false;
+    let open = opts.open ?? false;
+    const waitForLoad = vi.fn(async () => undefined);
     const openFlowTab = vi.fn(async () => {
       open = true;
       return 7;
@@ -275,21 +275,86 @@ describe('Start', () => {
       ask,
       expectedAccount: async () => OWNER,
       acceptNotices: async () => true,
+      waitForLoad,
+      ...opts.over,
     });
     coordinator.setStartChecks(checks.startChecks);
-    return { coordinator, port, p, ask, openFlowTab };
+    return { coordinator, port, p, ask, openFlowTab, waitForLoad, checks, store };
   }
 
   it('start runs the checks first and stops on a failing one', async () => {
-    const { coordinator, port, p, ask, openFlowTab } = await startSetup(good({ agentOff: false, promptBox: false, generate: false, model: null, aspect: null, outputs: null }));
+    const { coordinator, port, p, ask, openFlowTab, waitForLoad } = await startSetup(good({ account: 'someone@gmail.com', promptBox: false, generate: false, model: null, aspect: null, outputs: null }));
     const err = await coordinator.startRun(p.id).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(coordinator.RunBlockedError);
-    expect((err as Error).message).toMatch(/Agent mode/);
+    expect((err as Error).message).toMatch(/Switch Flow to unscripted4ce@gmail.com/);
     expect(openFlowTab).toHaveBeenCalled(); // Flow wasn't open: opened, then checked
-    expect(ask).toHaveBeenCalledWith(7, { type: 'flow/checks' });
+    expect(waitForLoad).toHaveBeenCalledWith(7); // a cold window is let finish loading first
+    expect(ask).toHaveBeenCalledWith(7, { type: 'flow/checks', waitMs: 20_000 }); // and given longer to draw
     expect(coordinator.getRunState()).toBeNull(); // the run never started
     expect(port.findNewProject).not.toHaveBeenCalled();
     expect(port.prepare).not.toHaveBeenCalled();
+  });
+
+  it('start goes ahead with Agent mode on: VidFlow turns it off itself', async () => {
+    const { coordinator, p, ask } = await startSetup(good({ agentOff: false }), { open: true });
+    await coordinator.startRun(p.id);
+    expect(coordinator.getRunState()?.status).toBe('running');
+    expect(ask).toHaveBeenCalledWith(7, { type: 'flow/checks' }); // already open: the usual short wait
+    await coordinator.stopRun();
+  });
+
+  it("a page not yet recognised right after VidFlow opened Flow doesn't block Start", async () => {
+    for (const read of [good({ page: false, account: null, promptBox: false, generate: false }), undefined]) {
+      const { coordinator, p } = await startSetup(read);
+      await coordinator.startRun(p.id);
+      expect(coordinator.getRunState()?.status).toBe('running'); // the run's own New-project step checks the account
+      await coordinator.stopRun();
+    }
+  });
+
+  it('an unrecognised page in a Flow window that was already open still blocks', async () => {
+    const { coordinator, p } = await startSetup(good({ page: false }), { open: true });
+    await expect(coordinator.startRun(p.id)).rejects.toThrow(/Open Flow's home page/);
+  });
+
+  it('Start is refused while Test one prompt is running', async () => {
+    let release!: () => void;
+    const typed = new Promise<void>((r) => (release = r));
+    let asked!: () => void;
+    const askedP = new Promise<void>((r) => (asked = r));
+    const { coordinator, p, checks } = await startSetup(good(), {
+      open: true,
+      over: {
+        openProject: async () => undefined,
+        ask: vi.fn(async (_t: number, m: { type: string }) => {
+          if (m.type !== 'flow/test-prompt') return good();
+          asked();
+          await typed;
+          return { ok: true, message: 'Flow is ready.' };
+        }),
+      },
+    });
+    const test = checks.testOnePrompt(p.id);
+    await askedP;
+    await expect(coordinator.startRun(p.id)).rejects.toThrow(/testing one prompt/);
+    await expect(coordinator.startHeroSheetRun(p.id)).rejects.toThrow(/Describe the hero|testing one prompt/);
+    release();
+    await expect(test).resolves.toEqual({ ok: true, message: 'Flow is ready.' });
+    await coordinator.startRun(p.id); // allowed again once the test is done
+    expect(coordinator.getRunState()?.status).toBe('running');
+    await coordinator.stopRun();
+  });
+
+  it('test one prompt is refused while a model sheet is being made', async () => {
+    const { coordinator, p, checks, store } = await startSetup(good(), { open: true, over: { openProject: vi.fn(async () => undefined) } });
+    const saved = (await store.getProject(p.id))!;
+    saved.character = { description: 'a stickman' };
+    await store.saveProject(saved);
+    await coordinator.startHeroSheetRun(p.id);
+    expect(coordinator.getRunState()?.sceneStates).toHaveProperty('hero-sheet');
+    const result = await checks.testOnePrompt(p.id);
+    expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/making pictures right now/) });
+    await coordinator.stopRun();
   });
 
   it('start goes ahead when the checks pass (settings that differ are set by the run itself)', async () => {
@@ -299,7 +364,7 @@ describe('Start', () => {
     await coordinator.stopRun();
   });
 
-  it('a model sheet run only stops on the account, page, prompt bar and Agent mode', async () => {
+  it('a model sheet run only stops on the account, page and prompt bar', async () => {
     const { coordinator, p, ask } = await startSetup(good({ account: 'someone@gmail.com' }));
     const store = await import('../../src/store/projects');
     const saved = (await store.getProject(p.id))!;

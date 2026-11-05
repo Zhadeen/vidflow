@@ -123,6 +123,8 @@ export interface AcceptNoticeResponse {
 /** background → VidFlow's own Flow tab: what the Checks tab needs, read only (no menu is opened, nothing is clicked). */
 export interface ChecksRequest {
   type: typeof FLOW_CHECKS;
+  /** How long to wait for Flow to draw its page (a window VidFlow just opened needs longer). */
+  waitMs?: number;
 }
 export interface FlowChecksResponse {
   /** The signed-in Google account, or null when signed out / not shown. */

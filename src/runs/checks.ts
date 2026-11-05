@@ -22,6 +22,7 @@ import {
   getRunState,
   openFlowTab,
   openTestFlowProject,
+  whileTestingPrompt,
   type StartChecksKind,
 } from './coordinator';
 import { isLive } from './run';
@@ -57,14 +58,21 @@ const LABELS: Record<CheckId, string> = {
 const ORDER: CheckId[] = ['account', 'page', 'promptBox', 'generate', 'agentOff', 'settings', 'hero', 'credits'];
 
 /** Rows a failing Start stops on. Settings aren't: the run sets them itself. Credits never fail (pictures cost 0). */
-const BLOCKS_SCENES = new Set<CheckId>(['account', 'page', 'promptBox', 'generate', 'agentOff', 'hero']);
-const BLOCKS_SHEET = new Set<CheckId>(['account', 'page', 'promptBox', 'generate', 'agentOff']);
+// Agent mode never blocks either: the run turns it off itself (controller ruling, 5 Nov 2026).
+const BLOCKS_SCENES = new Set<CheckId>(['account', 'page', 'promptBox', 'generate', 'hero']);
+const BLOCKS_SHEET = new Set<CheckId>(['account', 'page', 'promptBox', 'generate']);
+/** How long a Flow window VidFlow just opened gets to load and draw before it is read. */
+export const COLD_WAIT_MS = 20_000;
+const NOT_RECOGNISED = "VidFlow doesn't recognise this Flow page";
+const NO_ANSWER = "The Flow page didn't answer";
 
 export interface ChecksDeps {
   /** VidFlow's own Flow tab if open (never opens one). */
   flowTab(): Promise<{ tabId: number; url: string } | null>;
   /** Opens (or finds) VidFlow's Flow window on Flow's home page; no Flow project is made. */
   openFlowTab(): Promise<number>;
+  /** Waits (up to COLD_WAIT_MS) for a tab to finish loading. */
+  waitForLoad(tabId: number): Promise<void>;
   /** Brings VidFlow's Flow tab and its window to the front. */
   focusTab(tabId: number): Promise<void>;
   /** Asks the Flow helper in the tab; undefined when it doesn't answer. */
@@ -100,6 +108,16 @@ async function askHelper(tabId: number, message: ToFlowTab): Promise<unknown> {
 const defaultDeps: ChecksDeps = {
   flowTab: currentFlowTab,
   openFlowTab,
+  async waitForLoad(tabId) {
+    const deadline = Date.now() + COLD_WAIT_MS;
+    while (Date.now() < deadline) {
+      const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+      if (!tab || tab.status === 'complete') return;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  },
+  // Focusing the window is only ever for the owner's own Show me in Flow / Open Flow presses: the run path never
+  // focuses VidFlow's window (frontTab in the coordinator only makes the tab active inside its own window).
   async focusTab(tabId) {
     const tab = await chrome.tabs.update(tabId, { active: true });
     if (tab?.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
@@ -149,7 +167,7 @@ async function rowsFrom(read: FlowChecksResponse | undefined, url: string, proje
   const rows: CheckRow[] = [];
   if (!read) {
     rows.push(row('account', null, NOT_CHECKED));
-    rows.push(row('page', false, "The Flow page didn't answer", NO_ANSWER_FIX));
+    rows.push(row('page', false, NO_ANSWER, NO_ANSWER_FIX));
     for (const id of ['promptBox', 'generate', 'agentOff', 'settings'] as const) rows.push(row(id, null, NOT_CHECKED));
   } else {
     // Account
@@ -187,7 +205,7 @@ async function rowsFrom(read: FlowChecksResponse | undefined, url: string, proje
         ),
       );
     } else if (!read.page) {
-      rows.push(row('page', false, "VidFlow doesn't recognise this Flow page", "Open Flow's home page in VidFlow's Flow window."));
+      rows.push(row('page', false, NOT_RECOGNISED, "Open Flow's home page in VidFlow's Flow window."));
     } else {
       const where = onProject
         ? 'Flow project open'
@@ -209,7 +227,7 @@ async function rowsFrom(read: FlowChecksResponse | undefined, url: string, proje
       bar ? row('generate', read.generate, read.generate ? 'Found' : 'Not found', reload) : row('generate', null, ON_PROJECT_LATER),
     );
     if (!read.agentOff) {
-      rows.push(row('agentOff', false, 'Agent mode is on', "Turn off Agent mode in Flow (the Agent button by the prompt box)."));
+      rows.push(row('agentOff', false, 'Agent mode is on', 'VidFlow turns it off when it starts'));
     } else rows.push(bar ? row('agentOff', true, 'Off') : row('agentOff', null, ON_PROJECT_LATER));
 
     // Settings, as Flow's settings button shows them.
@@ -257,25 +275,31 @@ async function rowsFrom(read: FlowChecksResponse | undefined, url: string, proje
 }
 
 /** Reads VidFlow's own Flow tab (only it) for the Checks tab. With none open: flowOpen false, every row not checked. */
-export async function runChecks(projectId: string): Promise<{ flowOpen: boolean; rows: CheckRow[] }> {
+export async function runChecks(projectId: string, waitMs?: number): Promise<{ flowOpen: boolean; rows: CheckRow[] }> {
   const project = await projectOrThrow(projectId);
   const tab = await deps.flowTab();
   if (!tab) return { flowOpen: false, rows: notChecked(project) };
-  const read = (await deps.ask(tab.tabId, { type: FLOW_CHECKS })) as FlowChecksResponse | undefined;
+  const read = (await deps.ask(tab.tabId, { type: FLOW_CHECKS, ...(waitMs ? { waitMs } : {}) })) as FlowChecksResponse | undefined;
   return { flowOpen: true, rows: await rowsFrom(read ?? undefined, tab.url, project) };
 }
 
 /**
  * Before every Start (coordinator.setStartChecks): opens VidFlow's Flow window if it isn't open, runs the checks, and
  * answers with the first failing row's plain fix, or null to go ahead. A model sheet run only needs the account, the
- * page, the prompt bar and Agent mode off.
+ * page and the prompt bar. Agent mode never blocks: the run turns it off itself.
  */
 export async function startChecks(projectId: string, kind: StartChecksKind): Promise<string | null> {
-  if (!(await deps.flowTab())) await deps.openFlowTab();
-  const { flowOpen, rows } = await runChecks(projectId);
+  const cold = !(await deps.flowTab());
+  if (cold) await deps.waitForLoad(await deps.openFlowTab());
+  const { flowOpen, rows } = await runChecks(projectId, cold ? COLD_WAIT_MS : undefined);
   if (!flowOpen) return FLOW_NOT_OPEN_MESSAGE;
   const blocks = kind === 'sheet' ? BLOCKS_SHEET : BLOCKS_SCENES;
-  const failing = rows.find((r) => r.ok === false && blocks.has(r.id));
+  // A window VidFlow has only just opened may still be drawing Flow: that isn't the owner's problem to fix. The run's
+  // own New-project step checks the account and the page before anything is pressed.
+  // Nothing read from such a page counts (a page that isn't drawn shows no account either); the hero still does.
+  const page = rows.find((r) => r.id === 'page');
+  const stillLoading = cold && page?.ok === false && (page.detail === NOT_RECOGNISED || page.detail === NO_ANSWER);
+  const failing = rows.find((r) => r.ok === false && blocks.has(r.id) && (!stillLoading || r.id === 'hero'));
   return failing ? (failing.fix ?? failing.detail) : null;
 }
 
@@ -306,14 +330,17 @@ export async function testOnePrompt(projectId: string): Promise<{ ok: boolean; m
   if (deps.runLive()) return { ok: false, message: TEST_WHILE_RUNNING_MESSAGE };
   const project = await projectOrThrow(projectId);
   try {
-    const tabId = (await deps.flowTab())?.tabId ?? (await deps.openFlowTab());
-    await deps.openProject(tabId);
-    const reply = (await deps.ask(tabId, {
-      type: FLOW_TEST_PROMPT,
-      aspect: project.aspect,
-      outputs: project.outputsPerPrompt,
-    })) as TestPromptResponse | undefined;
-    return reply ?? { ok: false, message: `The Flow page didn't answer. ${NO_ANSWER_FIX}` };
+    // Held throughout, so Start can't begin a run on the tab while the test types into it.
+    return await whileTestingPrompt(async () => {
+      const tabId = (await deps.flowTab())?.tabId ?? (await deps.openFlowTab());
+      await deps.openProject(tabId);
+      const reply = (await deps.ask(tabId, {
+        type: FLOW_TEST_PROMPT,
+        aspect: project.aspect,
+        outputs: project.outputsPerPrompt,
+      })) as TestPromptResponse | undefined;
+      return reply ?? { ok: false, message: `The Flow page didn't answer. ${NO_ANSWER_FIX}` };
+    });
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
@@ -331,7 +358,6 @@ export function healthLine(rows: CheckRow[], flowOpen: boolean): string[] {
   const page = byId.get('page');
   if (page?.ok === false) out.push('Flow needs a look');
   else if (byId.get('promptBox')?.ok === false || byId.get('generate')?.ok === false) out.push('Flow page not ready');
-  else if (byId.get('agentOff')?.ok === false) out.push('Agent mode on');
   else if (page?.ok === true) out.push('✓ Flow ready');
 
   const hero = byId.get('hero');

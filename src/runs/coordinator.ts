@@ -1022,7 +1022,7 @@ async function pump(): Promise<void> {
 
 // ---- Public API ----------------------------------------------------------
 
-/** Which run is about to start: a model sheet only needs the account, the page, the prompt bar and Agent mode off. */
+/** Which run is about to start: a model sheet only needs the account, the page and the prompt bar. */
 export type StartChecksKind = 'scenes' | 'sheet';
 /** Runs the Checks before a start: the failing check's plain fix, or null to go ahead. */
 export type StartChecks = (projectId: string, kind: StartChecksKind) => Promise<string | null>;
@@ -1034,6 +1034,20 @@ let startChecks: StartChecks | null = null;
  */
 export function setStartChecks(fn: StartChecks | null): void {
   startChecks = fn;
+}
+
+export const TESTING_PROMPT_MESSAGE = 'VidFlow is testing one prompt in Flow. Wait a few seconds, then press Start again.';
+let testingPrompt = false;
+
+/** Test one prompt holds this while it uses the Flow tab: no run may start meanwhile (it would type over the test). */
+export async function whileTestingPrompt<T>(fn: () => Promise<T>): Promise<T> {
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+  testingPrompt = true;
+  try {
+    return await fn();
+  } finally {
+    testingPrompt = false;
+  }
 }
 
 /** Throws RunBlockedError with the failing check's fix; nothing is started or committed. */
@@ -1091,6 +1105,7 @@ export async function startRun(projectId: string, retrySceneId?: string): Promis
   postPressNotices.clear();
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
   // The Checks run first (spec §19), but only for a start that would happen: a busy refusal or a run already going
   // never touches Flow. They talk to Flow, so they run outside the queue; the queue re-checks the blockers.
   if (!(state?.projectId === projectId && state.status === 'running')) {
@@ -1141,6 +1156,7 @@ export async function startHeroSheetRun(projectId: string): Promise<void> {
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
   if (!project.character?.description.trim()) throw new Error(HERO_SHEET_NEEDS_HERO);
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
   if (!(state && isLive(state))) await passStartChecks(projectId, 'sheet'); // a live run refuses below, without Flow
   await enqueue(async () => {
     if (state && isLive(state)) {
