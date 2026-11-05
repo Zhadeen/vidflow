@@ -39,14 +39,26 @@ const ROWS: CheckRow[] = [
 
 async function main() {
   const hero = await (await fetch('./stick1.jpg')).blob();
-  setMediaStore({ put: async () => '', get: async () => hero, remove: async () => undefined, removeProject: async () => undefined });
+  const other = await (await fetch('./stick2.jpg')).blob();
+  // Scene pictures alternate between the two sample drawings (option 2s use the other one).
+  const get = async (key: string) => (/-2$|b$/.test(key) ? other : hero);
+  setMediaStore({ put: async () => '', get, remove: async () => undefined, removeProject: async () => undefined });
   for (const p of await listProjects()) await deleteProject(p.id);
   const older = await createProject('Why cats knock things over');
   await saveProject(older);
   const project = await createProject('Phone Bill Story');
   project.script = 'Every month my phone bill went up. So I read every line.';
   project.character = { description: 'A short stickman with a red cap', referenceMediaId: `${project.id}/hero-reference` };
-  if (screen === 'running') project.scenes = parseSceneFile(REPLY).scenes;
+  if (screen === 'running' || screen === 'finished') project.scenes = parseSceneFile(REPLY).scenes;
+  if (screen === 'finished') {
+    // A finished video: five scenes saved (scene 2 with its second picture chosen), one Flow didn't finish.
+    for (let i = 1; i <= 6; i++) {
+      project.sceneStates[id(i)] =
+        i === 4
+          ? { sceneId: id(i), status: 'failed', message: "Flow didn't finish this picture in 10 minutes.", pictureIds: [] }
+          : { sceneId: id(i), status: 'done', pictureIds: [`${id(i)}-1`, `${id(i)}-2`], cardKeys: [`k${i}a`, `k${i}b`], ...(i === 2 ? { chosenPictureId: `${id(i)}-2` } : {}) };
+    }
+  }
   await saveProject(project);
 
   let run: RunState | null = null;
@@ -54,7 +66,7 @@ async function main() {
     let s = reduceRun(initRun(project), { type: 'start' });
     for (let i = 1; i <= 2; i++) {
       s = reduceRun(s, { type: 'submitted', sceneId: id(i) });
-      s = reduceRun(s, { type: 'pictures', sceneId: id(i), mediaIds: ['a', 'b'] });
+      s = reduceRun(s, { type: 'pictures', sceneId: id(i), mediaIds: [`${id(i)}-a`, `${id(i)}-b`] });
     }
     s = reduceRun(s, { type: 'submitted', sceneId: id(3) });
     run = reduceRun(s, { type: 'submitted', sceneId: id(4) });
@@ -63,13 +75,14 @@ async function main() {
   const today = new Date();
   const at = (h: number, m: number, sec: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate(), h, m, sec).getTime();
   const store: Record<string, unknown> = {
-    'vidflow.step': { projectId: project.id, sceneId: id(3), text: 'Pressing Generate', target: 'generate', at: Date.now() },
+    'vidflow.step': { projectId: project.id, sceneId: id(3), text: 'Checking picture 2 of 2 matches its prompt', target: 'tile', at: Date.now() },
     'vidflow.activity': [
       { at: at(10, 23, 58), projectId: project.id, sceneId: null, text: 'Opened a new Flow project' },
       { at: at(10, 24, 40), projectId: project.id, sceneId: id(1), text: '✓ Saved 2 pictures' },
       { at: at(10, 24, 44), projectId: project.id, sceneId: id(2), text: '✓ Saved 2 pictures' },
       { at: at(10, 24, 49), projectId: project.id, sceneId: id(3), text: 'Typing the prompt' },
       { at: at(10, 24, 51), projectId: project.id, sceneId: id(3), text: 'Pressing Generate' },
+      { at: at(10, 25, 12), projectId: project.id, sceneId: id(3), text: 'Checking picture 2 of 2 matches its prompt' },
     ],
   };
   (globalThis as { chrome?: unknown }).chrome = {
@@ -81,7 +94,7 @@ async function main() {
   };
 
   const reply = async (): Promise<RunReply> => ({ ok: true, state: run });
-  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, forget: reply, choose: reply, heroSheet: reply, checks: async () => ({ ok: true, flowOpen: true, rows: ROWS }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
+  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, skip: reply, forget: reply, choose: reply, heroSheet: reply, checks: async () => ({ ok: true, flowOpen: true, rows: ROWS }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
   createRoot(document.getElementById('root')!).render(<Panel client={client} />);
   Object.assign(window, { REPLY, ready: true });
 }

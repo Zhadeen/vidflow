@@ -18,9 +18,11 @@ const server = await createServer({ root: here, configFile: false, plugins: [rea
 await server.listen();
 const browser = await chromium.launch({ channel: 'chrome' });
 
-for (const screen of ['setup', 'setup-unapplied', 'checks', 'running']) {
-  const page = await browser.newPage({ viewport: { width: 320, height: { setup: 720, 'setup-unapplied': 760, checks: 760, running: 560 }[screen] }, deviceScaleFactor: 2 });
-  await page.goto(`http://localhost:5197/side-panel.html?screen=${screen === 'running' ? 'running' : 'setup'}`);
+const HEIGHTS = { setup: 720, 'setup-unapplied': 760, checks: 760, running: 760, 'queue-finished': 760, 'queue-options': 900 };
+for (const screen of ['setup', 'setup-unapplied', 'checks', 'running', 'queue-finished', 'queue-options']) {
+  const page = await browser.newPage({ viewport: { width: 320, height: HEIGHTS[screen] }, deviceScaleFactor: 2 });
+  const data = screen === 'running' ? 'running' : screen.startsWith('queue-') ? 'finished' : 'setup';
+  await page.goto(`http://localhost:5197/side-panel.html?screen=${data}`);
   await page.waitForFunction(() => window.ready === true);
   if (screen === 'setup' || screen === 'checks') {
     // Paste Claude's reply, then use the scenes: the mockup's "before starting" state.
@@ -40,9 +42,16 @@ for (const screen of ['setup', 'setup-unapplied', 'checks', 'running']) {
     await page.getByRole('button', { name: 'Check again' }).waitFor();
   } else if (screen === 'running') {
     await page.getByRole('button', { name: 'Pause' }).waitFor();
+  } else if (screen.startsWith('queue-')) {
+    // A finished video: the Queue shows its scenes as saved, with Retry failed and ▶ Run.
+    await page.getByRole('tab', { name: /^Queue/ }).click();
+    await page.getByRole('button', { name: 'Retry failed' }).waitFor();
+    if (screen === 'queue-options') await page.locator('li[data-scene="scene-02"] button[aria-expanded]').click();
   }
   await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(out, `side-panel-${screen}.png`) });
+  // The Queue scrolls in the real panel: shoot the whole page so the rows and the Pause/Stop/Skip row both show.
+  const fullPage = screen === 'running' || screen.startsWith('queue-');
+  await page.screenshot({ path: path.join(out, `side-panel-${screen}.png`), fullPage });
   await page.close();
 }
 

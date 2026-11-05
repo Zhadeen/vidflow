@@ -171,7 +171,7 @@ function sheetClient(over: Partial<RunClient> = {}): RunClient {
     pause: vi.fn(ok),
     resume: vi.fn(ok),
     retry: vi.fn(ok),
-    stop: vi.fn(ok),
+    stop: vi.fn(ok), skip: vi.fn(ok),
     forget: vi.fn(ok),
     choose: vi.fn(ok),
     heroSheet: vi.fn(ok),

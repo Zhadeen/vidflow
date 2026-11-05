@@ -75,6 +75,7 @@ export function fakeBackground(initial: RunState | null) {
     resume: vi.fn(async () => announce(state && reduceRun(state, { type: 'resume' }))),
     retry: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     stop: vi.fn(async () => announce(state && reduceRun(state, { type: 'stop' }))),
+    skip: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     forget: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     choose: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),

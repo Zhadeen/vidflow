@@ -7,6 +7,7 @@ import {
   RUN_START,
   RUN_STATE,
   RUN_STOP,
+  RUN_SKIP,
   RUN_FORGET,
   RUN_CHOOSE,
   RUN_HERO_SHEET,
@@ -34,6 +35,8 @@ export interface RunClient {
   retry(projectId: string, sceneId: string): Promise<RunReply>;
   /** Ends a paused run; pictures stay. */
   stop(): Promise<RunReply>;
+  /** Skips the scene being worked on now: it ends as failed "Skipped by you" and the run moves on. */
+  skip(): Promise<RunReply>;
   /** This project's scenes were replaced: forget a finished run for it. */
   forget(projectId: string): Promise<RunReply>;
   /** The owner chose one of a scene's pictures; saved even while a run is live. */
@@ -81,6 +84,7 @@ export function chromeRunClient(): RunClient {
     resume: () => send({ type: RUN_RESUME }),
     retry: (projectId, sceneId) => send({ type: RUN_RETRY, projectId, sceneId }),
     stop: () => send({ type: RUN_STOP }),
+    skip: () => send({ type: RUN_SKIP }),
     forget: (projectId) => send({ type: RUN_FORGET, projectId }),
     choose: (projectId, sceneId, pictureId) => send({ type: RUN_CHOOSE, projectId, sceneId, pictureId }),
     heroSheet: (projectId) => send({ type: RUN_HERO_SHEET, projectId }),

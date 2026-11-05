@@ -407,43 +407,223 @@
   transition: width 300ms var(--vf-ease);
 }
 
-/* Scene strip: saved = cream with ✓, the one being worked on = coral outline, the rest navy */
-.vf-pn-strip {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+/* ---- Queue: filters, one row per scene, tags ---- */
+
+.vf-pn-filters {
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+
+.vf-pn-filter {
+  padding: 3px 6px;
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-pill);
+  background: none;
+  color: var(--vf-cream-muted);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.vf-pn-filter:hover {
+  color: var(--vf-cream);
+}
+
+.vf-pn-filter[aria-pressed='true'] {
+  background: var(--vf-navy-line);
+  color: var(--vf-cream);
+}
+
+.vf-pn-qtools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vf-pn .vf-pn-qtools .vf-btn[data-variant].vf-pn-sec {
+  flex: none;
+  margin-left: auto;
+}
+
+.vf-pn-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 120px;
-  overflow-y: auto;
 }
 
-.vf-pn-strip li {
+.vf-pn-qrow {
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-sm);
+}
+
+/* The scene being worked on: coral outline */
+.vf-pn-qrow[data-current] {
+  border-color: var(--vf-coral);
+}
+
+.vf-pn-qline {
   display: flex;
   align-items: center;
-  justify-content: center;
-  height: 26px;
-  border-radius: var(--vf-radius-sm);
-  background: var(--vf-navy-line);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  gap: 8px;
+  padding: 6px 8px;
 }
 
-.vf-pn-strip li[data-state='saved'] {
+.vf-pn-qopen {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 38px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.vf-pn-qopen {
+  cursor: pointer;
+}
+
+.vf-pn-qimg {
+  width: 38px;
+  height: 24px;
+  border-radius: 4px;
   background: var(--vf-cream);
+  overflow: hidden;
+}
+
+.vf-pn-qimg[data-empty] {
+  background: var(--vf-navy-line);
+}
+
+.vf-pn-qimg img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vf-pn-qt {
+  min-width: 0;
+  font-size: var(--vf-text-xs);
+  overflow-wrap: anywhere;
+}
+
+.vf-pn-qt small {
+  display: block;
+  color: var(--vf-muted);
+  font-size: 11px;
+}
+
+.vf-pn-qside {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.vf-pn-tag,
+.vf-pn-run {
+  padding: 2px 7px;
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-pill);
+  background: none;
+  color: var(--vf-cream);
+  font: inherit;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.vf-pn-tag[data-tone='done'] {
+  background: var(--vf-cream);
+  border-color: var(--vf-cream);
   color: var(--vf-navy);
   font-weight: 700;
 }
 
-.vf-pn-strip li[data-state='current'] {
-  background: none;
-  border: 2px solid var(--vf-coral);
+.vf-pn-tag[data-tone='current'],
+.vf-pn-tag[data-tone='warn'] {
+  border-color: var(--vf-coral);
 }
 
-.vf-pn-strip li[data-state='attention'] {
-  background: var(--vf-navy-pill);
-  box-shadow: inset 0 0 0 1.5px var(--vf-cream-muted);
+.vf-pn-run {
+  cursor: pointer;
+}
+
+.vf-pn-run:hover:not(:disabled) {
+  border-color: var(--vf-muted);
+}
+
+.vf-pn-run:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.vf-pn-filter:focus-visible,
+.vf-pn-qopen:focus-visible,
+.vf-pn-run:focus-visible {
+  outline: none;
+  box-shadow: var(--vf-focus);
+}
+
+/* A row's options (the studio's one-click swap), at the panel's size */
+.vf-pn-qoptions {
+  padding: 0 8px 8px;
+}
+
+.vf-pn .vf-pn-qoptions .vf-options {
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.vf-pn .vf-pn-qoptions .vf-option {
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-pn .vf-pn-qoptions figcaption {
+  padding: 6px;
+  font-size: 11px;
+}
+
+.vf-pn .vf-pn-qoptions .vf-option-title {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* The studio's "★ Using this" pill at its approved small size (11px/700, 3px 9px) */
+.vf-pn .vf-pn-qoptions .vf-best {
+  top: 4px;
+  left: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+}
+
+.vf-pn .vf-pn-qoptions .vf-option-use {
+  width: 100%;
+  min-height: 0;
+  margin-top: 6px;
+  padding: 5px 6px;
+  border-width: 1.5px;
+  border-radius: var(--vf-radius-md);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.vf-pn .vf-pn-qoptions .vf-option-frame-empty {
+  font-size: 11px;
 }
 
 /* The studio's activity list, at the panel's size */

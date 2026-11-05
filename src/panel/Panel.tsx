@@ -10,12 +10,12 @@ import type { RunClient } from '../studio/runClient';
 import type { ProjectPatch } from '../studio/ScriptStep';
 import { HealthLine } from './HealthLine';
 import { PanelChecks, type ChecksResult } from './PanelChecks';
-import { PanelRun } from './PanelRun';
+import { PanelQueue } from './PanelQueue';
 import { PanelSetup, VideoPicker } from './PanelSetup';
 import { panelId, tabId, Tabs, type PanelTab } from './Tabs';
 
 type Summary = Pick<Project, 'id' | 'name' | 'updatedAt'>;
-export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop';
+export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop' | 'skip';
 
 const LOAD_FAILED = "VidFlow couldn't load your videos. Close this panel and open it again.";
 const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
@@ -255,19 +255,26 @@ export function Panel({ client }: { client: RunClient }) {
             )}
           </>
         ) : tab === 'queue' ? (
-          // The Queue tab's own rows come in the next step; for now it is the running view.
-          running && shown && run ? (
-            <PanelRun
+          shown ? (
+            <PanelQueue
+              key={shown.id}
               project={shown}
               run={run}
+              client={client}
               busy={busy}
               error={error}
               onPause={() => void act('pause', () => client.pause())}
               onResume={() => void act('resume', () => client.resume())}
               onStop={() => void act('stop', () => client.stop())}
+              onSkip={() => void act('skip', () => client.skip())}
+              onStart={() => void act('start', () => client.start(shown.id))}
+              onRunState={setRun}
+              onSceneState={(sceneId, state) =>
+                setProject((p) => (p && p.id === shown.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
+              }
             />
-          ) : scenesLive && !shown ? null : (
-            <p className="vf-pn-sub">No pictures are being made for this video right now.</p>
+          ) : scenesLive ? null : (
+            <p className="vf-pn-sub">Pick a video on Setup first.</p>
           )
         ) : tab === 'checks' ? (
           shown ? (

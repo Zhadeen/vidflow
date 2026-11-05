@@ -1449,3 +1449,106 @@ describe('keep-awake switch', () => {
     await waitFor(() => chromeMock.power.requestKeepAwake.mock.calls.length === 1, 'requested again');
   });
 });
+
+describe('Queue tab: Skip and ▶ Run (spec §19)', () => {
+  /** Two scenes, one picture each; `over` changes the fake Flow port. */
+  async function twoScenes(over: (ctx: Awaited<ReturnType<typeof setup>>) => Partial<FlowPort> = () => ({})) {
+    const ctx = await setup(1);
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(ctx.project.id))!;
+    saved.scenes = [...saved.scenes, { ...saved.scenes[0]!, id: 's2', slide: 2, imagePrompt: 'A stickman sits' }];
+    await store.saveProject(saved);
+    const port = ctx.fakePort(over(ctx));
+    ctx.coordinator.setFlowPort(port);
+    return { ...ctx, port, store };
+  }
+  const promptFor = (port: FlowPort, sceneId: string) => vi.mocked(port.prepare).mock.calls.find((c) => c[1] === sceneId)![2];
+  const setStepTo = (chromeMock: ReturnType<typeof mockChrome>, projectId: string, sceneId: string) =>
+    void (chromeMock.storage.local.data['vidflow.step'] = { projectId, sceneId, text: 'Checking', target: 'tile', at: Date.now() });
+
+  it('pictures arriving for a skipped scene are never saved', async () => {
+    const { chromeMock, coordinator, project, port, media } = await twoScenes();
+    const fetchMock = vi.fn(async (url: string) => ({ ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) }));
+    vi.stubGlobal('fetch', fetchMock);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 'both scenes in Flow');
+    await coordinator.settledForTests();
+
+    // The panel's step names scene 1: Skip ends it, though Flow is still drawing it.
+    setStepTo(chromeMock, project.id, 's1');
+    await coordinator.skipCurrent();
+    expect(coordinator.getRunState()!.sceneStates.s1).toMatchObject({ status: 'failed', message: coordinator.SKIPPED_MESSAGE });
+
+    // Flow then shows scene 1's picture (older) and scene 2's (newer). Each card's detail is its own prompt.
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ({ x: TILE_X, y: key === 'k1' ? 1 : 2 }));
+    let opened = '';
+    vi.mocked(port.press).mockImplementation(async (_tab, x, y) => {
+      if (x === TILE_X) {
+        opened = y === 1 ? 'k1' : 'k2';
+        chromeMock.tab.url = `${PROJECT_URL}/edit/gen-${opened}`;
+      }
+    });
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt: promptFor(port, opened === 'k1' ? 's1' : 's2'), mediaId: opened }));
+    await coordinator.handleTiles([card('k2', 0), card('k1', 1)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'done', 'scene 2 saved');
+    await coordinator.settledForTests();
+
+    const run = coordinator.getRunState()!;
+    expect(run.sceneStates.s2).toMatchObject({ cardKeys: ['k2'] });
+    expect(run.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you', pictureIds: [] });
+    // Scene 1's card took its place in the order (it never shifted onto scene 2) and was never fetched or opened.
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(['https://flow-content.google/image/k2']);
+    expect(vi.mocked(port.tilePoint).mock.calls.map((c) => c[1])).toEqual(['k2']);
+    expect(await media.get(`${project.id}/scene-01-option-1`)).toBeUndefined();
+    expect(run.status).toBe('finished');
+  });
+
+  it('Skip while the prompt is being typed: Generate is never pressed for it, and the run moves on', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { coordinator, project, port } = await twoScenes(() => ({
+      prepare: vi.fn(async (_tab: number, sceneId: string) => {
+        if (sceneId === 's1') await gate;
+        return { x: 120, y: 620 };
+      }),
+    }));
+    await coordinator.startRun(project.id);
+    await waitFor(() => vi.mocked(port.prepare).mock.calls.length === 1, 'scene 1 being typed');
+    await coordinator.skipCurrent();
+    release();
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 'scene 2 sent');
+    expect(coordinator.getRunState()!.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you' });
+    expect(vi.mocked(port.press).mock.calls.filter((c) => c[1] === 120)).toHaveLength(1); // scene 2's press only
+  });
+
+  it('Skip with nothing live changes nothing', async () => {
+    const { coordinator } = await twoScenes();
+    await coordinator.skipCurrent();
+    expect(coordinator.getRunState()).toBeNull();
+  });
+
+  it('▶ Run on a scene of a video with no run makes just that scene', async () => {
+    const { coordinator, project, port } = await twoScenes();
+    await coordinator.retryScene(project.id, 's2');
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 'scene 2 sent');
+    expect(Object.keys(coordinator.getRunState()!.sceneStates)).toEqual(['s2']);
+    expect(vi.mocked(port.prepare).mock.calls.map((c) => c[1])).toEqual(['s2']);
+  });
+
+  it("Try again on a scene outside this video's finished run adds it to that run", async () => {
+    const { coordinator, project, store } = await twoScenes();
+    await coordinator.retryScene(project.id, 's2');
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 'scene 2 sent');
+    await coordinator.handleFlowEvent({ type: 'refused', sceneId: 's2', message: 'no' });
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'finished');
+    const saved = (await store.getProject(project.id))!;
+    saved.sceneStates = { ...saved.sceneStates, s1: { sceneId: 's1', status: 'failed', message: 'x', pictureIds: [] } };
+    await store.saveProject(saved);
+
+    await coordinator.retryScene(project.id, 's1');
+    const run = coordinator.getRunState()!;
+    expect(run.status).toBe('running');
+    expect(run.sceneStates.s1).toMatchObject({ status: 'pending' });
+    expect(run.sceneStates.s2).toMatchObject({ status: 'refused' });
+  });
+});

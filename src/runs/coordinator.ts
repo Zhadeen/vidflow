@@ -23,6 +23,7 @@ import {
   NOT_THIS_SCENES_PICTURE,
   reduceRun,
   runSummary,
+  SKIPPED_MESSAGE,
   USER_PAUSE_REASON,
   type RunEvent,
   type RunState,
@@ -159,6 +160,10 @@ let unconfirmedAttempt = 0;
 let inDetail = false;
 let matching = false;
 let matchAgain = false;
+/** The scene submitScene is sending now (typing its prompt or pressing Generate), for Skip. */
+let submitting: string | null = null;
+
+export { SKIPPED_MESSAGE };
 
 /** Run `fn` after everything queued before it, so state changes and saves never interleave. */
 function enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -485,6 +490,11 @@ function stillRunning(projectId: string): boolean {
 }
 
 /** True while this run is running or paused: results already in Flow are still collected (nothing new is sent). */
+/** Still waiting to be sent (not skipped meanwhile): Generate is only pressed for such a scene. */
+function stillPending(sceneId: string): boolean {
+  return state?.sceneStates[sceneId]?.status === 'pending';
+}
+
 function stillCollecting(projectId: string): boolean {
   return (state?.status === 'running' || state?.status === 'paused') && state.projectId === projectId;
 }
@@ -560,6 +570,8 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
 }
 
 const isFinished = (c: FlowResultCard) => c.imageUrl !== null && c.progress === null && !c.key.startsWith('pending-');
+/** A skipped submission's place in matching: never a scene id. */
+const SKIPPED_SLOT = 'skipped:';
 const oldestFirst = (cards: FlowResultCard[]) => [...cards].sort((a, b) => b.domIndex - a.domIndex);
 
 /** Flow card keys already saved for a scene, or the hero reference's own tile; never matched to a scene. */
@@ -617,6 +629,15 @@ async function ensureReference(tabId: number, project: Project): Promise<string 
  * pending unless Flow confirmed the start.
  */
 async function submitScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
+  submitting = sceneId;
+  try {
+    return await sendScene(tabId, project, sceneId, prompt);
+  } finally {
+    submitting = null;
+  }
+}
+
+async function sendScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
   const projectId = project.id;
   try {
     if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop'; // stopped meanwhile; scene stays pending
@@ -656,12 +677,14 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     );
     // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
     if (!stillRunning(projectId)) return 'stop';
+    if (!stillPending(sceneId)) return 'next'; // skipped while it was typed: never pressed
     const keysBefore = (await port!.tiles(tabId)).filter(isFinished).map((c) => c.key);
     if (!stillRunning(projectId)) return 'stop';
     // Recorded before the press: if the worker is suspended before Flow's start is confirmed, the next pump looks for
     // this scene's tiles before pressing again (no surplus batch). `submitted` clears it.
     await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
     if (!stillRunning(projectId)) return 'stop';
+    if (!stillPending(sceneId)) return 'next';
     note(project, sceneId, 'Pressing Generate', 'generate');
     await pressIn(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
@@ -721,9 +744,9 @@ async function findUnconfirmedStart(
   const fresh = oldestFirst(await port!.tiles(tabId)).filter(
     (c) => !before.has(c.key) && !claimed.has(c.key) && notReference(state!)(c),
   );
-  const samePromptInFlight = state.inFlight.filter((id) =>
-    verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? ''),
-  ).length;
+  const samePromptInFlight =
+    state.inFlight.filter((id) => verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? '')).length +
+    (state.skippedPrompts ?? []).filter((x) => verifyMatch(u.prompt, x.prompt)).length;
   const owedToOthers = samePromptInFlight * outputsOf(state, project);
   let hits = 0;
   let generating = 0;
@@ -910,10 +933,19 @@ async function matchOnce(): Promise<void> {
         : [];
     });
     if (submissions.length === 0) return;
+    // Skipped submissions keep their place in the order (their tiles never shift onto later scenes); never saved.
+    const skipped: Submission[] = (run.skippedPrompts ?? []).map((x) => ({
+      sceneId: `${SKIPPED_SLOT}${x.seq}`,
+      prompt: x.prompt,
+      seq: x.seq,
+      submittedAt: x.at,
+    }));
     const report = latestReport;
     const cards = report.cards.filter(notReference(run));
     const details = run.detailPrompts ?? {};
-    const matches = matchResults(submissions, cards, claimedKeys(run), outputsOf(run, project), details);
+    const matches = matchResults([...submissions, ...skipped], cards, claimedKeys(run), outputsOf(run, project), details).filter(
+      (m) => !m.sceneId.startsWith(SKIPPED_SLOT),
+    );
     // A report taken while the grid may still be redrawing (just back from a detail page) can't make VidFlow give up.
     const settled = report.at - lastDetailReturn >= SETTLE_MS;
     const unconfirmedNow = new Set(matches.filter((m) => m.kind === 'unconfirmed').map((m) => m.sceneId));
@@ -1119,7 +1151,12 @@ export async function startRun(projectId: string, retrySceneId?: string): Promis
     // Already making this project's pictures: nothing to do (a fresh start would re-send scenes in Flow).
     if (state?.projectId === projectId && state.status === 'running') return;
     let next = initRun(project);
-    if (retrySceneId) next = reduceRun(next, { type: 'retry', sceneId: retrySceneId });
+    if (retrySceneId) {
+      // ▶ Run / Try again with no run of this video: a run of just that scene (spec §19 settled detail 2).
+      const only = next.sceneStates[retrySceneId];
+      if (!only) throw new Error(`VidFlow couldn't find ${retrySceneId} in this project.`);
+      next = reduceRun({ ...next, sceneStates: { [retrySceneId]: only } }, { type: 'retry', sceneId: retrySceneId });
+    }
     await commit(reduceRun(next, { type: 'start' }));
   });
   void pump();
@@ -1142,8 +1179,48 @@ export async function discardFinishedRun(projectId: string): Promise<void> {
 /** Try again on one refused or failed scene: re-queue it in this project's run, or start a run for it. */
 export async function retryScene(projectId: string, sceneId: string): Promise<void> {
   await ready;
-  if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) return dispatch({ type: 'retry', sceneId });
+  if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) {
+    if (!(sceneId in state.sceneStates)) {
+      // Not one of this run's scenes (▶ Run on a scene the run left out): it joins the run as it is saved.
+      const project = await getProject(projectId);
+      const scene = project?.scenes.some((s) => s.id === sceneId) ? project.sceneStates[sceneId] : null;
+      if (scene === null) throw new Error(`VidFlow couldn't find ${sceneId} in this project.`);
+      await enqueue(async () => {
+        if (!state || state.projectId !== projectId || sceneId in state.sceneStates) return;
+        const joined = scene && scene.status !== 'submitted' ? { ...scene } : { sceneId, status: 'pending' as const, pictureIds: scene?.pictureIds ?? [] };
+        const next = { ...state, sceneStates: { ...state.sceneStates, [sceneId]: joined } };
+        // A finished run carries on with it; a pending scene that joins needs the run going too.
+        await commit(joined.status === 'pending' && next.status === 'finished' ? { ...next, status: 'running' } : next);
+      });
+    }
+    return dispatch({ type: 'retry', sceneId });
+  }
   return startRun(projectId, sceneId); // refused while a model sheet is being made
+}
+
+/**
+ * Skip (spec §19): the scene VidFlow is working on now ends as failed "Skipped by you" and the run moves on. "Now" is
+ * the scene the step names (what the panel shows), else the one being sent, else the newest in Flow, else the next to
+ * send. If it was in Flow already, its pictures are never saved (see the run's skippedPrompts). Nothing live: no-op.
+ */
+export async function skipCurrent(): Promise<void> {
+  await ready;
+  if (!state || !isLive(state) || isHeroSheetRun(state)) return;
+  const step = ((await chrome.storage.local.get(STEP_KEY))[STEP_KEY] ?? null) as Step | null;
+  const project = await getProject(state.projectId);
+  await enqueue(async () => {
+    const run = state;
+    if (!run || !isLive(run) || isHeroSheetRun(run)) return;
+    const open = (id: string | null | undefined): id is string =>
+      !!id && (run.sceneStates[id]?.status === 'pending' || run.sceneStates[id]?.status === 'submitted');
+    const newest = [...run.inFlight].sort((a, b) => (run.sceneStates[b]?.submission?.seq ?? 0) - (run.sceneStates[a]?.submission?.seq ?? 0))[0];
+    const next = (project?.scenes ?? []).map((s) => s.id).find((id) => run.sceneStates[id]?.status === 'pending');
+    const target = [step?.projectId === run.projectId ? step.sceneId : null, submitting, newest, next].find(open);
+    if (!target) return;
+    await commit(reduceRun(run, { type: 'skip', sceneId: target }));
+  });
+  void pump();
+  void processTiles();
 }
 
 /**

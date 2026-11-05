@@ -14,6 +14,7 @@ import {
   RUN_START,
   RUN_STATE,
   RUN_STOP,
+  RUN_SKIP,
   RUN_FORGET,
   RUN_CHOOSE,
   RUN_HERO_SHEET,
@@ -48,6 +49,7 @@ import {
   retryScene,
   setFlowPort,
   setStartChecks,
+  skipCurrent,
   startHeroSheetRun,
   startRun,
   stopRun,
@@ -72,6 +74,9 @@ async function answerStudio(message: StudioRequest): Promise<RunReply> {
         break;
       case RUN_STOP:
         await stopRun();
+        break;
+      case RUN_SKIP:
+        await skipCurrent();
         break;
       case RUN_FORGET:
         await discardFinishedRun(message.projectId);
@@ -122,6 +127,7 @@ const STUDIO_TYPES = new Set<string>([
   RUN_RESUME,
   RUN_RETRY,
   RUN_STOP,
+  RUN_SKIP,
   RUN_FORGET,
   RUN_CHOOSE,
   RUN_HERO_SHEET,
