@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { buildClaudePrompt } from '../../src/prompts/claude';
+import { buildClaudePrompt, buildRapidBeatPrompt } from '../../src/prompts/claude';
 import { parseSceneFile } from '../../src/scenes/parse';
 
 describe('buildClaudePrompt', () => {
@@ -29,5 +29,29 @@ describe('buildClaudePrompt', () => {
     const { scenes, issues } = parseSceneFile(reply);
     expect(scenes).toHaveLength(4);
     expect(issues).toEqual([]);
+  });
+});
+
+describe('buildRapidBeatPrompt', () => {
+  const script = 'One two three four five six.';
+  const out = buildRapidBeatPrompt(script);
+
+  it('asks for ~6-word beats and the single Prompt header', () => {
+    expect(out).toContain('every 6 words');
+    expect(out).toContain('Slide,Timecode,Sentence,Concept,Text Overlay,Prompt');
+    expect(out).toContain('the hero protagonist');
+  });
+
+  it('appends the script last', () => {
+    expect(out.endsWith(`SCRIPT:\n${script}`)).toBe(true);
+  });
+
+  it('its CSV shape parses, with a default motion prompt', () => {
+    const csv = 'Slide,Timecode,Sentence,Concept,Text Overlay,Prompt\n"Slide 01","00:00 - 00:03","One two three four five six.","Counting","COUNT","The hero protagonist counting on fingers, close-up."';
+    const { scenes, issues } = parseSceneFile(csv);
+    expect(issues).toEqual([]);
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0].imagePrompt).toContain('hero protagonist');
+    expect(scenes[0].motionPromptIsDefault).toBe(true);
   });
 });

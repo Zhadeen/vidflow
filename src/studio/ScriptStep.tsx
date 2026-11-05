@@ -1,6 +1,6 @@
 import { useId, useState, type DragEvent } from 'react';
 import type { CharacterSpec } from '../prompts/build';
-import { buildClaudePrompt } from '../prompts/claude';
+import { buildClaudePrompt, buildRapidBeatPrompt } from '../prompts/claude';
 import { RESEARCH_PROMPTS, buildResearchPrompt, type ResearchPromptId } from '../prompts/research';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import type { AspectRatio, Project } from '../store/projects';
@@ -46,9 +46,9 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
   const issues = draft.preview?.issues ?? [];
   const readCount = draft.preview ? draft.preview.scenes.length : null;
 
-  async function copyPrompt() {
+  async function copyPrompt(build: (script: string) => string = buildClaudePrompt) {
     try {
-      await navigator.clipboard.writeText(buildClaudePrompt(script));
+      await navigator.clipboard.writeText(build(script));
       setCopy({ kind: 'copied' });
     } catch {
       setCopy({ kind: 'failed' });
@@ -140,6 +140,9 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
               <Button onClick={() => void copyPrompt()} disabled={!script.trim()}>
                 Copy Claude Prompt
               </Button>
+              <Button onClick={() => void copyPrompt(buildRapidBeatPrompt)} disabled={!script.trim()}>
+                Copy rapid-beat prompt
+              </Button>
               <p className="vf-hint" style={{ margin: 0 }} aria-live="polite">
                 {copy.kind === 'copied'
                   ? "Copied. Now paste it into claude.ai, then paste Claude's reply in the box below."
@@ -147,7 +150,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
                     ? "Chrome didn't let VidFlow copy. Click anywhere on this page, then press Copy Claude Prompt again."
                     : !script.trim()
                       ? 'Paste your script first.'
-                      : 'Copies the instructions and your script, ready for claude.ai.'}
+                      : 'Copies the instructions and your script, ready for claude.ai. Rapid-beat makes a new picture about every 6 words.'}
               </p>
             </div>
           </section>
