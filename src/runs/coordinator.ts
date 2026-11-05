@@ -46,7 +46,8 @@ const RUN_KEY = 'vidflow.run';
 
 /** The last underlying error behind a "couldn't send" failure, for diagnosis (shown by the e2e build's status). */
 let lastSendError: { sceneId: string; error: string; at: number } | null = null;
-export const getLastSendError = () => lastSendError;
+export const getLastSendError = async () =>
+  lastSendError ?? ((await chrome.storage.local.get('vidflow.lastSendError'))['vidflow.lastSendError'] as typeof lastSendError) ?? null;
 const WINDOW_KEY = 'vidflow.flowWindow';
 const SESSION_MARKER = 'vidflow.sessionAlive';
 const RESUME_ALARM = 'vidflow-resume';
@@ -388,6 +389,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     }
     lastSendError = { sceneId, error: err instanceof Error ? err.message : String(err), at: Date.now() };
     console.warn('[VidFlow] send failed', lastSendError);
+    void chrome.storage.local.set({ 'vidflow.lastSendError': lastSendError });
     await dispatch({
       type: 'failed',
       sceneId,

@@ -84,7 +84,7 @@ async function status(m: E2eStatus) {
       pictureIds: st?.pictureIds ?? [],
     };
   });
-  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, lastSendError: getLastSendError() };
+  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, lastSendError: await getLastSendError() };
 }
 
 async function picture(m: E2ePicture) {
