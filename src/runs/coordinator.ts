@@ -399,7 +399,12 @@ async function commit(next: RunState): Promise<void> {
     if (isHeroSheetRun(next)) {
       const sheet = next.sceneStates[HERO_SHEET_ID];
       if (sheet) {
-        project.heroSheet = { status: sheet.status, pictureIds: sheet.pictureIds, ...(sheet.message ? { message: sheet.message } : {}) };
+        project.heroSheet = {
+          status: sheet.status,
+          pictureIds: sheet.pictureIds,
+          ...(sheet.message ? { message: sheet.message } : {}),
+          ...(next.sheet ? { aspect: next.sheet.aspect } : {}),
+        };
       }
     } else project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
     await saveProject(project);

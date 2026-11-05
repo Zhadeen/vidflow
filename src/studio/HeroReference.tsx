@@ -18,8 +18,24 @@ const NAME = 'hero-reference';
  */
 export async function setHeroReference(projectId: string, file: Blob): Promise<{ ok: true } | { ok: false; message: string }> {
   if (!TYPES.includes(file.type) || file.size > REFERENCE_MAX_BYTES) return { ok: false, message: REJECTED };
+  if (!(await decodes(file))) return { ok: false, message: REJECTED };
   await getMediaStore().put(projectId, NAME, file);
   return { ok: true };
+}
+
+/**
+ * A file named .png may not be a picture at all: decode it once and let the decoded copy go. Where the browser has no
+ * createImageBitmap (jsdom), the type and size checks are all there is.
+ */
+async function decodes(file: Blob): Promise<boolean> {
+  if (typeof globalThis.createImageBitmap !== 'function') return true;
+  try {
+    const bitmap = await globalThis.createImageBitmap(file);
+    bitmap.close();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Deletes the reference picture (and only that file). */
@@ -215,8 +231,15 @@ function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProp
     run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused') ? run : null;
   const liveSheet = live?.sceneStates[HERO_SHEET_ID];
   const sheet: HeroSheet | undefined = liveSheet
-    ? { status: liveSheet.status, pictureIds: liveSheet.pictureIds, ...(liveSheet.message ? { message: liveSheet.message } : {}) }
+    ? {
+        status: liveSheet.status,
+        pictureIds: liveSheet.pictureIds,
+        ...(liveSheet.message ? { message: liveSheet.message } : {}),
+        ...(live?.sheet ? { aspect: live.sheet.aspect } : {}),
+      }
     : project.heroSheet;
+  // The sheet's pictures in the shape they were drawn in (older saved sheets didn't keep it: the project's).
+  const frameAspect = sheet?.aspect ?? project.aspect;
   const working = !!live && (sheet?.status === 'pending' || sheet?.status === 'submitted');
   const described = !!project.character?.description.trim();
   const pictures = sheet?.status === 'done' ? sheet.pictureIds : [];
@@ -293,7 +316,7 @@ function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProp
         <div className="vf-hero-sheet-pictures">
           {pictures.map((id, i) => (
             <figure key={id} className="vf-hero-sheet-picture" aria-labelledby={`${ids}-pic-${i}`}>
-              <span className="vf-hero-sheet-frame" style={{ aspectRatio: aspectCss(project.aspect) }}>
+              <span className="vf-hero-sheet-frame" style={{ aspectRatio: aspectCss(frameAspect) }}>
                 {urls[id] && <img src={urls[id]} alt={`Model sheet picture ${i + 1} of ${pictures.length}`} />}
               </span>
               <figcaption>

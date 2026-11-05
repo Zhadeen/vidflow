@@ -200,6 +200,7 @@ describe('the hero model sheet in Flow', () => {
     expect(saved.heroSheet).toEqual({
       status: 'done',
       pictureIds: [`${project.id}/hero-sheet-option-1`, `${project.id}/hero-sheet-option-2`],
+      aspect: '9:16',
     });
     expect(await (await media.get(`${project.id}/hero-sheet-option-1`))!.text()).toBe('png:https://flow-content.google/image/k1');
     // Never in the scenes' states (grid, progress, export).
@@ -259,13 +260,14 @@ describe('the hero model sheet in Flow', () => {
     await coordinator.handleTiles([refusedTile]);
     await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the refusal');
     await coordinator.settledForTests();
-    expect((await store.getProject(project.id))!.heroSheet).toEqual({ status: 'refused', pictureIds: [], message: 'Might violate policy' });
+    expect((await store.getProject(project.id))!.heroSheet).toEqual({ status: 'refused', pictureIds: [], message: 'Might violate policy', aspect: '9:16' });
 
     chromeMock.tab.url = 'https://flow.google.com/';
     await coordinator.startHeroSheetRun(project.id);
     await waitFor(() => vi.mocked(port.prepare).mock.calls.length === 2, 'the sheet sent again');
     expect(port.findNewProject).toHaveBeenCalledTimes(2);
     await waitFor(() => coordinator.getRunState()?.sceneStates['hero-sheet']?.status === 'submitted');
+    await coordinator.settledForTests(); // the run state is set before the project is saved
     expect((await store.getProject(project.id))!.heroSheet?.status).toBe('submitted');
   });
 
@@ -368,6 +370,17 @@ describe('model sheet: fix round 1', () => {
     await coordinator.handleTiles([card('k2', 0), card('k1', 1)]);
     await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the sheet finished');
     expect(coordinator.getRunState()!.sceneStates['hero-sheet']?.pictureIds).toHaveLength(2);
+    // The saved sheet keeps the shape it was drawn in, so the studio frames its pictures in it.
+    await coordinator.settledForTests();
+    expect((await store.getProject(project.id))!.heroSheet).toMatchObject({ status: 'done', aspect: '9:16' });
+  });
+
+  it('keeps the shape on the saved sheet from the moment it starts', async () => {
+    const { coordinator, project, fakePort, store } = await withHero(2);
+    stubFetch();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startHeroSheetRun(project.id);
+    expect((await store.getProject(project.id))!.heroSheet?.aspect).toBe('9:16');
   });
 
   it('a sheet run restored after a restart sends the model sheet prompt, with no reference', async () => {

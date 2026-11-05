@@ -49,6 +49,15 @@ describe('side panel: before starting', () => {
     expect(await screen.findByRole('button', { name: 'Resume' })).toBeTruthy();
   });
 
+  it('a paused run with nothing left to make is not live: the panel opens on the newest video', async () => {
+    stubChrome();
+    const finished = await seed('Paused Story', 2);
+    await seed('Newest Story', 2);
+    // Paused after every scene got its pictures: nothing still to make, so no run blocks and none is followed.
+    render(<Panel client={fakeBackground({ ...runningState(finished, 2), status: 'paused' }).client()} />);
+    await waitFor(async () => expect((await video()).selectedOptions[0]?.textContent).toBe('Newest Story'));
+  });
+
   it('paste shows "✓ 6 scenes found" and applies only on Use these scenes', async () => {
     stubChrome();
     const p = await seed('Phone Bill Story', 0);

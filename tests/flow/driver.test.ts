@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkCanStart, createFlowDriver, tileContainer, tileImage, type FlowPageState } from '../../src/flow/driver';
-import { FlowBlockedError } from '../../src/flow/messages';
+import { FlowBlockedError, STRAY_INGREDIENT_MESSAGE } from '../../src/flow/messages';
 import { SEL } from '../../src/flow/selectors';
 
 const fixture = (name: string) => readFileSync(resolve(__dirname, '../fixtures/flow', name), 'utf8');
@@ -459,6 +459,8 @@ function fakePicker(
     assetsLoadMs?: number;
     /** A brand-new Flow project: the picker shows "No assets found." and has no asset list until something is uploaded. */
     emptyProject?: boolean;
+    /** Flow clicks its file input again once the upload is under way (after the file was set, before the picker closes). */
+    clicksAgain?: boolean;
   } = {},
 ) {
   vi.stubGlobal('DataTransfer', FakeDataTransfer);
@@ -529,6 +531,7 @@ function fakePicker(
           assets.push(file.name);
           uploading.add(file.name);
           render();
+          if (opts.clicksAgain) setTimeout(() => input!.click(), 0);
           if (opts.neverFinishes) return;
           setTimeout(() => {
             uploading.delete(file.name);
@@ -675,6 +678,57 @@ describe('FlowDriver hero reference', () => {
     fakePicker({ addsChip: false });
     await d.uploadReference(png());
     await expect(d.attachReference(REFERENCE)).rejects.toBeInstanceOf(FlowBlockedError);
+  });
+
+  it('keeps the file window shut until the picker has closed, then lets file inputs be', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker({ clicksAgain: true, uploadMs: 30 });
+    await driver().uploadReference(png());
+    expect(picker.fileClicks).toEqual([false, false]); // the late click was cancelled too
+    // Afterwards the page's own file inputs work again.
+    const later = document.querySelector<HTMLInputElement>('body > input[type="file"]')!;
+    later.click();
+    expect(picker.fileClicks).toEqual([false, false, true]);
+  });
+
+  it('lets file inputs be after an upload that fails', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker({ neverFinishes: true });
+    await expect(driver().uploadReference(png())).rejects.toBeInstanceOf(FlowBlockedError);
+    document.querySelector<HTMLInputElement>('body > input[type="file"]')!.click();
+    expect(picker.fileClicks).toEqual([false, true]);
+  });
+
+  it('clears an Ingredient left in the bar before typing a prompt that uses no reference', async () => {
+    load('prompt-bar.html');
+    fakeEditor();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Ingredient"></button>');
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button aria-label="Clear prompt">close</button>');
+    const cleared = vi.fn(() => document.querySelectorAll(SEL.ingredientChip).forEach((c) => c.remove()));
+    $(SEL.clearPrompt).addEventListener('click', cleared);
+    await expect(driver().prepareSubmit('A stickman waves')).resolves.toEqual({ x: 5, y: 5 });
+    expect(cleared).toHaveBeenCalledTimes(1);
+    expect(document.querySelectorAll(SEL.ingredientChip)).toHaveLength(0);
+    expect($(SEL.promptBox).textContent).toBe('A stickman waves');
+  });
+
+  it("won't answer ready for a prompt with an unmentioned Ingredient it can't clear", async () => {
+    load('prompt-bar.html');
+    fakeEditor();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Ingredient"></button>');
+    // No Clear prompt button.
+    let err = await driver().prepareSubmit('A stickman waves').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(STRAY_INGREDIENT_MESSAGE);
+    // A Clear prompt that leaves the chip.
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button aria-label="Clear prompt">close</button>');
+    err = await driver().prepareSubmit('A stickman waves').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(STRAY_INGREDIENT_MESSAGE);
   });
 
   it('never answers ready for a prompt that needs the reference when the chip is gone', async () => {

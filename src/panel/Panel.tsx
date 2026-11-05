@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RunReply } from '../flow/messages';
-import { isHeroSheetRun, type RunState } from '../runs/run';
+import { isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import { createProject, getProject, listProjects, type Project } from '../store/projects';
 import { runPhase } from '../studio/progress';
 import { applyPatch, saveEdits } from '../studio/projectEdits';
@@ -17,8 +17,6 @@ const LOAD_FAILED = "VidFlow couldn't load your videos. Close this panel and ope
 const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
 const REQUEST_FAILED = 'Something went wrong \u2014 try again.';
 const CREATE_FAILED = "VidFlow couldn't make a new video. Check Chrome has free disk space, then try again.";
-
-const isLive = (run: RunState | null) => !!run && (run.status === 'running' || run.status === 'paused');
 
 /**
  * VidFlow beside Flow (Chrome's side panel): pick a video, paste, choose, start; then follow the run. It shows the live

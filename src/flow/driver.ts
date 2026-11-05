@@ -1,5 +1,5 @@
 import type { AspectRatio } from '../store/projects';
-import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE } from './messages';
+import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, STRAY_INGREDIENT_MESSAGE } from './messages';
 import {
   ASPECT_ICON,
   LIMIT_PATTERN,
@@ -363,22 +363,25 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     await openPicker();
     // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
     await until(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS, 'empty').catch(() => undefined);
-    if (!findAsset(file.name)) {
-      const upload = overlayButton('Upload media');
-      if (!upload) throw blocked();
-      const before = new Set(doc.querySelectorAll(SEL.fileInput));
-      // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file
-      // window: a cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the
-      // page's own events, so this works from the content script's isolated world. The input it clicked is the one
-      // Flow listens to; another file input left in the page is never used.
-      let clicked: HTMLInputElement | null = null;
-      const noFileWindow = (e: Event) => {
-        if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'file') return;
-        e.preventDefault();
-        clicked = e.target;
-      };
-      doc.addEventListener('click', noFileWindow, true);
-      try {
+    // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file window: a
+    // cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the page's own
+    // events, so this works from the content script's isolated world. The input it clicked is the one Flow listens to;
+    // another file input left in the page is never used. Flow may click again while the upload is under way, so the
+    // guard stays until the picker has closed (or the upload gave up).
+    let clicked: HTMLInputElement | null = null;
+    const noFileWindow = (e: Event) => {
+      if (!(e.target instanceof HTMLInputElement) || e.target.type !== 'file') return;
+      e.preventDefault();
+      clicked = e.target;
+    };
+    let guarded = false;
+    try {
+      if (!findAsset(file.name)) {
+        const upload = overlayButton('Upload media');
+        if (!upload) throw blocked();
+        const before = new Set(doc.querySelectorAll(SEL.fileInput));
+        doc.addEventListener('click', noFileWindow, true);
+        guarded = true;
         upload.click();
         const input = await untilOrBlocked(
           () => clicked ?? [...doc.querySelectorAll<HTMLInputElement>(SEL.fileInput)].filter((i) => !before.has(i)).pop(),
@@ -388,12 +391,12 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
         transfer.items.add(file);
         input.files = transfer.files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
-      } finally {
-        doc.removeEventListener('click', noFileWindow, true);
       }
+      await untilOrBlocked(() => readyAsset(file.name), opts.timeoutMs ?? UPLOAD_TIMEOUT_MS);
+      await closePicker();
+    } finally {
+      if (guarded) doc.removeEventListener('click', noFileWindow, true);
     }
-    await untilOrBlocked(() => readyAsset(file.name), opts.timeoutMs ?? UPLOAD_TIMEOUT_MS);
-    await closePicker();
     try {
       return await until(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS, 'no tile');
     } catch {
@@ -511,6 +514,14 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     async prepareSubmit(prompt, submitOpts = {}) {
       const box = q(SEL.promptBox);
       if (!box) throw new Error("VidFlow can't find Flow's prompt box.");
+      // A prompt must never carry an Ingredient it doesn't mention: one left in the bar goes first (Clear prompt also
+      // empties the text, so this comes before typing). If it can't go, the run pauses.
+      if (!submitOpts.reference && chips() > 0) {
+        const clear = q(SEL.clearPrompt);
+        if (!clear) throw blocked(STRAY_INGREDIENT_MESSAGE);
+        clear.click();
+        await untilOrBlocked(() => chips() === 0, opts.timeoutMs ?? PICKER_TIMEOUT_MS, STRAY_INGREDIENT_MESSAGE);
+      }
       box.focus();
       // Spike S5: execCommand insertText is what Flow's editor accepts from the DOM.
       doc.execCommand('selectAll');

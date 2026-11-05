@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { registerE2e, senderAllowed } from '../../src/e2e/background';
+import { E2E_START, handleE2e, registerE2e, senderAllowed } from '../../src/e2e/background';
 import { installPageBridge } from '../../src/e2e/page-bridge';
 
 const good = { id: 'ext', tab: { id: 3 }, url: 'https://flow.google.com/project/x' };
@@ -47,5 +47,27 @@ describe('e2e page bridge', () => {
     expect(post).toHaveBeenCalledWith({ type: 'vidflow-e2e-result', action: 'status', ok: true, data: { n: 1 } }, '*');
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({ type: 'e2e/status' });
+  });
+});
+
+describe('e2e start', () => {
+  it('only reads a hero reference given as a data:image/ URL', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      for (const url of ['https://evil.example/hero.png', 'file:///etc/passwd', 'data:text/html,<b>x</b>', 'blob:https://x/1']) {
+        const reply = await handleE2e({
+          type: E2E_START,
+          name: 'Story',
+          csv: 'Slide,Timecode,Sentence\n1,00:00 - 00:04,Hi.',
+          heroDescription: 'a tall stickman',
+          heroReferenceDataUrl: url,
+        });
+        expect(reply).toEqual({ ok: false, error: 'heroReferenceDataUrl must be a data:image/ URL.' });
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

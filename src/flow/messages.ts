@@ -21,6 +21,10 @@ export const FLOW_UPLOAD_REFERENCE = 'flow/upload-reference';
 export const REFERENCE_ATTACH_MESSAGE =
   "VidFlow couldn't attach the hero reference in Flow. Check the Flow window, then press Resume.";
 
+/** Said when a picture is left in Flow's prompt bar for a prompt that doesn't use one, and VidFlow can't take it out. */
+export const STRAY_INGREDIENT_MESSAGE =
+  "Flow's prompt bar has a picture in it that VidFlow couldn't take out. Remove it in the Flow window, then press Resume.";
+
 export interface Point {
   x: number;
   y: number;

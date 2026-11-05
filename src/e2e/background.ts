@@ -69,6 +69,10 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
 async function start(m: E2eStart) {
   if (typeof m.name !== 'string' || !m.name.trim() || typeof m.csv !== 'string') throw new Error('start needs a name and a csv string.');
   if (m.style !== undefined && m.style !== 'custom' && !(m.style in STYLE_PRESETS)) throw new Error(`Unknown style "${m.style}".`);
+  // Only an inline picture: fetch() would otherwise read any URL the caller names.
+  if (m.heroReferenceDataUrl !== undefined && (typeof m.heroReferenceDataUrl !== 'string' || !m.heroReferenceDataUrl.startsWith('data:image/'))) {
+    throw new Error('heroReferenceDataUrl must be a data:image/ URL.');
+  }
   const { scenes, issues } = parseSceneFile(m.csv);
   if (scenes.length === 0) throw new Error(`No scenes found. Issues: ${JSON.stringify(issues)}`);
   const project = await createProject(m.name);

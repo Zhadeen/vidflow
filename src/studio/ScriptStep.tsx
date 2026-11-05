@@ -74,8 +74,11 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
   }
 
   const character = project.character;
-  /** The hero from the latest description and reference; none when both are empty. */
-  const setHero = (description: string, referenceMediaId: string | undefined = character?.referenceMediaId) =>
+  /**
+   * The hero from the latest description and reference; none when both are empty. Both are always given: undefined
+   * means the reference was removed (a default would quietly bring the old one back).
+   */
+  const setHero = (description: string, referenceMediaId: string | undefined) =>
     onChange({
       character:
         description.trim() || referenceMediaId
@@ -83,7 +86,8 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
           : null,
     });
 
-  // Flow is drawing this video's model sheet with the shape and outputs it was asked for: those wait until it's done.
+  // Flow is drawing this video's model sheet with the shape, outputs and hero it was asked for: those wait until it's
+  // done, so a paused sheet can't resume with a different prompt.
   const sheetRun = sheet?.run;
   const sheetLive =
     !!sheetRun && isHeroSheetRun(sheetRun) && sheetRun.projectId === project.id && (sheetRun.status === 'running' || sheetRun.status === 'paused');
@@ -274,17 +278,17 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
               id={`${ids}-hero`}
               className="vf-input"
               rows={3}
-              disabled={locked}
+              disabled={locked || sheetLive}
               value={character?.description ?? ''}
               placeholder="A tall stick figure with a round head, messy hair and a red scarf."
-              onChange={(e) => setHero(e.target.value)}
+              onChange={(e) => setHero(e.target.value, character?.referenceMediaId)}
             />
             <p className="vf-hint" style={{ margin: 'var(--vf-space-2) 0 0' }}>
               Kept the same in every scene.
             </p>
             <HeroReference
               project={project}
-              disabled={locked}
+              disabled={locked || sheetLive}
               sheet={sheet}
               onChange={(id) => setHero(character?.description ?? '', id)}
             />

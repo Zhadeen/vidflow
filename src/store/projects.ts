@@ -27,6 +27,8 @@ export interface HeroSheet {
   status: SceneStatus;
   pictureIds: string[];
   message?: string;
+  /** The shape the sheet was drawn in (absent in sheets saved before it was kept: use the project's). */
+  aspect?: AspectRatio;
 }
 export interface Project {
   id: string;

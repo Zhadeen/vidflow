@@ -326,3 +326,126 @@ describe('the hero model sheet: fix round 1', () => {
     expect(group('Pictures per scene').disabled).toBe(false);
   });
 });
+
+describe('Plan 2 final review fixes', () => {
+  const sheetRun = (projectId: string, status: RunState['status'], sheet?: RunState['sheet']): RunState => ({
+    projectId,
+    kind: 'hero-sheet',
+    status,
+    ...(sheet ? { sheet } : {}),
+    inFlight: [],
+    sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'pending', pictureIds: [] } },
+  });
+
+  /** The Script step as the studio shows it: each patch shows at once and is saved after the earlier saves. */
+  function Studio({ start, sheet }: { start: Project; sheet?: { run: RunState | null } }) {
+    const [cur, setCur] = useState(start);
+    const save = queued(start);
+    return (
+      <ScriptStep
+        project={cur}
+        locked={false}
+        hasPictures={false}
+        onChange={(patch) => {
+          setCur((c) => applyPatch(c, patch));
+          save(patch);
+        }}
+        onContinue={() => undefined}
+        {...(sheet ? { sheet: { run: sheet.run, client: sheetClient(), onRunState: () => undefined } } : {})}
+      />
+    );
+  }
+
+  it('Remove in the Script step removes the reference: saved, shown and stored', async () => {
+    const p = await createProject('Story');
+    p.character = { description: 'a tall stickman' };
+    await saveProject(p);
+    render(<Studio start={p} />);
+    fireEvent.change(screen.getByLabelText('Hero reference picture file'), { target: { files: [png()] } });
+    await screen.findByRole('img', { name: 'Hero reference picture' });
+    await waitFor(async () =>
+      expect((await getProject(p.id))!.character).toEqual({ description: 'a tall stickman', referenceMediaId: `${p.id}/hero-reference` }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.queryByRole('img', { name: 'Hero reference picture' })).toBeNull());
+    await waitFor(async () => expect((await getProject(p.id))!.character).toEqual({ description: 'a tall stickman' }));
+    expect(await store.get(`${p.id}/hero-reference`)).toBeUndefined();
+    expect(screen.getByRole('button', { name: 'Add a reference picture' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
+
+  it("the hero's description and reference wait while this video's model sheet is running or paused", async () => {
+    const p = await createProject('Story');
+    p.character = { description: 'a tall stickman', referenceMediaId: `${p.id}/hero-reference` };
+    await store.put(p.id, 'hero-reference', new Blob(['x'], { type: 'image/png' }));
+    await saveProject(p);
+    const hero = () => screen.getByRole('textbox', { name: /The hero/ }) as HTMLTextAreaElement;
+    const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
+    for (const status of ['running', 'paused'] as const) {
+      const { unmount } = render(<Studio start={p} sheet={{ run: sheetRun(p.id, status) }} />);
+      expect(hero().disabled).toBe(true);
+      expect(button('Replace picture').disabled).toBe(true);
+      expect(button('Remove').disabled).toBe(true);
+      unmount();
+    }
+    // Another video's sheet, or this one's finished sheet, leaves them alone.
+    for (const run of [sheetRun('other', 'running'), sheetRun(p.id, 'finished')]) {
+      const { unmount } = render(<Studio start={p} sheet={{ run }} />);
+      expect(hero().disabled).toBe(false);
+      expect(button('Replace picture').disabled).toBe(false);
+      expect(button('Remove').disabled).toBe(false);
+      unmount();
+    }
+  });
+
+  it("a file that says it's a PNG but isn't a picture is turned away", async () => {
+    const p = await createProject('Story');
+    const decode = vi.fn(async () => {
+      throw new Error('The source image could not be decoded.');
+    });
+    vi.stubGlobal('createImageBitmap', decode);
+    try {
+      const fake = new Blob(['not a picture'], { type: 'image/png' });
+      expect(await setHeroReference(p.id, fake)).toEqual({ ok: false, message: 'Use a PNG, JPEG or WebP picture under 10 MB.' });
+      expect(decode).toHaveBeenCalledTimes(1);
+      expect(await store.get(`${p.id}/hero-reference`)).toBeUndefined();
+      // A picture that decodes is kept, and its decoded copy is let go.
+      const close = vi.fn();
+      vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close })));
+      expect(await setHeroReference(p.id, png())).toEqual({ ok: true });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(await store.get(`${p.id}/hero-reference`)).toBeDefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows the sheet pictures in the shape the sheet was made in, falling back to the project shape', async () => {
+    const p = await createProject('Story');
+    p.aspect = '16:9';
+    p.character = { description: 'a tall stickman' };
+    const one = await store.put(p.id, 'hero-sheet-option-1', new Blob(['1'], { type: 'image/png' }));
+    p.heroSheet = { status: 'done', pictureIds: [one], aspect: '9:16' };
+    await saveProject(p);
+    const frame = () => document.querySelector('.vf-hero-sheet-frame') as HTMLElement;
+    const { unmount } = render(<SheetHost start={p} client={sheetClient()} />);
+    expect(frame().style.aspectRatio).toBe('9 / 16');
+    unmount();
+    // Saved before the shape was kept: the project's.
+    render(<SheetHost start={{ ...p, heroSheet: { status: 'done', pictureIds: [one] } }} client={sheetClient()} />);
+    expect(frame().style.aspectRatio).toBe('16 / 9');
+  });
+
+  it("a live sheet's pictures use the run's shape", async () => {
+    const p = await createProject('Story');
+    p.aspect = '16:9';
+    p.character = { description: 'a tall stickman' };
+    await saveProject(p);
+    const run: RunState = {
+      ...sheetRun(p.id, 'paused', { outputs: 1, aspect: '1:1' }),
+      sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'done', pictureIds: ['x/hero-sheet-option-1'] } },
+    };
+    render(<SheetHost start={p} client={sheetClient()} run={run} />);
+    expect((document.querySelector('.vf-hero-sheet-frame') as HTMLElement).style.aspectRatio).toBe('1 / 1');
+  });
+});
