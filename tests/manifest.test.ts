@@ -18,7 +18,7 @@ describe('manifest', () => {
 
   it('asks for the needed permissions and not debugger or cookies', () => {
     expect(manifest.permissions).toEqual(
-      expect.arrayContaining(['storage', 'unlimitedStorage', 'downloads', 'notifications', 'power', 'tabs']),
+      expect.arrayContaining(['storage', 'unlimitedStorage', 'downloads', 'notifications', 'power', 'tabs', 'alarms']),
     );
     expect(manifest.permissions).not.toContain('debugger');
     expect(manifest.permissions).not.toContain('cookies');

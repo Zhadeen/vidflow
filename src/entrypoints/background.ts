@@ -1,4 +1,8 @@
+import { registerCoordinator } from '../runs/coordinator';
+
 export default defineBackground(() => {
+  registerCoordinator();
+
   const studioUrl = browser.runtime.getURL('/studio.html');
 
   browser.action.onClicked.addListener(async () => {

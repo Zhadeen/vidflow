@@ -3,7 +3,7 @@ import { defineConfig } from 'wxt';
 export const manifest = {
   name: 'VidFlow',
   description: 'Makes stickman videos by driving Google Flow.',
-  permissions: ['storage', 'unlimitedStorage', 'downloads', 'notifications', 'power', 'tabs'],
+  permissions: ['storage', 'unlimitedStorage', 'downloads', 'notifications', 'power', 'tabs', 'alarms'],
   host_permissions: [
     'https://flow.google.com/*',
     'https://labs.google/*',
