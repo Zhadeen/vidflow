@@ -34,8 +34,12 @@ const defaultDeps: PortDeps = {
 
 const HELPER_ATTEMPTS = 20;
 const HELPER_RETRY_MS = 1_000;
+// Also retried: Flow reloads its page right after a new project opens, closing a request's channel mid-way.
+// Every request sent through ask() only reads or types; the Generate press is done by the background, never here.
 const helperMissing = (err: unknown) =>
-  /receiving end does not exist|could not establish connection/i.test(err instanceof Error ? err.message : String(err));
+  /receiving end does not exist|could not establish connection|message channel closed/i.test(
+    err instanceof Error ? err.message : String(err),
+  );
 
 /**
  * The coordinator's FlowPort. The Flow helper (content script) does the DOM work and answers with coordinates; the

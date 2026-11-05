@@ -52,6 +52,16 @@ describe('Flow port', () => {
     await expect(port.prepare(7, 's1', 'p')).rejects.toThrow(/Generate/);
   });
 
+  it('asks again when the Flow page reloads mid-request (channel closed)', async () => {
+    // Live Flow (5 Nov 2026): right after a new project opens, Flow reloads and the first prepare loses its channel.
+    const closed = new Error(
+      'A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received',
+    );
+    const { send, port } = setup([closed, { kind: 'ready', x: 1, y: 2 }]);
+    expect(await port.prepare(7, 's1', 'p')).toEqual({ x: 1, y: 2 });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it('waits for the Flow helper to load in a new tab', async () => {
     const { send, port } = setup([notThere(), notThere(), { kind: 'ready', x: 1, y: 2 }]);
     expect(await port.prepare(7, 's1', 'p')).toEqual({ x: 1, y: 2 });
