@@ -6,6 +6,7 @@ import type { Scene } from '../../src/scenes/types';
 import { memoryMediaStore } from '../../src/store/media';
 import { createProject, deleteProject, listProjects, saveProject, setMediaStore, type Project } from '../../src/store/projects';
 import type { RunClient } from '../../src/studio/runClient';
+import { fakeDownloads } from '../files/fakeDownloads';
 
 export const STUDIO = 'chrome-extension://vidflow/studio.html';
 export const sceneId = (i: number) => `scene-${String(i).padStart(2, '0')}`;
@@ -75,9 +76,14 @@ export function fakeBackground(initial: RunState | null) {
     resume: vi.fn(async () => announce(state && reduceRun(state, { type: 'resume' }))),
     retry: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     stop: vi.fn(async () => announce(state && reduceRun(state, { type: 'stop' }))),
+    skip: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     forget: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     choose: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
+    checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
+    openFlow: vi.fn(async () => ({ ok: true as const })),
+    showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),
+    testPrompt: vi.fn(async () => ({ ok: true, message: 'Flow is ready.' })),
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -88,7 +94,7 @@ export function fakeBackground(initial: RunState | null) {
 
 type Listener = (changes: Record<string, { newValue?: unknown }>, area: string) => void;
 
-/** chrome.* as the panel uses it: local storage (step, activity, switch), tabs and windows. */
+/** chrome.* as the panel uses it: local storage (step, activity, switch), tabs, windows and downloads. */
 export function stubChrome(data: Record<string, unknown> = {}) {
   const listeners = new Set<Listener>();
   const tabs = {
@@ -102,6 +108,8 @@ export function stubChrome(data: Record<string, unknown> = {}) {
     getAll: vi.fn(async (): Promise<unknown[]> => []),
     create: vi.fn(async () => ({ id: 50 })),
   };
+  const fake = fakeDownloads();
+  const downloads = fake.api;
   vi.stubGlobal('chrome', {
     runtime: { id: 'vidflow', getURL: (p: string) => `chrome-extension://vidflow${p}` },
     storage: {
@@ -118,6 +126,7 @@ export function stubChrome(data: Record<string, unknown> = {}) {
     },
     tabs,
     windows,
+    downloads,
   });
-  return { data, tabs, windows, listeners };
+  return { data, tabs, windows, downloads, fakeDownloads: fake, listeners };
 }

@@ -1,11 +1,24 @@
 /// <reference types="chrome" />
 import { installPageBridge } from '../e2e/page-bridge';
-import { checkCanStart, createFlowDriver, type FlowResultCard, type FlowSnapshot } from '../flow/driver';
 import {
+  checkCanStart,
+  createFlowDriver,
+  policyDialogMessage,
+  type FlowPageState,
+  type FlowResultCard,
+  type FlowSnapshot,
+  type StartCheck,
+} from '../flow/driver';
+import {
+  FLOW_ACCEPT_NOTICE,
+  FLOW_CHECKS,
   FLOW_CONFIRM,
+  FLOW_SHOW_ME,
+  FLOW_TEST_PROMPT,
   FLOW_DETAIL,
   FLOW_EVENT,
   FLOW_NEW_PROJECT,
+  FLOW_NOTICE,
   FLOW_PILL,
   FLOW_PILL_TOGGLE,
   FLOW_PREPARE,
@@ -14,7 +27,15 @@ import {
   FLOW_TILES_NOW,
   FLOW_UPLOAD_REFERENCE,
   FlowBlockedError,
+  TEST_PROMPT_TEXT,
   decodeBytes,
+  testPromptRefusal,
+  type AcceptNoticeResponse,
+  type ChecksRequest,
+  type FlowChecksResponse,
+  type ShowMeResponse,
+  type TestPromptRequest,
+  type TestPromptResponse,
   type ConfirmResponse,
   type UploadReferenceRequest,
   type UploadReferenceResponse,
@@ -27,16 +48,20 @@ import {
   type TilesNowResponse,
   type ToBackground,
 } from '../flow/messages';
+import { renderHighlight } from '../flow/highlight';
 import { createRefresher, placeLive, renderLive } from '../flow/live';
-import { LIMIT_PATTERN, POLICY_DIALOG_PATTERN, SEL } from '../flow/selectors';
+import { BILLING_PATTERN, LIMIT_PATTERN, SEL, USAGE_NOTICE_PATTERN } from '../flow/selectors';
 import type { RunEvent } from '../runs/run';
 import { STEP_KEY } from '../runs/activity';
-import { getExpectedAccount, getLiveActivity, LIVE_ACTIVITY_KEY } from '../settings';
+import { getAcceptNotices, getExpectedAccount, getLiveActivity, LIVE_ACTIVITY_KEY } from '../settings';
 
 const OBSERVE_THROTTLE_MS = 1_000;
 const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
 const CONFIRM_WAIT_MS = 8_000;
 const DETAIL_WAIT_MS = 10_000; // the detail page renders its History panel after the picture
+const CHECKS_WAIT_MS = 5_000; // Flow may still be drawing its page
+const CHECKS_MAX_WAIT_MS = 30_000;
+const SHOW_ME_MS = 4_000; // Show me in Flow: each control is ringed in turn, about this long in all
 
 export default defineContentScript({
   matches: ['https://flow.google.com/*', 'https://labs.google/fx/*'],
@@ -59,15 +84,25 @@ export default defineContentScript({
     // A FlowBlockedError (e.g. the hero reference wouldn't attach) pauses the run; anything else fails the scene.
     const failure = (err: unknown): PrepareResponse =>
       err instanceof FlowBlockedError
-        ? { kind: 'blocked', event: err.event }
+        ? { kind: 'blocked', event: err.event, ...(err.notice ? { notice: true as const } : {}) }
         : { kind: 'error', message: err instanceof Error ? err.message : String(err) };
+
+    /**
+     * A failed start check, as the answer to the background. Blocked only by Flow's usage notice (no billing dialog):
+     * marked `notice`, so the background may accept it (switch on) and ask again.
+     */
+    const blockedBy = (check: Extract<StartCheck, { ok: false }>, state: FlowPageState): PrepareResponse => ({
+      kind: 'blocked',
+      event: { type: 'needsOwner', reason: check.reason, message: check.message },
+      ...(check.reason === 'policy-dialog' && state.noticeDialog && !state.billingDialog ? { notice: true as const } : {}),
+    });
 
     async function prepare(req: PrepareRequest): Promise<PrepareResponse> {
       try {
         await driver.waitUntilReady(READY_WAIT_MS);
         const state = driver.read();
         const check = checkCanStart(state, await getExpectedAccount(), req.verb ?? 'Start');
-        if (!check.ok) return { kind: 'blocked', event: { type: 'needsOwner', reason: check.reason, message: check.message } };
+        if (!check.ok) return blockedBy(check, state);
         if (state.limitMessage) return { kind: 'blocked', event: { type: 'limit', message: state.limitMessage, resumeAt: null } };
         await driver.setImageMode();
         if (req.aspect) await driver.setAspect(req.aspect);
@@ -88,11 +123,13 @@ export default defineContentScript({
         const deadline = Date.now() + READY_WAIT_MS;
         while (!driver.newProjectButton() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
         // The home page has no prompt bar, so only the account and dialog checks apply here.
-        const check = checkCanStart({ ...driver.read(), ready: true }, await getExpectedAccount(), req.verb);
-        if (!check.ok) return { kind: 'blocked', event: { type: 'needsOwner', reason: check.reason, message: check.message } };
+        const state = { ...driver.read(), ready: true };
+        const check = checkCanStart(state, await getExpectedAccount(), req.verb);
+        if (!check.ok) return blockedBy(check, state);
         const at = driver.newProjectButton();
         if (!at) {
-          const message = `VidFlow can't find Flow's New project button. Open Flow's home page in the VidFlow window, then press ${req.verb}.`;
+          const then = req.verb === 'Test' ? 'try again' : `press ${req.verb}`;
+          const message = `VidFlow can't find Flow's New project button. Open Flow's home page in the VidFlow window, then ${then}.`;
           return { kind: 'blocked', event: { type: 'needsOwner', reason: 'page-not-recognised', message } };
         }
         return { kind: 'ready', ...at };
@@ -111,10 +148,97 @@ export default defineContentScript({
       }
     }
 
+    /** Only on VidFlow's own Flow tab, and only while the switch is on; the driver never touches a billing dialog. */
+    async function acceptNotice(): Promise<AcceptNoticeResponse> {
+      if (!active || !(await getAcceptNotices())) return { accepted: false };
+      try {
+        // Nothing showing any more (the run's own step accepted it meanwhile): say so, so nothing pauses for it.
+        const state = driver.read();
+        if (!state.noticeDialog && !state.billingDialog) return { accepted: false, gone: true };
+        return { accepted: await driver.acceptNotice() };
+      } catch {
+        return { accepted: false };
+      }
+    }
+
+    /** The Checks tab's facts: read only (no menu opened, nothing clicked). */
+    async function checks(req: ChecksRequest): Promise<FlowChecksResponse> {
+      const seen = () =>
+        !!document.querySelector(SEL.account) || !!document.querySelector(SEL.promptBox) || !!driver.newProjectButton();
+      const deadline = Date.now() + Math.min(req.waitMs ?? CHECKS_WAIT_MS, CHECKS_MAX_WAIT_MS);
+      while (!seen() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
+      const state = driver.read();
+      return {
+        account: state.signedInEmail,
+        page: seen(),
+        promptBox: !!document.querySelector(SEL.promptBox),
+        generate: !!document.querySelector(SEL.generate),
+        agentOff: !driver.agentModeOn(),
+        ...driver.readSettings(),
+        credits: driver.readCredits(),
+        creditsResets: driver.readCreditsResets(),
+        noticeDialog: state.noticeDialog,
+        billingDialog: state.billingDialog,
+      };
+    }
+
+    /** Show me in Flow: rings the prompt box, Generate and the ingredients button in turn (the §17 ring). */
+    function showMe(): ShowMeResponse {
+      const parts = [
+        { name: 'prompt box', tag: 'Prompt box', el: document.querySelector(SEL.promptBox) },
+        { name: 'Generate button', tag: 'Generate', el: document.querySelector(SEL.generate) },
+        { name: 'ingredients button', tag: 'Ingredients (hero picture)', el: document.querySelector(SEL.ingredients) },
+      ];
+      const found = parts.filter((p) => p.el);
+      const each = found.length ? SHOW_ME_MS / found.length : 0;
+      found.forEach((p, i) => setTimeout(() => !active && renderHighlight(document, p.el, p.tag), i * each));
+      if (found.length) setTimeout(() => !active && renderHighlight(document, null, null), SHOW_ME_MS);
+      return { missing: parts.filter((p) => !p.el).map((p) => p.name) };
+    }
+
+    /** Test one prompt: settings, Agent mode off, type, wait for Generate to be ready, clear. Never presses Generate. */
+    async function testPrompt(req: TestPromptRequest): Promise<TestPromptResponse> {
+      // The same rule as the background's: a running run, or a paused one, keeps this tab.
+      const refusal = active ? testPromptRefusal(view?.paused ? 'paused' : 'running') : null;
+      if (refusal) return { ok: false, message: refusal };
+      let typed = false;
+      try {
+        if (!(await driver.waitUntilReady(READY_WAIT_MS))) {
+          return { ok: false, message: "VidFlow can't find Flow's prompt box. Check the Flow window, then try again." };
+        }
+        const state = driver.read();
+        const check = checkCanStart(state, await getExpectedAccount(), 'Test');
+        if (!check.ok) return { ok: false, message: check.message };
+        await driver.setImageMode();
+        await driver.setAspect(req.aspect);
+        await driver.setOutputs(req.outputs);
+        await driver.turnOffAgentMode();
+        typed = true;
+        await driver.prepareSubmit(TEST_PROMPT_TEXT); // waits for Flow to enable Generate; nothing is pressed
+        const cleared = await driver.clearPrompt();
+        return {
+          ok: true,
+          message: cleared
+            ? `Flow is ready: Image · ${req.aspect} · x${req.outputs}, the test prompt typed and Generate ready. The test prompt was cleared.`
+            : `Flow is ready: Image · ${req.aspect} · x${req.outputs} and Generate ready, but the test prompt is still in the box. Clear it in the Flow window.`,
+        };
+      } catch (err) {
+        if (typed) await driver.clearPrompt().catch(() => false);
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: message.replace(/,? then press Resume\.$/, ', then try again.') };
+      }
+    }
+
     async function confirm(): Promise<ConfirmResponse> {
       if (!beforePress) return { started: false };
       const started = await driver.waitForStart(beforePress, CONFIRM_WAIT_MS);
       beforePress = null;
+      if (!started) {
+        // Flow may have answered Generate with its usage notice: say so, so the background can accept it.
+        const state = driver.read();
+        if (state.billingDialog) return { started, billing: true };
+        if (state.noticeDialog) return { started, notice: true };
+      }
       return { started };
     }
 
@@ -151,6 +275,10 @@ export default defineContentScript({
         [FLOW_TILE_POINT]: () => tilePoint(message as TilePointRequest),
         [FLOW_DETAIL]: () => detail(),
         [FLOW_UPLOAD_REFERENCE]: () => uploadReference(message as UploadReferenceRequest),
+        [FLOW_ACCEPT_NOTICE]: () => acceptNotice(),
+        [FLOW_CHECKS]: () => checks(message as ChecksRequest),
+        [FLOW_SHOW_ME]: async () => showMe(),
+        [FLOW_TEST_PROMPT]: () => testPrompt(message as TestPromptRequest),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;
@@ -201,7 +329,8 @@ export default defineContentScript({
     // ---- Observing the page ------------------------------------------------
     let lastTiles = '';
     let lastLimit: string | null = null;
-    let lastPolicy = false;
+    let lastBilling = false;
+    let lastNotice = false;
     const seenNotices = new Set<string>();
 
     function check(): void {
@@ -217,18 +346,19 @@ export default defineContentScript({
         report({ type: 'limit', message: state.limitMessage, resumeAt: null });
       }
       lastLimit = state.limitMessage;
-      if (state.policyDialog && !lastPolicy) {
-        report({
-          type: 'needsOwner',
-          reason: 'policy-dialog',
-          message: 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Resume.',
-        });
+      const policy = { type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage('Resume') } as const;
+      // A billing dialog always stops the run. A usage notice does with the switch off; with it on, the background is
+      // told and accepts it (even while the run only waits for tiles, with no prepare to find it), or pauses.
+      if (state.billingDialog && !lastBilling) report(policy);
+      else if (state.noticeDialog && !lastNotice) {
+        void getAcceptNotices().then((on) => (on ? send({ type: FLOW_NOTICE }) : report(policy)));
       }
-      lastPolicy = state.policyDialog;
+      lastBilling = state.billingDialog;
+      lastNotice = state.noticeDialog;
       // Spike S5 never saw Flow's limit or refusal wording: log anything new so the patterns can be completed.
       for (const el of document.querySelectorAll(`${SEL.notice}, ${SEL.dialog}`)) {
         const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
-        if (!text || seenNotices.has(text) || LIMIT_PATTERN.test(text) || POLICY_DIALOG_PATTERN.test(text)) continue;
+        if (!text || seenNotices.has(text) || LIMIT_PATTERN.test(text) || USAGE_NOTICE_PATTERN.test(text) || BILLING_PATTERN.test(text)) continue;
         seenNotices.add(text);
         console.info('[VidFlow] Flow message not recognised:', text);
       }

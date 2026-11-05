@@ -70,21 +70,11 @@ async function withPictureType(blob: Blob): Promise<Blob> {
   return type ? new Blob([blob], { type }) : blob;
 }
 
-export function HeroReference({
-  project,
-  onChange,
-  disabled,
-  sheet,
-}: {
-  project: Project;
-  /** The hero's new reference media id, or undefined once it is removed. */
-  onChange(referenceMediaId: string | undefined): void;
-  disabled?: boolean;
-  /** Shows "Make a model sheet in Flow" and the sheet's pictures; left out where there is no run client. */
-  sheet?: SheetControls;
-}) {
-  const inputId = useId();
-  const picker = useRef<HTMLInputElement>(null);
+/**
+ * The hero reference picture: its thumbnail URL and the upload / use-a-sheet-picture / remove actions, with their busy
+ * and error state. Shared by the studio's hero section and the side panel's.
+ */
+export function useHeroPicture(project: Project, onChange: (referenceMediaId: string | undefined) => void) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState<string | null>(null);
@@ -129,7 +119,6 @@ export function HeroReference({
       setError("VidFlow couldn't save that picture. Try again.");
     } finally {
       setBusy(false);
-      if (picker.current) picker.current.value = '';
     }
   }
 
@@ -162,6 +151,31 @@ export function HeroReference({
     } finally {
       setBusy(false);
     }
+  }
+
+  return { mediaId, url, busy, error, pick, useSheetPicture, remove };
+}
+
+export function HeroReference({
+  project,
+  onChange,
+  disabled,
+  sheet,
+}: {
+  project: Project;
+  /** The hero's new reference media id, or undefined once it is removed. */
+  onChange(referenceMediaId: string | undefined): void;
+  disabled?: boolean;
+  /** Shows "Make a model sheet in Flow" and the sheet's pictures; left out where there is no run client. */
+  sheet?: SheetControls;
+}) {
+  const inputId = useId();
+  const picker = useRef<HTMLInputElement>(null);
+  const { mediaId, url, busy, error, pick: pickFile, useSheetPicture, remove } = useHeroPicture(project, onChange);
+
+  async function pick(file: File | undefined) {
+    await pickFile(file);
+    if (picker.current) picker.current.value = '';
   }
 
   return (
@@ -211,6 +225,8 @@ export function HeroReference({
 
 interface ModelSheetProps {
   project: Project;
+  /** The side panel's form: no title, hint or make button (the panel has its own "Make model sheet"). */
+  compact?: boolean;
   controls: SheetControls;
   disabled?: boolean;
   /** A picture is being stored as the reference: the "Use" buttons wait. */
@@ -222,7 +238,7 @@ interface ModelSheetProps {
  * "Make a model sheet in Flow": one prompt draws the hero from the front, side and back with 3 expressions. Its
  * pictures show here, each with "Use as hero reference". A live sheet run is fresher than the saved project.
  */
-function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProps) {
+export function ModelSheet({ project, controls, disabled, busy, onUse, compact }: ModelSheetProps) {
   const { run, client, onRunState } = controls;
   const ids = useId();
   const [asking, setAsking] = useState<null | 'make' | 'resume' | 'stop'>(null);
@@ -261,19 +277,23 @@ function ModelSheet({ project, controls, disabled, busy, onUse }: ModelSheetProp
   const make = () => void ask('make', () => client.heroSheet(project.id));
 
   return (
-    <div className="vf-hero-sheet" aria-labelledby={`${ids}-title`}>
-      <p className="vf-hero-sheet-title" id={`${ids}-title`}>
-        Model sheet
-      </p>
-      <p className="vf-hint" style={{ margin: 0 }}>
-        One prompt in Flow draws the hero from the front, side and back, with 3 expressions. Pick one as the hero
-        reference.
-      </p>
-      <div className="vf-row">
-        <Button small onClick={make} loading={asking === 'make'} disabled={disabled || !described || !!live || asking !== null}>
-          Make a model sheet in Flow
-        </Button>
-      </div>
+    <div className={compact ? 'vf-hero-sheet vf-hero-sheet-compact' : 'vf-hero-sheet'} aria-label={compact ? 'Model sheet' : undefined} aria-labelledby={compact ? undefined : `${ids}-title`}>
+      {!compact && (
+        <>
+          <p className="vf-hero-sheet-title" id={`${ids}-title`}>
+            Model sheet
+          </p>
+          <p className="vf-hint" style={{ margin: 0 }}>
+            One prompt in Flow draws the hero from the front, side and back, with 3 expressions. Pick one as the hero
+            reference.
+          </p>
+          <div className="vf-row">
+            <Button small onClick={make} loading={asking === 'make'} disabled={disabled || !described || !!live || asking !== null}>
+              Make a model sheet in Flow
+            </Button>
+          </div>
+        </>
+      )}
 
       {live && live.status === 'paused' ? (
         <div className="vf-stack" style={{ gap: 'var(--vf-space-2)' }}>

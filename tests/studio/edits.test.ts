@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { createProject, getProject, saveProject, setMediaStore } from '../../src/store/projects';
+import { createProject, getProject, saveProject, setMediaStore, updateProject } from '../../src/store/projects';
 import { memoryMediaStore } from '../../src/store/media';
 import { saveEdits } from '../../src/studio/projectEdits';
 import type { Scene } from '../../src/scenes/types';
@@ -29,8 +29,24 @@ describe('studio edits', () => {
   it('a new scene file starts the pictures again', async () => {
     const p = await createProject('B');
     p.sceneStates = { 'scene-01': { sceneId: 'scene-01', status: 'done', pictureIds: ['x'] } };
+    p.downloaded = { x: 'Slide_01.png' };
     await saveProject(p);
     await saveEdits(p.id, { scenes: [scene('scene-01')] });
     expect((await getProject(p.id))!.sceneStates).toEqual({});
+    // The new scenes' pictures reuse the old media ids: none of them is downloaded yet.
+    expect((await getProject(p.id))!.downloaded).toBeUndefined();
+  });
+
+  it('an edit and a download mark made at the same time both survive', async () => {
+    const p = await createProject('C');
+    for (let i = 0; i < 5; i++) {
+      await Promise.all([
+        saveEdits(p.id, { script: `take ${i}` }),
+        updateProject(p.id, (v) => void (v.downloaded = { ...v.downloaded, [`m${i}`]: `Slide_0${i}.png` })),
+      ]);
+    }
+    const saved = (await getProject(p.id))!;
+    expect(saved.script).toBe('take 4');
+    expect(Object.keys(saved.downloaded ?? {})).toEqual(['m0', 'm1', 'm2', 'm3', 'm4']);
   });
 });

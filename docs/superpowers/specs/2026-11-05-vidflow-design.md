@@ -259,3 +259,51 @@ VidFlow also opens in Chrome's own side panel (`chrome.sidePanel`) on the right 
 - "Open full studio ↗" in both states. Panel and studio show the same project and stay in sync (same run state and project store).
 - Same look as the studio (navy + coral glow, cream text, one coral primary at a time).
 - §7.1 changes: the Flow window may show VidFlow's side panel; the full studio tab remains for editing/reviewing.
+
+## 19. Side panel as the full control centre (approved by Hayatudeen, 5 Nov 2026)
+
+**Why:** he felt the panel was "empty" next to Flow Flash's. The panel must let him do everything while watching Flow, without needing the full studio, and anyone looking only at the panel must see it is an upgrade of Flow Flash. Mockup: `docs/design/approved/side-panel-v2.html` (approved). This replaces §18's two-state panel; §18's rules (Chrome side panel, same project and run state as the studio, one coral primary at a time, navy/cream/coral look) still hold.
+
+**Layout:** header ("〰 VidFlow", "Open full studio ↗"), a **health line** under it on every tab ("✓ Signed in · ✓ Flow ready · ✓ Hero attached", each turning into a plain warning when it fails), then four tabs: **Setup · Queue N · Checks · Files**. One coral primary per tab. The panel opens on Setup when no run is live, on Queue when one is.
+
+**Setup tab**
+- Video picker with "+ New".
+- "1 · Get your scenes": **Copy Claude prompt** and **Copy rapid-beat prompt** (the same prompts as the studio's Script step; the panel has no script box, so these copy the prompt with the video's saved script, or ask him to add the script in the full studio when there is none — my call); paste box for Claude's reply **or upload a file** (CSV, TSV, TXT, PDF — PDF text read in the browser); live "✓ N scenes found · no problems" and **Use these scenes** (Plan 1's explicit-apply rule and replace-confirm stay).
+- "2 · Look": 16:9 / 9:16 / 1:1, pictures per scene (1 / 2 / 4), style.
+- "3 · Hero": description, reference thumbnail with "Reference picture ✓ · attached to every scene" (or "No reference picture" + Upload), **Upload picture** and **Make model sheet** (same behaviour as the studio's hero section, §Plan 2).
+- Summary line: pictures · Flow credits · rough time. Coral **Start making pictures** (or "Review in the full studio" when every scene has pictures, as today).
+
+**Queue tab**
+- Video name, step in plain words, progress bar, "N saved · N being drawn · N to go · N failed".
+- Filters: All · Drawing · To go · Failed · Done, with counts.
+- One row per scene: thumbnail of the chosen picture (or empty), number, sentence, timecode, and the upgrade marks **"✓ checked · hero ✓ · 2 options"** (only what's true for that scene), a status tag (✓ Saved / Checking / Drawing / Failed with reason / Refused with Flow's reason), and **▶ Run** on a scene that isn't done (makes just that scene). Clicking a row with pictures shows its options with the one-click swap (Plan 2).
+- **Retry failed** when any failed. Activity lines (§17). Coral **Pause** (Resume when paused) + **Stop** + **Skip** (skips the current scene: it ends as failed with "Skipped by you", the run moves on).
+
+**Checks tab**
+- Checked when the tab opens, before every Start, and on **Check again** (coral): Google account (expected account), Flow page & project, prompt box, Generate button, Agent mode off, Flow settings (model · aspect · outputs) match the video's, hero reference ready (when set), credits (shown when Flow shows them without opening menus; otherwise "0 needed" for pictures). Each row: ✓ badge or a plain problem with what to do.
+- Switches: **Accept Flow's notices automatically** (ON by default) and **Keep Mac awake while running** (ON by default).
+- **Show me in Flow** (rings the prompt box, Generate and the ingredient slot for a few seconds, using the §17 ring) and **Test one prompt** (sets Flow's settings and types a test prompt, checks Generate is ready, then clears it — no picture made, my call).
+
+**Files tab**
+- Count of saved scenes/pictures and a small grid of chosen pictures.
+- Download folder (default `Downloads/<video name>`), naming format (default `Slide_01_00m00s-00m03s.png`; also `Slide_01_00-00_to_00-03`, `Slide_01_00s-03s`, `00m00s-00m03s_Slide_01`, `Slide_01`), **Chosen picture only** / **Both options**.
+- Switch "Save automatically as each scene finishes" (off by default — my call; Checks shows it too). Exports: **Slide list (CSV)** (slide, timecode, sentence, status, file name) and **Timing file** (JSON of slide, start, end, sentence, file name — for voice alignment later).
+- "Coming next: Clips · Voice · Finished video". Coral **Download all N pictures**.
+
+**§10 change (Hayatudeen, 5 Nov 2026):** VidFlow is agreed automation on his account. With "Accept Flow's notices automatically" on, VidFlow ticks and accepts Flow's usage-policy / rights notices itself (logging "Accepted Flow's notice" in the activity) instead of pausing; with it off, it pauses and asks as before. It still waits for Generate to be ready rather than force-enabling it (reliability: a forced press is ignored or fails).
+
+**Not in this round:** the "‹" collapse-to-rail from the mockup — Chrome sets the side panel's width, so an extension can't shrink it (my call; the tabs keep it compact). Morph/dark-mode toggles (VidFlow has one look). Upload of DOC/DOCX.
+
+**§19 details settled after the builder check (my calls unless marked):**
+1. *Which notices are auto-accepted:* only Flow's usage-policy / rights / upload notices, matched by a narrow allowlist. Anything about billing, payment, upgrades or paid tiers still **stops with a plain message** (§16.2, his "no paid services" rule), and any unknown dialog pauses as today.
+2. *▶ Run, Retry failed, Skip:* ▶ Run and Retry failed use the existing retry path (a run of just those scenes in a fresh Flow project, §16.5). Both are disabled while a run is running or paused (the button says why). Skip works on the current scene even if it was already sent: it ends as failed "Skipped by you", its prompt is recorded so any pictures Flow still makes for it are never saved to another scene, and the run moves on. Try again in the studio now makes just that scene too (with no run of the video going, a run of that one scene, as ▶ Run does).
+3. *Where Checks get their facts:* only from VidFlow's own Flow tab when it is open. With none open, rows show "Not checked yet" and an **Open Flow** button opens VidFlow's Flow window (no project made). Start always runs the checks first and stops on a failing one with its plain reason. The health line shows "VidFlow's Flow window not open" in that case.
+4. *Test one prompt / Show me in Flow:* refused while a run is live (Test one prompt also while a run is paused or a Start is under way, saying which). Test one prompt uses VidFlow's Flow window and opens a fresh Flow project if it isn't on one (no picture made). Show me in Flow rings whatever of the three it finds and says which it couldn't.
+5. *Cost and time:* pictures are always 0 credits on Pro (§16.6); time ≈ 20 s per scene (measured: ~2 min per 6 scenes), shown rounded ("~9 min").
+6. *Downloads:* always under the Downloads folder (`chrome.downloads` can't write elsewhere); the folder field is a sub-folder name. Existing names get a number added (uniquify), never overwritten. Names use the scene's own timecode (no timecode → `Slide_01`). "Both options": the chosen one has the plain name, the other gets `_option2`. Download all and auto-save skip files VidFlow already downloaded for that video unless he presses Download all again with "Download again" confirmed.
+7. *Settings scope:* accept-notices, keep-awake, auto-save and naming format are global (settings.ts). Folder name is per video (defaults to the video's name). Make model sheet is the existing model-sheet run with its busy/paused messages.
+8. *PDF:* pdf.js (`pdfjs-dist`) is added, worker bundled with the extension. Up to 20 MB; a PDF with no readable text (scanned) shows "This PDF has no text VidFlow can read. Paste the scenes instead."
+
+**§19 known limits (Queue, Skip):**
+- *Phantom tiles from an unconfirmed-then-skipped scene:* if a scene is skipped after Generate was pressed but before VidFlow saw Flow start it, VidFlow doesn't know whether Flow took it, so it keeps no place for it in the order. If Flow did start it, its pictures arrive with no scene owning them. Each picture's detail prompt is still checked before saving, so they are never saved to another scene, but a later scene may wait (or need Try again) while its own pictures are matched around them.
+- A skipped submission keeps its place for one scene deadline (10 minutes); after that, Flow is assumed not to draw it.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initRun, nextLocalMidnight, nextSceneToSubmit, normaliseEvent, reduceRun, runSummary, type RunEvent, type RunState } from '../../src/runs/run';
+import { initRun, isLive, nextLocalMidnight, nextSceneToSubmit, normaliseEvent, reduceRun, runSummary, SKIPPED_MESSAGE, type RunEvent, type RunState } from '../../src/runs/run';
 import type { Project, SceneState } from '../../src/store/projects';
 import type { Scene } from '../../src/scenes/types';
 
@@ -243,5 +243,72 @@ describe('Try again (retry)', () => {
     expect(resumed.sceneStates['scene-01']!.unconfirmed!.at).toBeGreaterThanOrEqual(before);
     const started = reduceRun(s, { type: 'start' });
     expect(started.sceneStates['scene-01']!.unconfirmed!.at).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe('Skip (spec §19)', () => {
+  it('ends a scene in Flow as failed "Skipped by you", keeps its submission so its late pictures are never matched, and moves on', () => {
+    let s = apply(
+      initRun(project(3)),
+      { type: 'start' },
+      { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 5 },
+      { type: 'submitted', sceneId: 'scene-02', prompt: 'P2', at: 6 },
+    );
+    s = reduceRun(s, { type: 'skip', sceneId: 'scene-01' });
+    expect(SKIPPED_MESSAGE).toBe('Skipped by you');
+    expect(s.sceneStates['scene-01']).toMatchObject({ status: 'failed', message: 'Skipped by you' });
+    expect(s.sceneStates['scene-01']!.submission).toBeUndefined();
+    expect(s.inFlight).toEqual(['scene-02']);
+    expect(s.skippedPrompts).toEqual([{ sceneId: 'scene-01', prompt: 'P1', seq: 1, at: 5 }]);
+    expect(s.status).toBe('running');
+    expect(nextSceneToSubmit(s, ids(3), 3)).toBe('scene-03');
+
+    // Its pictures arriving later are stale; a refusal or failure for it doesn't replace "Skipped by you".
+    const after = apply(s, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m'] }, { type: 'refused', sceneId: 'scene-01', message: 'no' });
+    expect(after.sceneStates['scene-01']).toMatchObject({ status: 'failed', message: 'Skipped by you', pictureIds: [] });
+  });
+
+  it('skips a scene still waiting its turn without recording a prompt, and finishes the run when it was the last', () => {
+    let s = apply(initRun(project(1)), { type: 'start' });
+    s = reduceRun(s, { type: 'skip', sceneId: 'scene-01' });
+    expect(s.sceneStates['scene-01']).toMatchObject({ status: 'failed', message: SKIPPED_MESSAGE });
+    expect(s.skippedPrompts ?? []).toEqual([]);
+    expect(s.status).toBe('finished');
+    expect(isLive(s)).toBe(false);
+  });
+
+  it('a Generate press confirmed after the skip still takes its place in the order, never the scene', () => {
+    let s = apply(initRun(project(2)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 1 });
+    s = reduceRun(s, { type: 'skip', sceneId: 'scene-02' }); // skipped while being typed
+    s = reduceRun(s, { type: 'submitted', sceneId: 'scene-02', prompt: 'P2', at: 2 });
+    expect(s.sceneStates['scene-02']).toMatchObject({ status: 'failed', message: SKIPPED_MESSAGE });
+    expect(s.inFlight).toEqual(['scene-01']);
+    expect(s.skippedPrompts).toEqual([{ sceneId: 'scene-02', prompt: 'P2', seq: 2, at: 2 }]);
+  });
+
+  it('ignores a scene that is done, refused or failed already, or not in the run', () => {
+    let s = apply(initRun(project(2)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01' }, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m'] });
+    expect(reduceRun(s, { type: 'skip', sceneId: 'scene-01' })).toBe(s);
+    expect(reduceRun(s, { type: 'skip', sceneId: 'nope' })).toBe(s);
+    s = apply(s, { type: 'submitted', sceneId: 'scene-02' }, { type: 'failed', sceneId: 'scene-02', message: 'x' });
+    expect(reduceRun(s, { type: 'skip', sceneId: 'scene-02' })).toBe(s);
+  });
+
+  it('Try again on a skipped scene queues it again; its old submission keeps its place', () => {
+    let s = apply(initRun(project(1)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 1 }, { type: 'skip', sceneId: 'scene-01' });
+    s = reduceRun(s, { type: 'retry', sceneId: 'scene-01' });
+    expect(s.sceneStates['scene-01']!.status).toBe('pending');
+    expect(s.skippedPrompts).toHaveLength(1);
+    s = reduceRun(s, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 3 });
+    expect(s.sceneStates['scene-01']!.submission).toMatchObject({ seq: 2 });
+  });
+});
+
+describe('which pictures have the hero (Queue "hero ✓")', () => {
+  it('records on the scene whether its pictures were made with the hero reference attached', () => {
+    let s = apply(initRun(project(2)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01' }, { type: 'submitted', sceneId: 'scene-02' });
+    s = apply(s, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m'], withHero: true }, { type: 'pictures', sceneId: 'scene-02', mediaIds: ['n'] });
+    expect(s.sceneStates['scene-01']!.withHero).toBe(true);
+    expect(s.sceneStates['scene-02']!.withHero).toBe(false);
   });
 });

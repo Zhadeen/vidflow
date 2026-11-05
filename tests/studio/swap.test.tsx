@@ -96,7 +96,7 @@ function backgroundClient(over: Partial<RunClient> = {}): RunClient {
     pause: vi.fn(ok),
     resume: vi.fn(ok),
     retry: vi.fn(ok),
-    stop: vi.fn(ok),
+    stop: vi.fn(ok), skip: vi.fn(ok),
     forget: vi.fn(ok),
     choose: vi.fn(async (projectId: string, sceneId: string, pictureId: string): Promise<RunReply> => {
       const p = (await getProject(projectId))!;
@@ -107,6 +107,10 @@ function backgroundClient(over: Partial<RunClient> = {}): RunClient {
       return { ok: true, state: null };
     }),
     heroSheet: vi.fn(ok),
+    checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
+    openFlow: vi.fn(async () => ({ ok: true as const })),
+    showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),
+    testPrompt: vi.fn(async () => ({ ok: true, message: 'Flow is ready.' })),
     subscribe: () => () => undefined,
     ...over,
   };

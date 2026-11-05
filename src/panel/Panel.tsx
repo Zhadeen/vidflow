@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { RunReply } from '../flow/messages';
+import { healthLine } from '../runs/health';
 import { isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import { createProject, getProject, listProjects, type Project } from '../store/projects';
 import { runPhase } from '../studio/progress';
@@ -7,11 +8,15 @@ import { applyPatch, saveEdits } from '../studio/projectEdits';
 import { openStudio } from '../studio/openStudio';
 import type { RunClient } from '../studio/runClient';
 import type { ProjectPatch } from '../studio/ScriptStep';
-import { PanelRun } from './PanelRun';
+import { HealthLine } from './HealthLine';
+import { PanelChecks, type ChecksResult } from './PanelChecks';
+import { PanelFiles } from './PanelFiles';
+import { PanelQueue } from './PanelQueue';
 import { PanelSetup, VideoPicker } from './PanelSetup';
+import { panelId, tabId, Tabs, type PanelTab } from './Tabs';
 
 type Summary = Pick<Project, 'id' | 'name' | 'updatedAt'>;
-export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop';
+export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop' | 'skip';
 
 const LOAD_FAILED = "VidFlow couldn't load your videos. Close this panel and open it again.";
 const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
@@ -19,8 +24,9 @@ const REQUEST_FAILED = 'Something went wrong \u2014 try again.';
 const CREATE_FAILED = "VidFlow couldn't make a new video. Check Chrome has free disk space, then try again.";
 
 /**
- * VidFlow beside Flow (Chrome's side panel): pick a video, paste, choose, start; then follow the run. It shows the live
- * run's video if there is one, otherwise the most recently opened; the picker switches it (kept in the panel only).
+ * VidFlow beside Flow (Chrome's side panel, spec §19): a health line, then Setup · Queue N · Checks · Files. It shows the
+ * live run's video if there is one, otherwise the most recently opened; the picker switches it (kept in the panel only).
+ * It opens on Queue while a run of scenes is live and on Setup otherwise, and follows a run as it starts and ends.
  */
 export function Panel({ client }: { client: RunClient }) {
   const [projects, setProjects] = useState<Summary[] | null>(null);
@@ -34,6 +40,12 @@ export function Panel({ client }: { client: RunClient }) {
   const saving = useRef<Promise<unknown>>(Promise.resolve());
   const lastRun = useRef<RunState | null>(null);
   lastRun.current = run;
+  const ids = useId();
+  const [tab, setTab] = useState<PanelTab>('setup');
+  const [checks, setChecks] = useState<ChecksResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  const checkSeq = useRef(0);
 
   // The run and the videos; then every change of the run the background announces (the studio hears the same).
   useEffect(() => {
@@ -114,6 +126,57 @@ export function Panel({ client }: { client: RunClient }) {
     [client],
   );
 
+  /** Reads VidFlow's Flow tab for this video (Checks tab and health line); a newer read wins over an older one. */
+  const check = useCallback(async () => {
+    const id = current.current;
+    if (!id) return;
+    const seq = ++checkSeq.current;
+    setChecking(true);
+    setCheckError(null);
+    let reply: Awaited<ReturnType<RunClient['checks']>>;
+    try {
+      reply = await client.checks(id);
+    } catch {
+      reply = { ok: false, message: REQUEST_FAILED };
+    }
+    if (seq !== checkSeq.current) return;
+    setChecking(false);
+    if (current.current !== id) return;
+    if (reply.ok) setChecks({ flowOpen: reply.flowOpen, rows: reply.rows, at: Date.now() });
+    else setCheckError(reply.message);
+  }, [client]);
+
+  // On open and for each video picked.
+  useEffect(() => {
+    setChecks(null);
+    if (projectId) void check();
+  }, [projectId, check]);
+
+  // When the run changes state (starts, pauses, ends), not on every scene it finishes.
+  const runKey = run ? `${run.projectId}:${run.kind ?? 'scenes'}:${run.status}` : 'none';
+  const loaded = projects !== null;
+  const lastRunKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loaded) return;
+    const before = lastRunKey.current;
+    lastRunKey.current = runKey;
+    if (before !== null && before !== runKey) void check();
+  }, [runKey, loaded, check]);
+
+  // Queue while a run of scenes is live, Setup otherwise: on opening, and whenever a run starts or ends.
+  const scenesLive = !!run && isLive(run) && !isHeroSheetRun(run);
+  const wasLive = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!loaded) return;
+    if (wasLive.current === null ? scenesLive : wasLive.current !== scenesLive) setTab(scenesLive ? 'queue' : 'setup');
+    wasLive.current = scenesLive;
+  }, [scenesLive, loaded]);
+
+  function pickTab(next: PanelTab) {
+    setTab(next);
+    if (next === 'checks') void check();
+  }
+
   async function act(kind: PanelBusy, request: () => Promise<RunReply>) {
     setBusy(kind);
     setError(null);
@@ -142,57 +205,90 @@ export function Panel({ client }: { client: RunClient }) {
   const shown = project && project.id === projectId ? project : null;
   const phase = shown ? runPhase(shown, run) : 'idle';
   const running = !!shown && (phase === 'running' || phase === 'paused');
-  // This video's model sheet is being made: the panel only says so (the sheet lives in the studio's Script step).
-  const makingSheet = !!shown && !!run && isHeroSheetRun(run) && run.projectId === shown.id && isLive(run);
+  const studio = () => void openStudio(shown?.id).catch(() => undefined);
+  const health = !loaded ? null : !projectId ? [] : checks ? healthLine(checks.rows, checks.flowOpen) : checkError ? ['Flow not checked'] : null;
+  const tabs: { id: PanelTab; label: string }[] = [
+    { id: 'setup', label: 'Setup' },
+    { id: 'queue', label: shown ? `Queue ${shown.scenes.length}` : 'Queue' },
+    { id: 'checks', label: 'Checks' },
+    { id: 'files', label: 'Files' },
+  ];
 
   return (
     <div className="vf-pn">
       <header className="vf-pn-head">
         <span className="vf-pn-mark">〰 VidFlow</span>
-        <button type="button" className="vf-pn-link" onClick={() => void openStudio(shown?.id).catch(() => undefined)}>
+        <button type="button" className="vf-pn-link" onClick={studio}>
           Open full studio ↗
         </button>
       </header>
+      <HealthLine items={health} />
+      <Tabs idBase={ids} tabs={tabs} value={tab} onChange={pickTab} />
 
-      {projects === null ? (
-        <p className="vf-pn-label">Opening your videos…</p>
-      ) : running && shown && run ? (
-        <PanelRun
-          project={shown}
-          run={run}
-          busy={busy}
-          error={error}
-          onPause={() => void act('pause', () => client.pause())}
-          onResume={() => void act('resume', () => client.resume())}
-          onStop={() => void act('stop', () => client.stop())}
-        />
-      ) : (
-        <>
-          <VideoPicker projects={projects} value={projectId} onPick={setProjectId} onCreate={create} />
-          {shown && makingSheet ? (
-            <p className="vf-pn-sub" role="status">
-              Making the model sheet… Open the Script step in the full studio
-            </p>
-          ) : shown ? (
-            <PanelSetup
+      <div className="vf-pn-body" role="tabpanel" id={panelId(ids, tab)} aria-labelledby={tabId(ids, tab)}>
+        {projects === null ? (
+          <p className="vf-pn-label">Opening your videos…</p>
+        ) : tab === 'setup' ? (
+          <>
+            <VideoPicker projects={projects} value={projectId} onPick={setProjectId} onCreate={create} />
+            {shown ? (
+              <PanelSetup
+                key={shown.id}
+                project={shown}
+                run={run}
+                client={client}
+                busy={busy}
+                error={error}
+                onChange={change}
+                onRunState={setRun}
+                onStart={() => void act('start', () => client.start(shown.id))}
+                onReview={studio}
+                onOpenStudio={studio}
+                locked={running}
+                onGoToQueue={() => pickTab('queue')}
+              />
+            ) : (
+              error && (
+                <p className="vf-notice vf-pn-notice" role="alert">
+                  {error}
+                </p>
+              )
+            )}
+          </>
+        ) : tab === 'queue' ? (
+          shown ? (
+            <PanelQueue
               key={shown.id}
               project={shown}
               run={run}
+              client={client}
               busy={busy}
               error={error}
-              onChange={change}
+              onPause={() => void act('pause', () => client.pause())}
+              onResume={() => void act('resume', () => client.resume())}
+              onStop={() => void act('stop', () => client.stop())}
+              onSkip={() => void act('skip', () => client.skip())}
               onStart={() => void act('start', () => client.start(shown.id))}
-              onReview={() => void openStudio(shown.id).catch(() => undefined)}
+              onRunState={setRun}
+              onSceneState={(sceneId, state) =>
+                setProject((p) => (p && p.id === shown.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
+              }
             />
+          ) : scenesLive ? null : (
+            <p className="vf-pn-sub">Pick a video on Setup first.</p>
+          )
+        ) : tab === 'checks' ? (
+          shown ? (
+            <PanelChecks project={shown} client={client} result={checks} checking={checking} error={checkError} onCheck={() => void check()} />
           ) : (
-            error && (
-              <p className="vf-notice vf-pn-notice" role="alert">
-                {error}
-              </p>
-            )
-          )}
-        </>
-      )}
+            <p className="vf-pn-sub">Pick a video on Setup first.</p>
+          )
+        ) : shown ? (
+          <PanelFiles key={shown.id} project={shown} run={run} onChange={change} />
+        ) : (
+          <p className="vf-pn-sub">Pick a video on Setup first.</p>
+        )}
+      </div>
     </div>
   );
 }

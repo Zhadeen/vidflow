@@ -2,10 +2,12 @@ import type { AspectRatio } from '../store/projects';
 import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, STRAY_INGREDIENT_MESSAGE } from './messages';
 import {
   ASPECT_ICON,
+  BILLING_PATTERN,
   LIMIT_PATTERN,
-  POLICY_DIALOG_PATTERN,
+  NOTICE_ACCEPT_PATTERN,
   REFUSAL_PATTERN,
   SEL,
+  USAGE_NOTICE_PATTERN,
 } from './selectors';
 
 export interface FlowPageState {
@@ -13,7 +15,10 @@ export interface FlowPageState {
   signedInEmail: string | null;
   generating: boolean;
   limitMessage: string | null;
-  policyDialog: boolean;
+  /** Flow's usage-policy / rights notice is open (and no billing dialog wording): VidFlow may accept it. */
+  noticeDialog: boolean;
+  /** A billing / payment / upgrade dialog is open: never accepted; the run stops with a plain message. */
+  billingDialog: boolean;
 }
 
 export interface FlowResultCard {
@@ -32,7 +37,8 @@ export interface FlowSnapshot {
   keys: string[];
 }
 
-export type StartVerb = 'Start' | 'Resume';
+/** The button the owner presses next: Start before a run, Resume for a paused one, or Test one prompt ("try again"). */
+export type StartVerb = 'Start' | 'Resume' | 'Test';
 
 export interface DetailRead {
   mediaId: string | null;
@@ -79,21 +85,46 @@ export interface FlowDriver {
    * one element carrying data-media-id (the opened picture). Either is null when the page doesn't show it plainly.
    */
   readDetailPrompt(): DetailRead;
+  /**
+   * Accepts Flow's open usage-policy / rights notice: ticks its unticked boxes, waits for its accept button ("I
+   * understand", "I agree"…) to be ready and presses it. Never touches a billing dialog. False when there is no such
+   * notice or no ready accept button.
+   */
+  acceptNotice(): Promise<boolean>;
+  /** Flow's model, aspect and outputs as its settings button shows them (the popover is never opened); null parts unknown. */
+  readSettings(): FlowSettingsRead;
+  /** Flow's credit balance, only when the page shows it without opening a menu; otherwise null. */
+  readCredits(): number | null;
+  /** When the credits reset ("13 Nov"), only when the page shows it beside the balance; never opens a menu. */
+  readCreditsResets(): string | null;
+  /** True while Flow's Agent mode chip is pressed. */
+  agentModeOn(): boolean;
+  /** Empties the prompt box (Flow's Clear prompt button, else select-all and delete); true once it is empty. */
+  clearPrompt(): Promise<boolean>;
+}
+
+export interface FlowSettingsRead {
+  model: string | null;
+  aspect: AspectRatio | null;
+  outputs: number | null;
 }
 
 export type StartCheck =
   | { ok: true }
   | { ok: false; reason: 'wrong-account' | 'signed-out' | 'policy-dialog' | 'page-not-recognised'; message: string };
 
-/** `verb` names the button the owner will see: Start before a run, Resume for a paused one. */
+const pressWord = (verb: StartVerb) => (verb === 'Start' ? 'press Start again' : verb === 'Resume' ? 'press Resume' : 'try again');
+
+/** Said when Flow's usage notice (switch off, or it couldn't be accepted) or a billing dialog stops VidFlow. */
+export function policyDialogMessage(verb: StartVerb): string {
+  return `Flow is showing a message about its usage policy or billing. Read it in the Flow window, then ${pressWord(verb)}.`;
+}
+
+/** `verb` names the button the owner will see: Start before a run, Resume for a paused one, Test for Test one prompt. */
 export function checkCanStart(s: FlowPageState, expectedEmail: string, verb: StartVerb = 'Start'): StartCheck {
-  const press = verb === 'Start' ? 'press Start again' : 'press Resume';
-  if (s.policyDialog) {
-    return {
-      ok: false,
-      reason: 'policy-dialog',
-      message: `Flow is showing a message about its usage policy or billing. Read it in the Flow window, then ${press}.`,
-    };
+  const press = pressWord(verb);
+  if (s.billingDialog || s.noticeDialog) {
+    return { ok: false, reason: 'policy-dialog', message: policyDialogMessage(verb) };
   }
   if (!s.signedInEmail) {
     return {
@@ -138,6 +169,11 @@ const AGENT_OFF_TRIES = 3;
 const AGENT_MODE_MESSAGE =
   "Flow's Agent mode is on and VidFlow couldn't turn it off. Turn it off in the Flow window, then press Resume.";
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
+/** A balance ("1,250 credits left", "Credits: 40"); never the popover's "Generating will use 0 credits" cost note. */
+const CREDITS_BALANCE = /^(?:(\d[\d,]*)\s+(?:ai\s+)?credits?\s+(?:left|remaining|available)|(?:ai\s+)?credits?\s*(?:left|remaining|available)?\s*:\s*(\d[\d,]*))$/i;
+
+/** "Resets on 13 Nov", "(resets 1 Dec)". */
+const CREDITS_RESETS = /^\(?\s*resets?\s+(?:on\s+)?([\p{L}\p{N} ,]{1,24}?)\s*\)?$/iu;
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -279,21 +315,70 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const email = /\(([^()\s]+@[^()\s]+)\)/.exec(accountLabel)?.[1] ?? null;
 
     let limitMessage: string | null = null;
-    let policyDialog = false;
     for (const el of doc.querySelectorAll(`${SEL.notice}, ${SEL.dialog}`)) {
       if (!isShown(el)) continue;
       const text = squash(el.textContent);
-      if (el.matches(SEL.dialog) && POLICY_DIALOG_PATTERN.test(text)) policyDialog = true;
       if (limitMessage === null && LIMIT_PATTERN.test(text)) limitMessage = text;
     }
+    const dialogs = shownDialogs();
 
     return {
       ready: !!q(SEL.promptBox) && !!q(SEL.generate),
       signedInEmail: email,
       generating: resultCards().some((c) => c.progress !== null),
       limitMessage,
-      policyDialog,
+      noticeDialog: dialogs.some(isUsageNotice),
+      billingDialog: dialogs.some(isBilling),
     };
+  }
+
+  // ---- Flow's notices -------------------------------------------------------
+  const shownDialogs = () => [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].filter(isShown);
+  const isBilling = (dialog: Element) => BILLING_PATTERN.test(squash(dialog.textContent));
+  /** A usage-policy / rights notice; billing wording anywhere in it makes it a billing dialog instead. */
+  const isUsageNotice = (dialog: Element) => !isBilling(dialog) && USAGE_NOTICE_PATTERN.test(squash(dialog.textContent));
+  const enabled = (b: HTMLElement) => !(b as HTMLButtonElement).disabled && b.getAttribute('aria-disabled') !== 'true';
+
+  /**
+   * Stops a step that is waiting on Flow when a dialog covers the page: a usage notice (no billing dialog) as a
+   * notice the background may accept, a billing dialog as a plain stop. Unknown dialogs: the step's own wait decides.
+   */
+  function stopForDialog(): void {
+    const dialogs = shownDialogs();
+    const billing = dialogs.some(isBilling);
+    if (!billing && !dialogs.some(isUsageNotice)) return;
+    throw new FlowBlockedError({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage('Resume') }, !billing);
+  }
+
+  async function acceptNotice(): Promise<boolean> {
+    // Never act while any billing dialog is open, even next to a notice.
+    if (shownDialogs().some(isBilling)) return false;
+    const notice = shownDialogs().find(isUsageNotice);
+    if (!notice) return false;
+    const acceptButton = () =>
+      [...notice.querySelectorAll<HTMLElement>('button, [role="button"]')].find((b) =>
+        NOTICE_ACCEPT_PATTERN.test(squash(b.textContent)),
+      ) ?? null;
+    if (!acceptButton()) return false;
+    for (const box of notice.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) {
+      if (!box.checked && !box.disabled) box.click();
+    }
+    // A role=checkbox wrapper around a native box was ticked through that box: clicking it too would untick it.
+    for (const box of notice.querySelectorAll<HTMLElement>('[role="checkbox"][aria-checked="false"]')) {
+      if (!box.querySelector('input[type="checkbox"]')) box.click();
+    }
+    let button: HTMLElement;
+    try {
+      button = await until(() => {
+        const b = acceptButton();
+        return b && enabled(b) ? b : null;
+      }, opts.timeoutMs ?? SETTINGS_TIMEOUT_MS, 'not ready');
+    } catch {
+      return false;
+    }
+    button.click();
+    await until(() => !notice.isConnected || !isShown(notice), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+    return true;
   }
 
   // ---- Hero reference (spike S7) ---------------------------------------------
@@ -303,9 +388,20 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   /** Like until(), but a timeout pauses the run with `message` instead of failing the scene. */
   async function untilOrBlocked<T>(probe: () => T | null | false | undefined, timeoutMs: number, message?: string): Promise<T> {
     try {
-      return await until(probe, timeoutMs, 'timed out');
-    } catch {
+      return await until(() => (stopForDialog(), probe()), timeoutMs, 'timed out');
+    } catch (err) {
+      if (err instanceof FlowBlockedError) throw err;
       throw blocked(message);
+    }
+  }
+
+  /** Like until(), but null on a timeout; a notice or billing dialog still stops it at once (stopForDialog). */
+  async function untilWatching<T>(probe: () => T | null | false | undefined, timeoutMs: number): Promise<T | null> {
+    try {
+      return await until(() => (stopForDialog(), probe()), timeoutMs, 'timed out');
+    } catch (err) {
+      if (err instanceof FlowBlockedError) throw err;
+      return null;
     }
   }
 
@@ -359,10 +455,11 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
 
 
   async function uploadReference(file: File): Promise<string | null> {
+    stopForDialog();
     const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     await openPicker();
     // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
-    await until(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS, 'empty').catch(() => undefined);
+    await untilWatching(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS);
     // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file window: a
     // cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the page's own
     // events, so this works from the content script's isolated world. The input it clicked is the one Flow listens to;
@@ -397,14 +494,12 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     } finally {
       if (guarded) doc.removeEventListener('click', noFileWindow, true);
     }
-    try {
-      return await until(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS, 'no tile');
-    } catch {
-      return null; // the coordinator also recognises the tile by its file-name caption
-    }
+    // null when the tile doesn't show: the coordinator also recognises it by its file-name caption.
+    return untilWatching(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS);
   }
 
   async function attachReference(name: string): Promise<void> {
+    stopForDialog();
     const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     if (chips() > 0) {
       // A chip left from an earlier attempt: start from an empty bar so exactly one ingredient remains.
@@ -453,10 +548,60 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     return now.keys.some((k) => !before.keys.includes(k));
   }
 
+  function readSettings(): FlowSettingsRead {
+    if (!q(SEL.settingsTrigger)) return { model: null, aspect: null, outputs: null };
+    const text = triggerText();
+    const aspect = (Object.keys(ASPECT_ICON) as AspectRatio[]).find((a) => text.includes(ASPECT_ICON[a])) ?? null;
+    const outputs = /\bx(\d)\b/.exec(text);
+    // What is left once the icon names and the outputs are taken out, without a leading emoji: "Nano Banana 2.1".
+    const model = squash(text.replace(/\bcrop_\w+/g, ' ').replace(/\bx\d\b/g, ' ')).replace(/^[^\p{L}\p{N}]+/u, '');
+    return { model: model || null, aspect, outputs: outputs ? Number(outputs[1]) : null };
+  }
+
+  function readCredits(): number | null {
+    // Only what is on the page now: the settings popover's cost note is skipped, and no menu is opened to look.
+    for (const el of doc.querySelectorAll<HTMLElement>('body *')) {
+      if (el.children.length > 0 || el.closest('.settings-popover, [role="menu"], [role="listbox"]')) continue;
+      const m = CREDITS_BALANCE.exec(squash(el.textContent));
+      if (m && isShown(el)) return Number((m[1] ?? m[2])!.replace(/,/g, ''));
+    }
+    return null;
+  }
+
+  function readCreditsResets(): string | null {
+    for (const el of doc.querySelectorAll<HTMLElement>('body *')) {
+      if (el.children.length > 0 || el.closest('.settings-popover, [role="menu"], [role="listbox"]')) continue;
+      const m = CREDITS_RESETS.exec(squash(el.textContent));
+      if (m && isShown(el)) return m[1]!.trim();
+    }
+    return null;
+  }
+
+  async function clearPrompt(): Promise<boolean> {
+    const box = q(SEL.promptBox);
+    if (!box) return false;
+    const empty = () => squash(q(SEL.promptBox)?.textContent) === '';
+    if (empty()) return true;
+    const clear = q(SEL.clearPrompt);
+    if (clear) {
+      clear.click();
+      if (await until(empty, opts.timeoutMs ?? PICKER_TIMEOUT_MS, 'not cleared').catch(() => false)) return true;
+    }
+    box.focus();
+    doc.execCommand('selectAll');
+    doc.execCommand('delete');
+    return empty();
+  }
+
   return {
     read,
     resultCards,
     snapshot,
+    readSettings,
+    readCredits,
+    readCreditsResets,
+    agentModeOn: () => !!q(SEL.agentModeOn),
+    clearPrompt,
 
     async waitForStart(before, timeoutMs) {
       try {
@@ -477,6 +622,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     readDetailPrompt,
+    acceptNotice,
 
     tilePoint(key) {
       const img = tileImage(doc, key);

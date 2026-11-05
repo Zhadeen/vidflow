@@ -6,7 +6,8 @@ export type RunEvent =
   | { type: 'resume' }
   | { type: 'restore' } // after a real browser restart: pages are gone, so submitted scenes go back in the queue
   | { type: 'submitted'; sceneId: string; prompt?: string; at?: number }
-  | { type: 'pictures'; sceneId: string; mediaIds: string[]; cardKeys?: string[] }
+  /** `withHero`: the run had the hero reference attached in Flow when these were made. */
+  | { type: 'pictures'; sceneId: string; mediaIds: string[]; cardKeys?: string[]; withHero?: boolean }
   /**
    * Generate is about to be pressed (recorded first, so a worker suspended mid-press looks before pressing again), or
    * was pressed but Flow's start wasn't seen. The scene stays pending until `submitted`; `at` starts its wait limit.
@@ -20,6 +21,11 @@ export type RunEvent =
   | { type: 'stop' }
   /** The owner pressed Try again on a refused or failed scene: it goes back in the queue. */
   | { type: 'retry'; sceneId: string }
+  /**
+   * The owner skipped this scene (spec §19): it ends as failed "Skipped by you" and the run moves on. If it was in Flow
+   * its submission is kept in skippedPrompts, so its pictures still take their place in the order but are never saved.
+   */
+  | { type: 'skip'; sceneId: string }
   /** The owner chose which of a scene's pictures it uses (ignored unless it is one of them). */
   | { type: 'choose'; sceneId: string; pictureId: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
@@ -30,6 +36,19 @@ export type RunEvent =
     };
 
 export const USER_PAUSE_REASON = 'Paused by you';
+
+/** A skipped scene's message (spec §19). */
+export const SKIPPED_MESSAGE = 'Skipped by you';
+
+/** A submission the owner skipped: Flow may still draw it; its tiles fill its place in the order and are never saved. */
+export interface SkippedSubmission {
+  sceneId: string;
+  prompt: string;
+  seq: number;
+  at: number;
+}
+
+const isSkipped = (s: SceneState | undefined) => s?.status === 'failed' && s.message === SKIPPED_MESSAGE;
 
 /** Said when a picture choice names a picture the scene doesn't have (or a scene the project doesn't have). */
 export const NOT_THIS_SCENES_PICTURE =
@@ -66,6 +85,8 @@ export interface RunState {
    * Flow's grid too: its card keys (and any tile captioned with its name) are never matched to a scene.
    */
   reference?: { name: string; flowProjectUrl: string; cardKeys: string[] };
+  /** Submissions the owner skipped while they were in Flow, in order (never matched to a scene). */
+  skippedPrompts?: SkippedSubmission[];
 }
 
 /** Every scene without a done/refused state starts (again) as pending. */
@@ -165,6 +186,12 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       return { ...state, status: 'paused', pauseReason: USER_PAUSE_REASON, resumeAt: null };
     case 'submitted': {
       const current = state.sceneStates[event.sceneId];
+      if (isSkipped(current)) {
+        // Flow confirmed a press after the owner skipped the scene: its pictures will come, so it takes its place.
+        const seq = (state.nextSeq ?? 0) + 1;
+        const skipped = { sceneId: event.sceneId, prompt: event.prompt ?? '', seq, at: event.at ?? Date.now() };
+        return { ...state, nextSeq: seq, skippedPrompts: [...(state.skippedPrompts ?? []), skipped] };
+      }
       if (!current || current.status !== 'pending') return state;
       const seq = (state.nextSeq ?? 0) + 1;
       const { unconfirmed: _seen, ...rest } = current;
@@ -192,16 +219,32 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
           pictureIds: event.mediaIds,
           chosenPictureId: undefined, // new pictures: the best-picture choice is made again (Plan 2)
           message: undefined,
+          withHero: event.withHero === true,
           ...(event.cardKeys ? { cardKeys: event.cardKeys } : {}),
         }),
       );
     case 'refused':
     case 'failed': {
       const current = state.sceneStates[event.sceneId];
-      if (!current || current.status === 'done') return state;
+      if (!current || current.status === 'done' || isSkipped(current)) return state;
       return settle(
         setScene(state, event.sceneId, { status: event.type === 'refused' ? 'refused' : 'failed', message: event.message }),
       );
+    }
+    case 'skip': {
+      const current = state.sceneStates[event.sceneId];
+      if (!current || (current.status !== 'pending' && current.status !== 'submitted')) return state;
+      const { submission, unconfirmed: _u, ...rest } = current;
+      const skipped =
+        current.status === 'submitted' && submission
+          ? [...(state.skippedPrompts ?? []), { sceneId: event.sceneId, prompt: submission.prompt, seq: submission.seq, at: submission.at }]
+          : state.skippedPrompts;
+      return settle({
+        ...state,
+        ...(skipped ? { skippedPrompts: skipped } : {}),
+        inFlight: state.inFlight.filter((id) => id !== event.sceneId),
+        sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'failed', message: SKIPPED_MESSAGE } },
+      });
     }
     case 'stop':
       return { ...clearPause(requeueSubmitted(state)), status: 'idle' };

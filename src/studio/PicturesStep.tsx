@@ -326,7 +326,7 @@ function usingLine(state: SceneState | undefined): string {
   return `Using option ${state.pictureIds.indexOf(inUse) + 1} of ${state.pictureIds.length}`;
 }
 
-interface OptionsProps {
+export interface OptionsProps {
   ref?: Ref<HTMLDivElement>;
   project: Project;
   state: SceneState | undefined;
@@ -336,7 +336,7 @@ interface OptionsProps {
   onUse(pictureId: string): void;
 }
 
-function Options({ ref, project, state, urls, busy, onUse }: OptionsProps) {
+export function Options({ ref, project, state, urls, busy, onUse }: OptionsProps) {
   const ids = state?.pictureIds ?? [];
   const count = ids.length > 0 ? ids.length : project.outputsPerPrompt;
   const inUse = chosenPicture(state);

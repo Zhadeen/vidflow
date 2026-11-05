@@ -14,6 +14,11 @@ export interface SceneState {
   chosenPictureId?: string;
   /** While generating: the order and exact prompt this scene went to Flow with (result matching). */
   submission?: { seq: number; at: number; prompt: string };
+  /**
+   * Whether these pictures were made with the hero reference attached in Flow (the Queue's "hero ✓"). Absent for
+   * pictures saved before VidFlow recorded it: no mark rather than a guess.
+   */
+  withHero?: boolean;
   /** Flow media ids of the cards saved as this scene's pictures; never matched again. */
   cardKeys?: string[];
   /**
@@ -46,6 +51,10 @@ export interface Project {
   sceneStates: Record<string, SceneState>;
   /** The latest model sheet of the hero; absent until one is made. */
   heroSheet?: HeroSheet;
+  /** Files tab: the sub-folder of Downloads this video's files go to (absent: the video's name, made file-safe). */
+  downloadFolder?: string;
+  /** Pictures VidFlow already downloaded for this video: media id → the file name it was given. */
+  downloaded?: Record<string, string>;
 }
 
 interface VidflowDB extends DBSchema {
@@ -98,6 +107,25 @@ export async function getProject(id: string): Promise<Project | undefined> {
 export async function saveProject(p: Project): Promise<void> {
   p.updatedAt = Date.now();
   await (await db()).put('projects', p);
+}
+
+/**
+ * Changes one stored project in a single IndexedDB transaction (read and write together), so a change made by another
+ * page or the background meanwhile can't be lost between the read and the write. `edit` changes the project in place or
+ * returns its replacement, and must not await anything (the transaction would close). Returns the saved project, or
+ * undefined when it is gone.
+ */
+export async function updateProject(id: string, edit: (p: Project) => Project | void): Promise<Project | undefined> {
+  const tx = (await db()).transaction('projects', 'readwrite');
+  const stored = await tx.store.get(id);
+  let out: Project | undefined;
+  if (stored) {
+    out = edit(stored) ?? stored;
+    out.updatedAt = Date.now();
+    await tx.store.put(out);
+  }
+  await tx.done;
+  return out;
 }
 
 export async function listProjects(): Promise<Pick<Project, 'id' | 'name' | 'updatedAt'>[]> {

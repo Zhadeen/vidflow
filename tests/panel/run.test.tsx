@@ -28,7 +28,7 @@ const step = (projectId: string, scene: number, text: string): Step => ({
 });
 
 describe('side panel: while it runs', () => {
-  it('shows step, progress, counts and the scene strip (saved ✓ cream, current coral outline, upcoming navy)', async () => {
+  it('shows step, progress, counts and a row per scene (the one being worked on in a coral outline)', async () => {
     const p = await seed('Phone Bill Story', 6);
     const entries: ActivityEntry[] = Array.from({ length: 7 }, (_, i) => ({ at: 1000 * i, projectId: p.id, sceneId: null, text: `Line ${i}` }));
     stubChrome({ [STEP_KEY]: step(p.id, 3, 'Pressing Generate'), [ACTIVITY_KEY]: entries });
@@ -36,21 +36,16 @@ describe('side panel: while it runs', () => {
 
     expect(await screen.findByText('Phone Bill Story')).toBeTruthy();
     expect(await screen.findByText('Scene 3 of 6 · Pressing Generate')).toBeTruthy();
-    // The same progress as the Flow pill: saved, plus half for those being drawn.
+    // Saved, plus half for those being drawn (as the Flow pill counts).
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50');
-    expect(screen.getByText('2 saved · 2 being drawn · 2 to go')).toBeTruthy();
+    expect(screen.getByText('2 saved · 2 being drawn · 2 to go · 0 failed')).toBeTruthy();
 
-    const strip = within(screen.getByRole('list', { name: 'Scenes' })).getAllByRole('listitem');
-    expect(strip.map((s) => s.textContent)).toEqual(['✓1', '✓2', '3', '4', '5', '6']);
-    // Scene 4 is with Flow too but isn't the one being worked on: navy like the upcoming ones.
-    expect(strip.map((s) => s.getAttribute('data-state'))).toEqual(['saved', 'saved', 'current', 'drawing', 'upcoming', 'upcoming']);
-
-    // Saved = cream, the one being worked on = coral outline, the rest navy.
-    const rule = (state: string) => new RegExp(`li\\[data-state='${state}'\\]\\s*\\{([^}]*)\\}`).exec(panelCss)?.[1] ?? '';
-    expect(rule('saved')).toContain('background: var(--vf-cream)');
-    expect(rule('current')).toContain('border: 2px solid var(--vf-coral)');
-    expect(rule('upcoming')).toBe('');
-    expect(/\.vf-pn-strip li \{[^}]*background: var\(--vf-navy-line\)/.test(panelCss)).toBe(true);
+    const rows = within(screen.getByRole('list', { name: 'Scenes' })).getAllByRole('listitem');
+    expect(rows.map((r) => r.textContent?.slice(0, 2))).toEqual(['01', '02', '03', '04', '05', '06']);
+    // Scene 4 is with Flow too but isn't the one being worked on: only scene 3 is current.
+    expect(rows.map((r) => r.getAttribute('aria-current'))).toEqual([null, null, 'step', null, null, null]);
+    expect(/\.vf-pn-qrow\[data-current\]\s*\{[^}]*border-color: var\(--vf-coral\)/.test(panelCss)).toBe(true);
+    expect(/\.vf-pn-tag\[data-tone='done'\]\s*\{[^}]*background: var\(--vf-cream\)/.test(panelCss)).toBe(true);
 
     // The newest five activity lines; no switch here (the approved panel has one coral element: the primary).
     const activity = screen.getByRole('region', { name: 'Activity' });
@@ -72,7 +67,7 @@ describe('side panel: while it runs', () => {
     expect(await screen.findByText('Scene 3 of 6 · Pressing Generate')).toBeTruthy();
   });
 
-  it("scrolls the current scene's strip tile into view when the scene changes", async () => {
+  it("scrolls the current scene's row into view when the scene changes", async () => {
     const scrolled: Array<{ text: string | null; opts: unknown }> = [];
     const proto = HTMLElement.prototype as unknown as { scrollIntoView?: (o?: unknown) => void };
     const had = proto.scrollIntoView;
@@ -84,7 +79,7 @@ describe('side panel: while it runs', () => {
       stubChrome({ [STEP_KEY]: step(p.id, 3, 'Typing the prompt') });
       render(<Panel client={fakeBackground(runningState(p, 2, 1)).client()} />);
       await screen.findByText('Scene 3 of 6 · Typing the prompt');
-      await waitFor(() => expect(scrolled).toEqual([{ text: '3', opts: { block: 'nearest' } }]));
+      await waitFor(() => expect(scrolled.map((x) => [x.text?.slice(0, 2), x.opts])).toEqual([['03', { block: 'nearest' }]]));
 
       // Another step on the same scene: no scroll (the owner may have scrolled the strip themselves).
       await act(async () => {
@@ -100,7 +95,7 @@ describe('side panel: while it runs', () => {
           [STEP_KEY]: step(p.id, 4, 'Typing the prompt'),
         });
       });
-      await waitFor(() => expect(scrolled.at(-1)).toEqual({ text: '4', opts: { block: 'nearest' } }));
+      await waitFor(() => expect(scrolled.at(-1)?.text?.slice(0, 2)).toBe('04'));
       expect(scrolled).toHaveLength(2);
     } finally {
       if (had) proto.scrollIntoView = had;
@@ -108,7 +103,7 @@ describe('side panel: while it runs', () => {
     }
   });
 
-  it('a strip without scrollIntoView (jsdom) still renders the current scene', async () => {
+  it('a list without scrollIntoView (jsdom) still renders the current scene', async () => {
     const proto = HTMLElement.prototype as unknown as { scrollIntoView?: unknown };
     expect(proto.scrollIntoView).toBeUndefined();
     const p = await seed('Phone Bill Story', 6);
@@ -205,7 +200,7 @@ describe('studio after edits in the panel', () => {
 });
 
 describe('side panel: while the model sheet is made', () => {
-  it('says so in one line instead of the setup view and its coral Start', async () => {
+  it('the hero section says so and the coral Start waits', async () => {
     const p = await seed('Phone Bill Story', 6, (x) => (x.character = { description: 'a tall stickman' }));
     stubChrome();
     const sheetRun = {
@@ -216,8 +211,11 @@ describe('side panel: while the model sheet is made', () => {
       sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'submitted' as const, pictureIds: [] } },
     };
     render(<Panel client={fakeBackground(sheetRun).client()} />);
-    expect(await screen.findByText('Making the model sheet… Open the Script step in the full studio')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Start making pictures' })).toBeNull();
-    expect(document.querySelector('[data-variant="primary"]')).toBeNull();
+    expect(await screen.findByText('Flow is drawing the model sheet…')).toBeTruthy();
+    // Setup, not Queue: the sheet isn't a run of scenes.
+    expect(screen.getByRole('tab', { name: 'Setup' }).getAttribute('aria-selected')).toBe('true');
+    expect((screen.getByRole('button', { name: 'Start making pictures' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Make model sheet' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(document.querySelectorAll('[data-variant="primary"]')).toHaveLength(1);
   });
 });

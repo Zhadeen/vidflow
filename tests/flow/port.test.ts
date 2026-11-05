@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FlowBlockedError, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
+import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
 import { createFlowPort } from '../../src/flow/port';
 
 function setup(responses: unknown[], zoom = 1) {
@@ -136,5 +136,35 @@ describe('Flow port', () => {
     const { send, port } = setup([{ kind: 'ready', x: 1, y: 2 }]);
     await port.prepare(7, 's1', 'p', { verb: 'Resume', reference: { name: 'vidflow-hero-3f1c2a9e.png' } });
     expect(send).toHaveBeenCalledWith(7, { type: FLOW_PREPARE, prompt: 'p', verb: 'Resume', reference: { name: 'vidflow-hero-3f1c2a9e.png' } });
+  });
+
+  it("marks a block caused by Flow's usage notice, and asks the tab to accept it", async () => {
+    const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' };
+    const { send, port } = setup([{ kind: 'blocked', event, notice: true }, { kind: 'blocked', event }, { accepted: true }, undefined]);
+    const notice = await port.prepare(7, 's1', 'A stickman waves').catch((e: unknown) => e);
+    expect(notice).toBeInstanceOf(FlowBlockedError);
+    expect((notice as FlowBlockedError).notice).toBe(true);
+    const billing = await port.findNewProject(7, 'Resume').catch((e: unknown) => e);
+    expect((billing as FlowBlockedError).notice).toBe(false);
+    expect(await port.acceptNotice(7)).toBe(true);
+    expect(send).toHaveBeenLastCalledWith(7, { type: FLOW_ACCEPT_NOTICE });
+    expect(await port.acceptNotice(7)).toBeNull(); // no answer (e.g. the page reloaded)
+  });
+
+  it('carries the notice flag on upload and confirm answers', async () => {
+    const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' };
+    const { port } = setup([{ kind: 'blocked', event, notice: true }, { started: false, notice: true }, { started: true }, { started: false }]);
+    const err = await port.uploadReference(7, 'ref.png', new Blob([new Uint8Array([1])], { type: 'image/png' })).catch((e: unknown) => e);
+    expect((err as FlowBlockedError).notice).toBe(true);
+    expect(await port.confirmStarted(7)).toBe('notice');
+    expect(await port.confirmStarted(7)).toBe(true);
+    expect(await port.confirmStarted(7)).toBe(false);
+  });
+
+  it('a billing dialog after Generate comes back as billing; a notice already gone as gone', async () => {
+    const { port } = setup([{ started: false, billing: true }, { accepted: false, gone: true }, { accepted: false }]);
+    expect(await port.confirmStarted(7)).toBe('billing');
+    expect(await port.acceptNotice(7)).toBe('gone');
+    expect(await port.acceptNotice(7)).toBe(false);
   });
 });

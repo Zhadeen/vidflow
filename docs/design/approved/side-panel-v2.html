@@ -1,0 +1,141 @@
+<h2>VidFlow side panel — the full control centre</h2>
+<p class="subtitle">Same navy, cream and coral. Four tabs, so the small panel can do everything; the full studio stays for big editing. Left to right: Setup, Queue (while running), Checks, Files. One coral button per screen.</p>
+
+<style>
+.vp{width:340px;min-height:640px;border-radius:12px;overflow:hidden;font:13px/1.45 -apple-system,'Inter',system-ui,sans-serif;color:#F4EDE0;background:radial-gradient(120% 60% at 90% 0%,rgba(255,107,91,.18) 0%,rgba(255,107,91,0) 55%),#14213D;border:1px solid #24345A;display:flex;flex-direction:column}
+.vp-top{padding:12px 14px 0;display:flex;justify-content:space-between;align-items:center}
+.vp-top b{font-size:15px}.vp-top span{font-size:12px;color:#C9C3B6}
+.vp-health{margin:8px 14px 0;font-size:12px;color:#C9C3B6;display:flex;gap:6px;flex-wrap:wrap}
+.ok{color:#F4EDE0}.ok:before{content:"✓ ";color:#F4EDE0}
+.tabs{display:flex;gap:4px;margin:10px 14px 0;border-bottom:1px solid #24345A}
+.tab{padding:7px 10px;font-size:12px;color:#A9B0C2;border-bottom:2px solid transparent}
+.tab.on{color:#F4EDE0;border-bottom-color:#F4EDE0;font-weight:600}
+.body{padding:12px 14px;display:flex;flex-direction:column;gap:9px;flex:1}
+.lbl{font-size:12px;color:#C9C3B6}
+.field{background:#1B2A4C;border:1px solid #2C3D66;border-radius:8px;padding:8px 10px}
+.row{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:5px 10px;border-radius:999px;border:1px solid #2C3D66;font-size:12px}
+.chip.on{background:#F4EDE0;color:#14213D;font-weight:600;border-color:#F4EDE0}
+.sec{padding:7px 10px;border:1.5px solid #F4EDE0;border-radius:12px;font-weight:600;font-size:12px;text-align:center}
+.primary{background:#FF6B5B;color:#14213D;font-weight:700;text-align:center;padding:12px;border-radius:12px;margin-top:auto}
+.note{font-size:11px;color:#A9B0C2}
+.hero{display:flex;gap:10px;align-items:center}
+.thumb{width:44px;height:44px;border-radius:8px;background:#F4EDE0;color:#14213D;display:flex;align-items:center;justify-content:center;font-size:20px}
+.q{display:flex;flex-direction:column;gap:6px}
+.qrow{display:grid;grid-template-columns:38px 1fr auto;gap:8px;align-items:center;background:#1B2A4C;border:1px solid #2C3D66;border-radius:8px;padding:6px 8px}
+.qrow.cur{border-color:#FF6B5B}
+.qimg{width:38px;height:24px;border-radius:4px;background:#F4EDE0}
+.qimg.none{background:#24345A}
+.qt{font-size:12px}.qt small{display:block;color:#A9B0C2;font-size:11px}
+.tag{font-size:10px;padding:2px 7px;border-radius:999px;border:1px solid #2C3D66;white-space:nowrap}
+.tag.done{background:#F4EDE0;color:#14213D;border-color:#F4EDE0;font-weight:700}
+.tag.cur{border-color:#FF6B5B;color:#F4EDE0}
+.filters{display:flex;gap:4px;flex-wrap:wrap}
+.filters span{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid #2C3D66;color:#C9C3B6}
+.filters span.on{background:#24345A;color:#F4EDE0}
+.bar{height:6px;background:#24345A;border-radius:3px}.bar i{display:block;height:6px;width:42%;background:#F4EDE0;border-radius:3px}
+.check{display:flex;justify-content:space-between;align-items:center;background:#1B2A4C;border:1px solid #2C3D66;border-radius:8px;padding:8px 10px;font-size:12px}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;background:#F4EDE0;color:#14213D;font-weight:700}
+.badge.warn{background:transparent;color:#F4EDE0;border:1px solid #FF6B5B}
+.switch{width:30px;height:16px;border-radius:9px;background:#FF6B5B;position:relative}.switch:after{content:"";position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:50%;background:#14213D}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}.grid4 i{aspect-ratio:16/9;background:#F4EDE0;border-radius:4px}
+.wrapv{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+</style>
+
+<div class="wrapv">
+
+<!-- SETUP -->
+<div class="vp">
+  <div class="vp-top"><b>〰 VidFlow</b><span>‹ &nbsp; Open full studio ↗</span></div>
+  <div class="vp-health"><span class="ok">Signed in</span><span class="ok">Flow ready</span><span class="ok">Hero attached</span></div>
+  <div class="tabs"><span class="tab on">Setup</span><span class="tab">Queue 24</span><span class="tab">Checks</span><span class="tab">Files</span></div>
+  <div class="body">
+    <div class="lbl">Video</div><div class="field">Phone Bill Story ▾ &nbsp;<span class="note">+ New</span></div>
+    <div class="lbl">1 · Get your scenes</div>
+    <div class="row"><div class="sec" style="flex:1">Copy Claude prompt</div><div class="sec" style="flex:1">Copy rapid-beat</div></div>
+    <div class="field" style="height:58px;color:#A9B0C2;font-size:12px">Paste Claude's reply here… or <u>upload a CSV / TXT / PDF</u></div>
+    <div class="note" style="color:#F4EDE0">✓ 24 scenes found · no problems &nbsp; <u>Use these scenes</u></div>
+    <div class="lbl">2 · Look</div>
+    <div class="row"><span class="chip on">16:9</span><span class="chip">9:16</span><span class="chip">1:1</span><span class="chip on">2 per scene</span><span class="chip">4</span></div>
+    <div class="field">Style: Classic whiteboard stickman ▾</div>
+    <div class="lbl">3 · Hero</div>
+    <div class="hero"><div class="thumb">🧢</div><div style="flex:1"><div style="font-size:12px">A short stickman with a red cap</div><div class="note">Reference picture ✓ · attached to every scene</div></div></div>
+    <div class="row"><div class="sec" style="flex:1">Upload picture</div><div class="sec" style="flex:1">Make model sheet</div></div>
+    <div class="note">48 pictures · 0 Flow credits · ~9 min</div>
+    <div class="primary">Start making pictures</div>
+  </div>
+</div>
+
+<!-- QUEUE -->
+<div class="vp">
+  <div class="vp-top"><b>〰 VidFlow</b><span>‹ &nbsp; Open full studio ↗</span></div>
+  <div class="vp-health"><span class="ok">Signed in</span><span class="ok">Flow ready</span><span class="ok">Hero attached</span></div>
+  <div class="tabs"><span class="tab">Setup</span><span class="tab on">Queue 24</span><span class="tab">Checks</span><span class="tab">Files</span></div>
+  <div class="body">
+    <div><b>Phone Bill Story</b><div class="note">Scene 9 of 24 · Checking picture 2 of 2 matches its prompt</div></div>
+    <div class="bar"><i></i></div>
+    <div class="note">8 saved · 2 being drawn · 14 to go · 0 failed</div>
+    <div class="filters"><span class="on">All 24</span><span>Drawing 2</span><span>To go 14</span><span>Failed 0</span><span>Done 8</span></div>
+    <div class="q">
+      <div class="qrow"><div class="qimg"></div><div class="qt">07 · "So I switched everything off"<small>00:21–00:24 · ✓ checked · hero ✓ · 2 options</small></div><span class="tag done">✓ Saved</span></div>
+      <div class="qrow"><div class="qimg"></div><div class="qt">08 · "and waited for the bill"<small>00:24–00:27 · ✓ checked · hero ✓ · 2 options</small></div><span class="tag done">✓ Saved</span></div>
+      <div class="qrow cur"><div class="qimg none"></div><div class="qt">09 · "It came. It was bigger."<small>00:27–00:30 · checking picture 2…</small></div><span class="tag cur">Checking</span></div>
+      <div class="qrow"><div class="qimg none"></div><div class="qt">10 · "Much, much bigger."<small>00:30–00:32 · sent to Flow</small></div><span class="tag">Drawing</span></div>
+      <div class="qrow"><div class="qimg none"></div><div class="qt">11 · "I opened every drawer"<small>00:32–00:35</small></div><span class="tag">▶ Run</span></div>
+    </div>
+    <div class="lbl" style="margin-top:4px">Activity</div>
+    <div class="note">12:24:51 Scene 9 · Checking picture 2 of 2<br>12:24:44 Scene 8 · ✓ Saved 2 pictures</div>
+    <div class="row" style="margin-top:auto"><div class="primary" style="flex:1;margin:0">Pause</div><div class="sec" style="padding:12px 14px">Stop</div><div class="sec" style="padding:12px 10px">Skip</div></div>
+  </div>
+</div>
+
+<!-- CHECKS -->
+<div class="vp">
+  <div class="vp-top"><b>〰 VidFlow</b><span>‹ &nbsp; Open full studio ↗</span></div>
+  <div class="vp-health"><span class="ok">Signed in</span><span class="ok">Flow ready</span><span class="ok">Hero attached</span></div>
+  <div class="tabs"><span class="tab">Setup</span><span class="tab">Queue 24</span><span class="tab on">Checks</span><span class="tab">Files</span></div>
+  <div class="body">
+    <div class="lbl">Before starting — checked just now</div>
+    <div class="check">Google account · unscripted4ce<span class="badge">✓ Signed in</span></div>
+    <div class="check">Flow page &amp; project<span class="badge">✓ Ready</span></div>
+    <div class="check">Prompt box<span class="badge">✓ Found</span></div>
+    <div class="check">Generate button<span class="badge">✓ Found</span></div>
+    <div class="check">Agent mode<span class="badge">✓ Off</span></div>
+    <div class="check">Flow settings · Nano Banana 2.1 · 16:9 · x2<span class="badge">✓ Match</span></div>
+    <div class="check">Hero reference<span class="badge">✓ Ready</span></div>
+    <div class="check">Credits · 1,043 (resets 13 Nov)<span class="badge">✓ 0 needed</span></div>
+    <div class="lbl" style="margin-top:4px">Automation</div>
+    <div class="check">Accept Flow's notices automatically<div class="switch"></div></div>
+    <div class="check">Keep Mac awake while running<div class="switch"></div></div>
+    <div class="row"><div class="sec" style="flex:1">Show me in Flow</div><div class="sec" style="flex:1">Test one prompt</div></div>
+    <div class="primary">Check again</div>
+  </div>
+</div>
+
+<!-- FILES -->
+<div class="vp">
+  <div class="vp-top"><b>〰 VidFlow</b><span>‹ &nbsp; Open full studio ↗</span></div>
+  <div class="vp-health"><span class="ok">Signed in</span><span class="ok">Flow ready</span><span class="ok">Hero attached</span></div>
+  <div class="tabs"><span class="tab">Setup</span><span class="tab">Queue 24</span><span class="tab">Checks</span><span class="tab on">Files</span></div>
+  <div class="body">
+    <div class="lbl">24 scenes · 48 pictures saved in VidFlow</div>
+    <div class="grid4"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="lbl">Download to your Mac</div>
+    <div class="field">Folder: Downloads / Phone Bill Story</div>
+    <div class="field">Names: Slide_01_00m00s-00m03s.png ▾</div>
+    <div class="row"><span class="chip on">Chosen picture only</span><span class="chip">Both options</span></div>
+    <div class="note">Saved automatically as each scene finishes (switch in Checks).</div>
+    <div class="lbl" style="margin-top:4px">Also</div>
+    <div class="row"><div class="sec" style="flex:1">Slide list (CSV)</div><div class="sec" style="flex:1">Timing file</div></div>
+    <div class="lbl" style="margin-top:4px">Coming next</div>
+    <div class="note">Clips · Voice · Finished video (MP4)</div>
+    <div class="primary">Download all 24 pictures</div>
+  </div>
+</div>
+
+</div>
+
+<div class="section">
+  <h3>What makes it an upgrade at a glance</h3>
+  <p class="subtitle">Every slide row shows "✓ checked" (matched to its own prompt), "hero ✓" and "2 options". Health ticks sit under the header on every tab. Pauses show a plain reason with Resume. "‹" collapses the panel to a slim icon rail.</p>
+</div>

@@ -1,7 +1,14 @@
 /// <reference types="chrome" />
-import type { FlowResultCard, StartVerb } from '../flow/driver';
+import { policyDialogMessage, type FlowResultCard, type StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
-import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, type Point, type SubmitOptions } from '../flow/messages';
+import {
+  FlowBlockedError,
+  REFERENCE_ATTACH_MESSAGE,
+  TEST_WHILE_STARTING_MESSAGE,
+  testPromptRefusal as refusalForStatus,
+  type Point,
+  type SubmitOptions,
+} from '../flow/messages';
 import { isFlowUrl } from '../flow/hosts';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { liveView } from '../flow/live';
@@ -10,7 +17,9 @@ import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
-import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
+import { getMediaStore, getProject, updateProject, type Project, type SceneState } from '../store/projects';
+import { getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
+import { autoSaveScene, forgetDownloads } from '../files/downloads';
 import {
   HERO_SHEET_ID,
   initHeroSheetRun,
@@ -22,6 +31,7 @@ import {
   NOT_THIS_SCENES_PICTURE,
   reduceRun,
   runSummary,
+  SKIPPED_MESSAGE,
   USER_PAUSE_REASON,
   type RunEvent,
   type RunState,
@@ -38,8 +48,12 @@ export interface FlowPort {
   findNewProject(tabId: number, verb: StartVerb): Promise<Point>;
   /** Trusted press at a point in the tab. */
   press(tabId: number, x: number, y: number): Promise<void>;
-  /** After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s). */
-  confirmStarted(tabId: number): Promise<boolean>;
+  /**
+   * After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s); 'notice' when it
+   * didn't start and Flow's usage-policy / rights notice is showing instead; 'billing' when a billing or upgrade
+   * dialog is (never accepted).
+   */
+  confirmStarted(tabId: number): Promise<boolean | 'notice' | 'billing'>;
   /** The result tiles in the Flow tab's DOM right now. */
   tiles(tabId: number): Promise<FlowResultCard[]>;
   /** Where the finished tile with this media id is (scrolled into view), to open its detail view. */
@@ -51,6 +65,12 @@ export interface FlowPort {
    * answers with the media id of the grid tile it makes, or null when that didn't show.
    */
   uploadReference(tabId: number, name: string, image: Blob): Promise<string | null>;
+  /**
+   * Ticks and accepts Flow's open usage-policy / rights notice in VidFlow's own Flow tab (never a billing dialog).
+   * False when it couldn't; null when the page gave no answer (e.g. it reloaded after accepting); 'gone' when no notice
+   * is showing any more (accepted or closed meanwhile).
+   */
+  acceptNotice(tabId: number): Promise<boolean | null | 'gone'>;
 }
 
 // The VidFlow logo (public/icon/128.png); chrome requires an iconUrl on basic notifications.
@@ -150,6 +170,10 @@ let unconfirmedAttempt = 0;
 let inDetail = false;
 let matching = false;
 let matchAgain = false;
+/** The scene submitScene is sending now (typing its prompt or pressing Generate), for Skip. */
+let submitting: string | null = null;
+
+export { SKIPPED_MESSAGE };
 
 /** Run `fn` after everything queued before it, so state changes and saves never interleave. */
 function enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -267,6 +291,22 @@ function ensureFlowTab(): Promise<number> {
   });
   return openingFlowTab;
 }
+
+/** VidFlow's own Flow tab and its address, only if it is open now (never opens one). */
+export async function currentFlowTab(): Promise<{ tabId: number; url: string } | null> {
+  const saved = await savedFlowWindow();
+  if (!saved) return null;
+  try {
+    const tab = await chrome.tabs.get(saved.tabId);
+    const url = tab.pendingUrl ?? tab.url;
+    return tab.windowId === saved.windowId && isFlowUrl(url) ? { tabId: saved.tabId, url: url! } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** VidFlow's own Flow tab, opening its window on Flow's home page if there is none (no Flow project is made). */
+export const openFlowTab = (): Promise<number> => ensureFlowTab();
 
 async function findOrOpenFlowTab(): Promise<number> {
   const saved = await savedFlowWindow();
@@ -392,10 +432,10 @@ async function commit(next: RunState): Promise<void> {
   state = next;
   await chrome.storage.local.set({ [RUN_KEY]: next });
 
-  // Re-read the project so edits made in Studio meanwhile are not overwritten; only sceneStates (or, for a model
-  // sheet run, heroSheet) is ours. The sheet never goes into sceneStates: it isn't a scene.
-  const project = await getProject(next.projectId);
-  if (project) {
+  // Read and write the project in one transaction so edits made in the studio or panel meanwhile (and pictures marked
+  // downloaded) are never overwritten; only sceneStates (or, for a model sheet run, heroSheet) is ours. The sheet never
+  // goes into sceneStates: it isn't a scene.
+  const project = await updateProject(next.projectId, (project) => {
     if (isHeroSheetRun(next)) {
       const sheet = next.sceneStates[HERO_SHEET_ID];
       if (sheet) {
@@ -407,13 +447,14 @@ async function commit(next: RunState): Promise<void> {
         };
       }
     } else project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
-    await saveProject(project);
-    noteChanges(prev, next, project);
-  }
+  });
+  if (project) noteChanges(prev, next, project);
   if (next.status !== 'running') setStep(null).catch((err) => console.warn('[VidFlow] step clear failed', err));
 
-  if (next.status === 'running') chrome.power.requestKeepAwake('system');
-  else {
+  if (next.status === 'running') {
+    if (await getKeepAwake()) chrome.power.requestKeepAwake('system');
+    else chrome.power.releaseKeepAwake();
+  } else {
     chrome.power.releaseKeepAwake();
     // Drop the debugger (and Chrome's "started debugging" bar) whenever the run is not pressing Generate.
     const flow = await savedFlowWindow();
@@ -457,9 +498,54 @@ function stillRunning(projectId: string): boolean {
   return state?.status === 'running' && state.projectId === projectId;
 }
 
+/** Still waiting to be sent (not skipped meanwhile): Generate is only pressed for such a scene. */
+function stillPending(sceneId: string): boolean {
+  return state?.sceneStates[sceneId]?.status === 'pending';
+}
+
 /** True while this run is running or paused: results already in Flow are still collected (nothing new is sent). */
 function stillCollecting(projectId: string): boolean {
   return (state?.status === 'running' || state?.status === 'paused') && state.projectId === projectId;
+}
+
+export const ACCEPTED_NOTICE_TEXT = "Accepted Flow's notice";
+
+/**
+ * Consecutive Generate presses per scene that Flow answered with its notice. The first is accepted; a second in a row
+ * pauses (like pastNotice's one retry), so a notice that keeps coming back can't press Generate forever.
+ */
+const postPressNotices = new Map<string, number>();
+
+/**
+ * A usage notice seen while the run only waits for tiles (no prepare to find it) is accepted at most this many times
+ * between prompts Flow takes (and per Start or Resume); one more pauses, so a notice that keeps coming back can't loop.
+ */
+export const MAX_WAITING_NOTICES = 3;
+let waitingNotices = 0;
+
+function logAcceptedNotice(projectId: string, sceneId: string | null): void {
+  logActivity({ at: Date.now(), projectId, sceneId, text: ACCEPTED_NOTICE_TEXT }).catch((e) =>
+    console.warn('[VidFlow] activity write failed', e),
+  );
+}
+
+/**
+ * Runs a Flow step (prepare, or finding New project). When Flow's usage-policy / rights notice blocked it and "Accept
+ * Flow's notices automatically" is on, accepts the notice, logs it, and runs the step once more. Anything else (a
+ * billing dialog, the switch off, a notice that couldn't be accepted or is still there) throws as before, so the run
+ * pauses with the existing message.
+ */
+async function pastNotice<T>(tabId: number, projectId: string, sceneId: string | null, step: () => Promise<T>): Promise<T> {
+  try {
+    return await step();
+  } catch (err) {
+    if (!(err instanceof FlowBlockedError) || !err.notice || !(await getAcceptNotices())) throw err;
+    const accepted = await port!.acceptNotice(tabId).catch(() => null);
+    if (accepted === false) throw err;
+    // No answer (the page reloaded) still gets its one retry: if the notice is there, the retry pauses as before.
+    if (accepted === true) logAcceptedNotice(projectId, sceneId);
+    return step();
+  }
 }
 
 /**
@@ -480,7 +566,7 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
     await chrome.tabs.update(tabId, { url: FLOW_URL });
     await waitForUrl(tabId, isFlowHome);
   }
-  const at = await port!.findNewProject(tabId, PUMP_VERB);
+  const at = await pastNotice(tabId, projectId, null, () => port!.findNewProject(tabId, PUMP_VERB));
   if (!stillRunning(projectId)) return false;
   await pressIn(tabId, at.x, at.y);
   if (!stillRunning(projectId)) await detachFlowDebugger(tabId); // paused or stopped during the press
@@ -500,6 +586,10 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
 }
 
 const isFinished = (c: FlowResultCard) => c.imageUrl !== null && c.progress === null && !c.key.startsWith('pending-');
+/** A skipped submission's place in matching: never a scene id. */
+const SKIPPED_SLOT = 'skipped:';
+/** Skipped submissions still within a scene's deadline (older ones are closed: Flow won't draw them now). */
+const liveSkipped = (run: RunState, now: number) => (run.skippedPrompts ?? []).filter((x) => now - x.at < DEADLINE_MINUTES * 60_000);
 const oldestFirst = (cards: FlowResultCard[]) => [...cards].sort((a, b) => b.domIndex - a.domIndex);
 
 /** Flow card keys already saved for a scene, or the hero reference's own tile; never matched to a scene. */
@@ -539,7 +629,7 @@ async function ensureReference(tabId: number, project: Project): Promise<string 
   note(project, null, 'Adding the hero reference picture to Flow', 'project');
   let key: string | null;
   try {
-    key = await port!.uploadReference(tabId, name, image);
+    key = await pastNotice(tabId, project.id, null, () => port!.uploadReference(tabId, name, image));
   } catch (err) {
     // Without the reference no scene may be sent (its prompt names it): pause, never fail the scene.
     if (err instanceof FlowBlockedError) throw err;
@@ -557,6 +647,15 @@ async function ensureReference(tabId: number, project: Project): Promise<string 
  * pending unless Flow confirmed the start.
  */
 async function submitScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
+  submitting = sceneId;
+  try {
+    return await sendScene(tabId, project, sceneId, prompt);
+  } finally {
+    submitting = null;
+  }
+}
+
+async function sendScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
   const projectId = project.id;
   try {
     if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop'; // stopped meanwhile; scene stays pending
@@ -577,6 +676,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
         return 'next';
       }
       if (found) {
+        postPressNotices.delete(sceneId); // Flow did start it after all
         await dispatch({ type: 'submitted', sceneId, prompt: unconfirmed.prompt, at: Date.now() });
         return 'next';
       }
@@ -585,27 +685,53 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     const aspect = aspectOf(state, project);
     note(project, null, `Set Flow to Image · ${aspect} · ${pictures(n)}`, 'setting');
     note(project, sceneId, 'Typing the prompt', 'prompt');
-    const at = await port!.prepare(tabId, sceneId, prompt, {
-      aspect,
-      outputs: n,
-      verb: PUMP_VERB,
-      ...(reference ? { reference: { name: reference } } : {}),
-    });
+    const at = await pastNotice(tabId, projectId, sceneId, () =>
+      port!.prepare(tabId, sceneId, prompt, {
+        aspect,
+        outputs: n,
+        verb: PUMP_VERB,
+        ...(reference ? { reference: { name: reference } } : {}),
+      }),
+    );
     // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
     if (!stillRunning(projectId)) return 'stop';
+    if (!stillPending(sceneId)) return 'next'; // skipped while it was typed: never pressed
     const keysBefore = (await port!.tiles(tabId)).filter(isFinished).map((c) => c.key);
     if (!stillRunning(projectId)) return 'stop';
     // Recorded before the press: if the worker is suspended before Flow's start is confirmed, the next pump looks for
     // this scene's tiles before pressing again (no surplus batch). `submitted` clears it.
     await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
     if (!stillRunning(projectId)) return 'stop';
+    if (!stillPending(sceneId)) return 'next';
     note(project, sceneId, 'Pressing Generate', 'generate');
     await pressIn(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
-    if (!(await port!.confirmStarted(tabId))) {
+    const started = await port!.confirmStarted(tabId);
+    if (started === 'notice') {
+      // Flow answered Generate with its usage notice. Accepted (once in a row per scene): the scene stays unconfirmed,
+      // so the next round looks for its tiles before pressing again (findUnconfirmedStart). Otherwise the pause names
+      // the notice.
+      const rounds = (postPressNotices.get(sceneId) ?? 0) + 1;
+      postPressNotices.set(sceneId, rounds);
+      if (rounds === 1 && (await getAcceptNotices()) && (await port!.acceptNotice(tabId).catch(() => null)) === true) {
+        logAcceptedNotice(projectId, sceneId);
+        return 'next';
+      }
+      postPressNotices.delete(sceneId); // after the owner's Resume, the next notice gets its one accept again
+      await dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
+      return 'stop';
+    }
+    postPressNotices.delete(sceneId); // started (or a different failure): the next notice is a new one
+    if (started === 'billing') {
+      // Flow answered Generate with a billing or upgrade dialog: VidFlow never touches it. The owner reads it.
+      await dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
+      return 'stop';
+    }
+    if (!started) {
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
       return 'stop';
     }
+    waitingNotices = 0; // Flow took a prompt: a notice seen while waiting starts its count again
     await dispatch({ type: 'submitted', sceneId, prompt, at: Date.now() });
     return 'next';
   } catch (err) {
@@ -639,13 +765,27 @@ async function findUnconfirmedStart(
   if (!state) return null;
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
-  const fresh = oldestFirst(await port!.tiles(tabId)).filter(
-    (c) => !before.has(c.key) && !claimed.has(c.key) && notReference(state!)(c),
-  );
-  const samePromptInFlight = state.inFlight.filter((id) =>
-    verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? ''),
-  ).length;
-  const owedToOthers = samePromptInFlight * outputsOf(state, project);
+  const all = (await port!.tiles(tabId)).filter((c) => !claimed.has(c.key) && notReference(state!)(c));
+  const fresh = oldestFirst(all).filter((c) => !before.has(c.key));
+  const outputs = outputsOf(state, project);
+  // A skipped submission whose tiles were already in the grid before this press owes nothing new: place the in-flight
+  // and skipped submissions on the tiles seen before the press, and count only the skipped ones still open.
+  const sameSkipped = liveSkipped(state, Date.now()).filter((x) => verifyMatch(u.prompt, x.prompt));
+  let skippedOwed = sameSkipped.length;
+  if (skippedOwed > 0) {
+    const subs: Submission[] = [
+      ...state.inFlight.flatMap((id) => {
+        const sub = state?.sceneStates[id]?.submission;
+        return sub ? [{ sceneId: id, prompt: sub.prompt, seq: sub.seq, submittedAt: sub.at }] : [];
+      }),
+      ...sameSkipped.map((x) => ({ sceneId: `${SKIPPED_SLOT}${x.seq}`, prompt: x.prompt, seq: x.seq, submittedAt: x.at })),
+    ];
+    const placed = matchResults(subs, all.filter((c) => before.has(c.key)), claimed, outputs, state.detailPrompts ?? {});
+    skippedOwed -= placed.filter((m) => m.sceneId.startsWith(SKIPPED_SLOT) && m.kind !== 'unconfirmed').length;
+  }
+  const samePromptInFlight =
+    state.inFlight.filter((id) => verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? '')).length + skippedOwed;
+  const owedToOthers = samePromptInFlight * outputs;
   let hits = 0;
   let generating = 0;
   const attempt = -++unconfirmedAttempt; // each Resume check is its own attempt (tile reports count up from 1)
@@ -831,10 +971,21 @@ async function matchOnce(): Promise<void> {
         : [];
     });
     if (submissions.length === 0) return;
+    // Skipped submissions keep their place in the order (their tiles never shift onto later scenes); never saved.
+    // A skipped submission Flow hasn't drawn within a scene's deadline never will: it stops holding a place.
+    const now = Date.now();
+    const skipped: Submission[] = liveSkipped(run, now).map((x) => ({
+      sceneId: `${SKIPPED_SLOT}${x.seq}`,
+      prompt: x.prompt,
+      seq: x.seq,
+      submittedAt: x.at,
+    }));
     const report = latestReport;
     const cards = report.cards.filter(notReference(run));
     const details = run.detailPrompts ?? {};
-    const matches = matchResults(submissions, cards, claimedKeys(run), outputsOf(run, project), details);
+    const matches = matchResults([...submissions, ...skipped], cards, claimedKeys(run), outputsOf(run, project), details).filter(
+      (m) => !m.sceneId.startsWith(SKIPPED_SLOT),
+    );
     // A report taken while the grid may still be redrawing (just back from a detail page) can't make VidFlow give up.
     const settled = report.at - lastDetailReturn >= SETTLE_MS;
     const unconfirmedNow = new Set(matches.filter((m) => m.kind === 'unconfirmed').map((m) => m.sceneId));
@@ -887,6 +1038,12 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
   const sheet = sceneId === HERO_SHEET_ID && isHeroSheetRun(state);
   const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
   const base = sheet ? HERO_SHEET_ID : `scene-${nn}`;
+  // Skipped or stopped meanwhile: nothing is written (its files would replace the scene's pictures).
+  const wanted = () => state?.projectId === project.id && state.inFlight.includes(sceneId);
+  // The reference uploaded into this run's Flow project was attached to every prompt sent in it.
+  const withHero = !sheet && !!state?.reference && state.reference.flowProjectUrl === state.flowProjectUrl;
+  // Media id → the signed Flow address it came from: auto-save downloads from there (a data: URL can't carry 4 MB).
+  const urls: Record<string, string> = {};
   try {
     const mediaIds: string[] = [];
     for (const [i, key] of cardKeys.entries()) {
@@ -896,14 +1053,24 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
         await dispatch({ type: 'failed', sceneId, message: UNTRUSTED_PICTURE_MESSAGE });
         return;
       }
+      if (!wanted()) return;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`picture fetch ${res.status}`);
-      mediaIds.push(await getMediaStore().put(project.id, `${base}-option-${i + 1}`, await res.blob()));
+      const blob = await res.blob();
+      if (!wanted()) return;
+      const mediaId = await getMediaStore().put(project.id, `${base}-option-${i + 1}`, blob);
+      mediaIds.push(mediaId);
+      urls[mediaId] = url;
     }
-    await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys });
+    // Made again under the same media ids: the old files on the Mac are not these pictures.
+    if (!sheet) await enqueue(() => forgetDownloads(project.id, mediaIds)).catch((err) => console.warn('[VidFlow] download record failed', err));
+    await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys, withHero });
   } catch {
     await dispatch({ type: 'failed', sceneId, message: SAVE_FAILED_MESSAGE });
+    return;
   }
+  // Auto-save (when its switch is on): never awaited, never fails the run; its project write takes the queue's turn.
+  if (!sheet) void autoSaveScene(project.id, sceneId, { urls, writer: (write) => enqueue(write) });
 }
 
 async function pump(): Promise<void> {
@@ -943,6 +1110,92 @@ async function pump(): Promise<void> {
 
 // ---- Public API ----------------------------------------------------------
 
+/** Which run is about to start: a model sheet only needs the account, the page and the prompt bar. */
+export type StartChecksKind = 'scenes' | 'sheet';
+/** Runs the Checks before a start: the failing check's plain fix, or null to go ahead. */
+export type StartChecks = (projectId: string, kind: StartChecksKind) => Promise<string | null>;
+let startChecks: StartChecks | null = null;
+
+/**
+ * The background sets this to the Checks (src/runs/checks.ts) so every Start runs them first. Unset (tests, the e2e
+ * build), a start goes straight ahead as before.
+ */
+export function setStartChecks(fn: StartChecks | null): void {
+  startChecks = fn;
+}
+
+export const TESTING_PROMPT_MESSAGE = 'VidFlow is testing one prompt in Flow. Wait a few seconds, then press Start again.';
+/** Test one prompt pressed again while it is still testing (never "press Start": the owner pressed Test one prompt). */
+export const ALREADY_TESTING_MESSAGE = 'VidFlow is already testing one prompt. Wait a few seconds, then try again.';
+let testingPrompt = false;
+/** Starts in progress (from the press until the run is committed or refused): Test one prompt waits for them. */
+let starting = 0;
+
+/** Holds `starting` while a Start runs its checks and commits, so Test one prompt can't use the tab meanwhile. */
+async function asStart<T>(fn: () => Promise<T>): Promise<T> {
+  starting++;
+  try {
+    return await fn();
+  } finally {
+    starting--;
+  }
+}
+
+/** Why Test one prompt can't use VidFlow's Flow tab now (a start under way, a running or paused run), or null. */
+export function testPromptRefusal(): string | null {
+  return starting > 0 ? TEST_WHILE_STARTING_MESSAGE : refusalForStatus(state?.status);
+}
+
+/** Test one prompt holds this while it uses the Flow tab: no run may start meanwhile (it would type over the test). */
+export async function whileTestingPrompt<T>(fn: () => Promise<T>): Promise<T> {
+  if (testingPrompt) throw new RunBlockedError(ALREADY_TESTING_MESSAGE);
+  if (starting > 0) throw new RunBlockedError(TEST_WHILE_STARTING_MESSAGE);
+  testingPrompt = true;
+  try {
+    return await fn();
+  } finally {
+    testingPrompt = false;
+  }
+}
+
+/** Throws RunBlockedError with the failing check's fix; nothing is started or committed. */
+async function passStartChecks(projectId: string, kind: StartChecksKind): Promise<void> {
+  if (!startChecks) return;
+  const problem = await startChecks(projectId, kind);
+  if (problem) throw new RunBlockedError(problem);
+}
+
+/**
+ * Test one prompt: puts VidFlow's Flow tab on a fresh Flow project (pressing Flow's own New project on its home page)
+ * unless it is on one already. Never while a run is live, and never touches the run's state. Throws FlowBlockedError
+ * (wrong account, a notice) or Error with a plain message.
+ */
+export async function openTestFlowProject(tabId: number): Promise<void> {
+  await ready;
+  const refused = testPromptRefusal();
+  if (refused) throw new RunBlockedError(refused);
+  if (!port) throw new Error(NO_PORT_MESSAGE);
+  await withTab(async () => {
+    if (projectUrlOf(await tabUrl(tabId))) return;
+    if (!isFlowHome(await tabUrl(tabId))) {
+      await chrome.tabs.update(tabId, { url: FLOW_URL });
+      await waitForUrl(tabId, isFlowHome);
+    }
+    const at = await port!.findNewProject(tabId, 'Test'); // its refusals say "try again", never "press Start"
+    const now = testPromptRefusal();
+    if (now) throw new RunBlockedError(now);
+    try {
+      await pressIn(tabId, at.x, at.y);
+    } finally {
+      await detachFlowDebugger(tabId); // no run is pressing Generate: drop Chrome's debugging bar at once
+    }
+    if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) !== null))) throw new Error(TEST_NO_PROJECT_MESSAGE);
+  });
+}
+
+const TEST_NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then try again.";
+const NO_PORT_MESSAGE = "VidFlow can't reach the Flow page yet. Try again in a moment.";
+
 /** Why a run for `projectId` can't start now (another project's run is running, or paused with work left), or null. */
 async function startBlocker(projectId: string): Promise<string | null> {
   if (state && isHeroSheetRun(state) && isLive(state)) return sheetBlock(state);
@@ -956,17 +1209,38 @@ async function startBlocker(projectId: string): Promise<string | null> {
   return null;
 }
 
-export async function startRun(projectId: string, retrySceneId?: string): Promise<void> {
+export function startRun(projectId: string, retrySceneId?: string): Promise<void> {
+  return asStart(() => startRunNow(projectId, retrySceneId));
+}
+
+async function startRunNow(projectId: string, retrySceneId?: string): Promise<void> {
   await ready;
+  postPressNotices.clear();
+  waitingNotices = 0;
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+  // The Checks run first (spec §19), but only for a start that would happen: a busy refusal or a run already going
+  // never touches Flow. They talk to Flow, so they run outside the queue; the queue re-checks the blockers.
+  if (!(state?.projectId === projectId && state.status === 'running')) {
+    const blocked = await startBlocker(projectId);
+    if (blocked) throw new RunBlockedError(blocked);
+    await passStartChecks(projectId, 'scenes');
+  }
   await enqueue(async () => {
+    // Test one prompt may have begun while the checks talked to Flow: it has the tab, so this start waits for it.
+    if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
     const blocked = await startBlocker(projectId);
     if (blocked) throw new RunBlockedError(blocked);
     // Already making this project's pictures: nothing to do (a fresh start would re-send scenes in Flow).
     if (state?.projectId === projectId && state.status === 'running') return;
     let next = initRun(project);
-    if (retrySceneId) next = reduceRun(next, { type: 'retry', sceneId: retrySceneId });
+    if (retrySceneId) {
+      // ▶ Run / Try again with no run of this video: a run of just that scene (spec §19 settled detail 2).
+      const only = next.sceneStates[retrySceneId];
+      if (!only) throw new Error(`VidFlow couldn't find ${retrySceneId} in this project.`);
+      next = reduceRun({ ...next, sceneStates: { [retrySceneId]: only } }, { type: 'retry', sceneId: retrySceneId });
+    }
     await commit(reduceRun(next, { type: 'start' }));
   });
   void pump();
@@ -989,8 +1263,52 @@ export async function discardFinishedRun(projectId: string): Promise<void> {
 /** Try again on one refused or failed scene: re-queue it in this project's run, or start a run for it. */
 export async function retryScene(projectId: string, sceneId: string): Promise<void> {
   await ready;
-  if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) return dispatch({ type: 'retry', sceneId });
+  if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) {
+    // Paused with nothing left to make (not live): ▶ Run is offered, and the scene must then be made, so it resumes.
+    const resumeAfter = state.status === 'paused' && !isLive(state);
+    if (!(sceneId in state.sceneStates)) {
+      // Not one of this run's scenes (▶ Run on a scene the run left out): it joins the run as it is saved.
+      const project = await getProject(projectId);
+      const scene = project?.scenes.some((s) => s.id === sceneId) ? project.sceneStates[sceneId] : null;
+      if (scene === null) throw new Error(`VidFlow couldn't find ${sceneId} in this project.`);
+      await enqueue(async () => {
+        if (!state || state.projectId !== projectId || sceneId in state.sceneStates) return;
+        const joined = scene && scene.status !== 'submitted' ? { ...scene } : { sceneId, status: 'pending' as const, pictureIds: scene?.pictureIds ?? [] };
+        const next = { ...state, sceneStates: { ...state.sceneStates, [sceneId]: joined } };
+        // A finished run carries on with it; a pending scene that joins needs the run going too.
+        await commit(joined.status === 'pending' && next.status === 'finished' ? { ...next, status: 'running' } : next);
+      });
+    }
+    await dispatch({ type: 'retry', sceneId });
+    if (resumeAfter && state?.status === 'paused' && isLive(state)) await resumeRun();
+    return;
+  }
   return startRun(projectId, sceneId); // refused while a model sheet is being made
+}
+
+/**
+ * Skip (spec §19): the scene VidFlow is working on now ends as failed "Skipped by you" and the run moves on. "Now" is
+ * the scene the step names (what the panel shows), else the one being sent, else the newest in Flow, else the next to
+ * send. If it was in Flow already, its pictures are never saved (see the run's skippedPrompts). Nothing live: no-op.
+ */
+export async function skipCurrent(): Promise<void> {
+  await ready;
+  if (!state || !isLive(state) || isHeroSheetRun(state)) return;
+  const step = ((await chrome.storage.local.get(STEP_KEY))[STEP_KEY] ?? null) as Step | null;
+  const project = await getProject(state.projectId);
+  await enqueue(async () => {
+    const run = state;
+    if (!run || !isLive(run) || isHeroSheetRun(run)) return;
+    const open = (id: string | null | undefined): id is string =>
+      !!id && (run.sceneStates[id]?.status === 'pending' || run.sceneStates[id]?.status === 'submitted');
+    const newest = [...run.inFlight].sort((a, b) => (run.sceneStates[b]?.submission?.seq ?? 0) - (run.sceneStates[a]?.submission?.seq ?? 0))[0];
+    const next = (project?.scenes ?? []).map((s) => s.id).find((id) => run.sceneStates[id]?.status === 'pending');
+    const target = [step?.projectId === run.projectId ? step.sceneId : null, submitting, newest, next].find(open);
+    if (!target) return;
+    await commit(reduceRun(run, { type: 'skip', sceneId: target }));
+  });
+  void pump();
+  void processTiles();
 }
 
 /**
@@ -998,12 +1316,19 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
  * the project's outputs per prompt, saved as hero-sheet-option-K on project.heroSheet. It is its own run, so it
  * refuses (BUSY_MESSAGE) while any run is live; pressing it again after it finished (or was refused) makes it again.
  */
-export async function startHeroSheetRun(projectId: string): Promise<void> {
+export function startHeroSheetRun(projectId: string): Promise<void> {
+  return asStart(() => startHeroSheetRunNow(projectId));
+}
+
+async function startHeroSheetRunNow(projectId: string): Promise<void> {
   await ready;
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
   if (!project.character?.description.trim()) throw new Error(HERO_SHEET_NEEDS_HERO);
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+  if (!(state && isLive(state))) await passStartChecks(projectId, 'sheet'); // a live run refuses below, without Flow
   await enqueue(async () => {
+    if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
     if (state && isLive(state)) {
       if (isHeroSheetRun(state)) {
         if (state.projectId === projectId && state.status === 'running') return; // already at it
@@ -1030,12 +1355,15 @@ export async function chooseScenePicture(projectId: string, sceneId: string, pic
       await commit(reduceRun(state, { type: 'choose', sceneId, pictureId }));
       return inRun.pictureIds.indexOf(pictureId) + 1;
     }
-    const project = await getProject(projectId);
-    const scene = project?.sceneStates[sceneId];
-    if (!project || !scene || !scene.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
-    project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
-    await saveProject(project);
-    return scene.pictureIds.indexOf(pictureId) + 1;
+    let option = 0;
+    await updateProject(projectId, (project) => {
+      const scene = project.sceneStates[sceneId];
+      if (!scene || !scene.pictureIds.includes(pictureId)) return;
+      project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
+      option = scene.pictureIds.indexOf(pictureId) + 1;
+    });
+    if (!option) throw new Error(NOT_THIS_SCENES_PICTURE);
+    return option;
   });
   // Written before the studio hears back, so its activity list shows the line with the swap. A log failure never
   // undoes the choice.
@@ -1046,6 +1374,7 @@ export async function chooseScenePicture(projectId: string, sceneId: string, pic
 
 export const pauseRun = () => dispatch({ type: 'pause' });
 export async function resumeRun(): Promise<void> {
+  waitingNotices = 0;
   await dispatch({ type: 'resume' });
   void pullTiles();
 }
@@ -1058,6 +1387,29 @@ export async function handleFlowEvent(event: RunEvent): Promise<void> {
   await ready;
   if ((event.type === 'limit' || event.type === 'needsOwner') && state?.status !== 'running') return;
   await dispatch(event);
+}
+
+/**
+ * Flow's usage notice appeared in VidFlow's own Flow tab while the run waits (the Flow helper sends this only with
+ * "Accept Flow's notices automatically" on). Accepted like pastNotice does it, and logged, at most MAX_WAITING_NOTICES
+ * times between prompts Flow takes; otherwise (switch off meanwhile, couldn't accept, too many) the run pauses with the
+ * usage-policy message. A notice already gone (the run's own step accepted it) changes nothing. Billing never comes here.
+ */
+export async function handleFlowNotice(tabId: number): Promise<void> {
+  await ready;
+  if (state?.status !== 'running' || !port) return;
+  const projectId = state.projectId;
+  const pause = () => dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
+  // Takes the tab's turn: a step that is typing finds and accepts the notice itself first.
+  await withTab(async () => {
+    if (!stillRunning(projectId)) return;
+    if (!(await getAcceptNotices()) || waitingNotices >= MAX_WAITING_NOTICES) return pause();
+    const accepted = await port!.acceptNotice(tabId).catch(() => null);
+    if (accepted === 'gone' || accepted === null) return; // nothing there now, or the page reloaded after accepting
+    if (accepted === false) return pause();
+    waitingNotices++;
+    logAcceptedNotice(projectId, null);
+  });
 }
 
 /** What the pill in a Flow tab should show: only VidFlow's own Flow tab, only while a run is going. */
@@ -1087,7 +1439,7 @@ async function load(): Promise<void> {
       }
       await commit(next);
     });
-  } else if (saved.status === 'running') {
+  } else if (saved.status === 'running' && (await getKeepAwake())) {
     chrome.power.requestKeepAwake('system');
   }
 }
@@ -1132,6 +1484,12 @@ export function registerCoordinator(): void {
     if (state?.status === 'running') await pauseWith(WINDOW_CLOSED_MESSAGE);
   });
   chrome.runtime.onStartup.addListener(() => void forgetFlowWindow());
+  // The keep-awake switch takes effect at once on a running run.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !(KEEP_AWAKE_KEY in changes) || state?.status !== 'running') return;
+    if (changes[KEEP_AWAKE_KEY]!.newValue === false) chrome.power.releaseKeepAwake();
+    else chrome.power.requestKeepAwake('system');
+  });
   void ready.then(() => {
     void pump();
     void pullTiles(); // results that finished while the worker slept
