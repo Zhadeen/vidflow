@@ -24,6 +24,7 @@ const shots = [
   ['finished', 1280, 1150],
   ['running', 390, 1700, 'running-phone'],
   ['script-hero', 1280, 1100, 'script-step-hero'],
+  ['script-model-sheet', 1280, 1500, 'script-step-model-sheet'],
   ['swap', 1280, 1000, 'pictures-step-swap'],
 ];
 // Optional: only the named shots, e.g. `node tests/visual/shoot.mjs docs/design/build-check pictures-step-swap`.

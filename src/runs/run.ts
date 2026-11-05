@@ -35,8 +35,16 @@ export const USER_PAUSE_REASON = 'Paused by you';
 export const NOT_THIS_SCENES_PICTURE =
   "That picture isn't one of this scene's pictures any more. Pick one of the pictures shown.";
 
+/** The model sheet's pseudo-scene: the only "scene" of a hero-sheet run, never one of the project's scenes. */
+export const HERO_SHEET_ID = 'hero-sheet';
+
 export interface RunState {
   projectId: string;
+  /**
+   * 'hero-sheet': this run makes the hero's model sheet (one prompt, pseudo-scene HERO_SHEET_ID), saved on
+   * project.heroSheet rather than the scenes. Absent for a scene run.
+   */
+  kind?: 'hero-sheet';
   status: 'idle' | 'running' | 'paused' | 'finished';
   pauseReason?: string;
   resumeAt?: number | null;
@@ -66,6 +74,25 @@ export function initRun(project: Project): RunState {
         : { sceneId: scene.id, status: 'pending', pictureIds: existing?.pictureIds ?? [] };
   }
   return { projectId: project.id, status: 'idle', inFlight: [], sceneStates };
+}
+
+/** A run that makes only the hero's model sheet, starting from scratch (a fresh Flow project, no pictures yet). */
+export function initHeroSheetRun(project: Project): RunState {
+  return {
+    projectId: project.id,
+    kind: 'hero-sheet',
+    status: 'idle',
+    inFlight: [],
+    sceneStates: { [HERO_SHEET_ID]: { sceneId: HERO_SHEET_ID, status: 'pending', pictureIds: [] } },
+  };
+}
+
+export const isHeroSheetRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'hero-sheet';
+
+/** Running, or paused with something still to make: no other run may start. */
+export function isLive(run: RunState | null | undefined): boolean {
+  if (!run) return false;
+  return run.status === 'running' || (run.status === 'paused' && hasUnfinished(run));
 }
 
 function hasUnfinished(state: RunState): boolean {

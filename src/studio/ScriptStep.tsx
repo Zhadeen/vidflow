@@ -4,7 +4,7 @@ import { buildClaudePrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
-import { HeroReference } from './HeroReference';
+import { HeroReference, type SheetControls } from './HeroReference';
 import { useScriptDraft } from './useScriptDraft';
 
 export type ProjectPatch = Partial<Pick<Project, 'script' | 'scenes' | 'style' | 'customStyle' | 'character' | 'aspect' | 'outputsPerPrompt'>>;
@@ -17,6 +17,8 @@ interface Props {
   hasPictures: boolean;
   onChange(patch: ProjectPatch): void;
   onContinue(): void;
+  /** The run and client for "Make a model sheet in Flow" (left out where there is none). */
+  sheet?: SheetControls;
 }
 
 const STYLE_NOTES: Record<Exclude<StyleId, 'custom'>, string> = {
@@ -33,7 +35,7 @@ const ASPECTS: { value: AspectRatio; label: string }[] = [
 
 type CopyState = { kind: 'idle' } | { kind: 'copied' } | { kind: 'failed' };
 
-export function ScriptStep({ project, locked, hasPictures, onChange, onContinue }: Props) {
+export function ScriptStep({ project, locked, hasPictures, onChange, onContinue, sheet }: Props) {
   const ids = useId();
   const [script, setScript] = useState(project.script ?? '');
   const [copy, setCopy] = useState<CopyState>({ kind: 'idle' });
@@ -274,7 +276,12 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
             <p className="vf-hint" style={{ margin: 'var(--vf-space-2) 0 0' }}>
               Kept the same in every scene.
             </p>
-            <HeroReference project={project} disabled={locked} onChange={(id) => setHero(character?.description ?? '', id)} />
+            <HeroReference
+              project={project}
+              disabled={locked}
+              sheet={sheet}
+              onChange={(id) => setHero(character?.description ?? '', id)}
+            />
           </div>
 
           <Segmented

@@ -77,6 +77,7 @@ export function fakeBackground(initial: RunState | null) {
     stop: vi.fn(async () => announce(state && reduceRun(state, { type: 'stop' }))),
     forget: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     choose: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
+    heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state })),
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

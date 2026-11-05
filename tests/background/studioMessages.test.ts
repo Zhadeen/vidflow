@@ -16,6 +16,7 @@ vi.mock('../../src/runs/coordinator', () => ({
   resumeRun: vi.fn(async () => undefined),
   retryScene: vi.fn(async () => undefined),
   setFlowPort: vi.fn(),
+  startHeroSheetRun: vi.fn(async () => undefined),
   startRun: vi.fn(async () => undefined),
   stopRun: vi.fn(async () => undefined),
 }));
@@ -67,5 +68,26 @@ describe('run/choose', () => {
     expect(onMessage(choose, { id: 'vidflow', url: 'chrome-extension://vidflow/studio.html' }, sendResponse)).toBe(true);
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, state: null }));
     expect(chooseScenePicture).toHaveBeenCalledWith('p1', 's1', 'p1/b');
+  });
+});
+
+describe('run/hero-sheet', () => {
+  const sheet = { type: 'run/hero-sheet', projectId: 'p1' };
+
+  it("is refused from VidFlow's content script in a Flow tab", async () => {
+    const { startHeroSheetRun } = await import('../../src/runs/coordinator');
+    const sendResponse = vi.fn();
+    expect(onMessage(sheet, { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 4 } }, sendResponse)).toBeUndefined();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sendResponse).not.toHaveBeenCalled();
+    expect(startHeroSheetRun).not.toHaveBeenCalled();
+  });
+
+  it('starts the model sheet for the studio page', async () => {
+    const { startHeroSheetRun } = await import('../../src/runs/coordinator');
+    const sendResponse = vi.fn();
+    expect(onMessage(sheet, { id: 'vidflow', url: 'chrome-extension://vidflow/studio.html' }, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, state: null }));
+    expect(startHeroSheetRun).toHaveBeenCalledWith('p1');
   });
 });

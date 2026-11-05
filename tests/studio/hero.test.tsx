@@ -1,12 +1,15 @@
 import 'fake-indexeddb/auto';
 import { useState } from 'react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { memoryMediaStore, type MediaStore } from '../../src/store/media';
 import { createProject, getProject, saveProject, setMediaStore, type Project } from '../../src/store/projects';
 import { applyPatch, saveEdits } from '../../src/studio/projectEdits';
 import { ScriptStep, type ProjectPatch } from '../../src/studio/ScriptStep';
 import { HeroReference, REFERENCE_MAX_BYTES, clearHeroReference, setHeroReference } from '../../src/studio/HeroReference';
+import type { RunReply } from '../../src/flow/messages';
+import type { RunState } from '../../src/runs/run';
+import type { RunClient } from '../../src/studio/runClient';
 
 let store: MediaStore;
 let revoked: string[];
@@ -157,5 +160,119 @@ describe('hero reference', () => {
     await clearHeroReference(p.id);
     expect(await store.get(`${p.id}/hero-reference`)).toBeUndefined();
     expect(await store.get(other)).toBeDefined();
+  });
+});
+
+function sheetClient(over: Partial<RunClient> = {}): RunClient {
+  const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
+  return {
+    get: ok,
+    start: vi.fn(ok),
+    pause: vi.fn(ok),
+    resume: vi.fn(ok),
+    retry: vi.fn(ok),
+    stop: vi.fn(ok),
+    forget: vi.fn(ok),
+    choose: vi.fn(ok),
+    heroSheet: vi.fn(ok),
+    subscribe: () => () => undefined,
+    ...over,
+  };
+}
+
+/** The hero section as the Script step shows it, with the model sheet. */
+function SheetHost({ start, client, run = null, onRunState = () => undefined }: { start: Project; client: RunClient; run?: RunState | null; onRunState?(s: RunState | null): void }) {
+  const [p, setP] = useState(start);
+  return (
+    <HeroReference
+      project={p}
+      sheet={{ run, client, onRunState }}
+      onChange={(referenceMediaId) => {
+        const patch = { character: { description: p.character?.description ?? '', ...(referenceMediaId && { referenceMediaId }) } };
+        setP(applyPatch(p, patch));
+        void saveEdits(p.id, patch);
+      }}
+    />
+  );
+}
+
+describe('the hero model sheet', () => {
+  async function withSheet(heroSheet: Project['heroSheet'], description = 'a tall stickman') {
+    const p = await createProject('Story');
+    p.character = { description };
+    p.heroSheet = heroSheet;
+    await saveProject(p);
+    return p;
+  }
+
+  it('"Make a model sheet in Flow" is a secondary button, enabled once the hero is described', async () => {
+    const client = sheetClient({ heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: false, reason: 'busy', message: 'Another project is making pictures right now.' })) });
+    const empty = await withSheet(undefined, '');
+    const { unmount } = render(<SheetHost start={empty} client={client} />);
+    const off = screen.getByRole('button', { name: 'Make a model sheet in Flow' });
+    expect(off.hasAttribute('disabled')).toBe(true);
+    expect(off.dataset.variant).toBe('secondary');
+    unmount();
+
+    const p = await withSheet(undefined);
+    render(<SheetHost start={p} client={client} />);
+    const make = screen.getByRole('button', { name: 'Make a model sheet in Flow' });
+    expect(make.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(make);
+    await waitFor(() => expect(client.heroSheet).toHaveBeenCalledWith(p.id));
+    expect((await screen.findByRole('alert')).textContent).toBe('Another project is making pictures right now.');
+  });
+
+  it('"Use as hero reference" on a sheet picture sets the reference', async () => {
+    const p = await withSheet({ status: 'pending', pictureIds: [] });
+    const one = await store.put(p.id, 'hero-sheet-option-1', new Blob(['sheet-1'], { type: 'image/png' }));
+    const two = await store.put(p.id, 'hero-sheet-option-2', new Blob(['sheet-2'], { type: 'image/jpeg' }));
+    await store.put(p.id, 'hero-reference', new Blob(['old'], { type: 'image/png' }));
+    const saved = (await getProject(p.id))!;
+    saved.heroSheet = { status: 'done', pictureIds: [one, two] };
+    saved.character = { description: 'a tall stickman', referenceMediaId: `${p.id}/hero-reference` };
+    await saveProject(saved);
+    render(<SheetHost start={saved} client={sheetClient()} />);
+
+    expect(await screen.findAllByRole('img', { name: /^Model sheet picture/ })).toHaveLength(2);
+    const use = screen.getAllByRole('button', { name: 'Use as hero reference' });
+    expect(use).toHaveLength(2);
+    expect(use[0]!.dataset.variant).toBe('secondary');
+    fireEvent.click(use[1]!);
+
+    await waitFor(async () => expect(await (await store.get(`${p.id}/hero-reference`))!.text()).toBe('sheet-2'));
+    await waitFor(async () =>
+      expect((await getProject(p.id))!.character).toEqual({ description: 'a tall stickman', referenceMediaId: `${p.id}/hero-reference` }),
+    );
+    // The sheet's pictures are never deleted.
+    expect(await store.get(one)).toBeDefined();
+    expect(await store.get(two)).toBeDefined();
+    expect(await screen.findByRole('img', { name: 'Hero reference picture' })).toBeDefined();
+  });
+
+  it('a refused sheet shows Flow\'s reason and "Try again"', async () => {
+    const running = { projectId: 'x', status: 'running', inFlight: [], sceneStates: {} } as RunState;
+    const client = sheetClient({ heroSheet: vi.fn(async (): Promise<RunReply> => ({ ok: true, state: running })) });
+    const onRunState = vi.fn();
+    const p = await withSheet({ status: 'refused', pictureIds: [], message: 'Might violate policy' });
+    render(<SheetHost start={p} client={client} onRunState={onRunState} />);
+    expect(screen.getByText('Might violate policy')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(client.heroSheet).toHaveBeenCalledWith(p.id));
+    await waitFor(() => expect(onRunState).toHaveBeenCalledWith(running));
+  });
+
+  it('while Flow draws the sheet it says so, and the button waits', async () => {
+    const p = await withSheet({ status: 'pending', pictureIds: [] });
+    const run: RunState = {
+      projectId: p.id,
+      kind: 'hero-sheet',
+      status: 'running',
+      inFlight: ['hero-sheet'],
+      sceneStates: { 'hero-sheet': { sceneId: 'hero-sheet', status: 'submitted', pictureIds: [] } },
+    };
+    render(<SheetHost start={p} client={sheetClient()} run={run} />);
+    expect(screen.getByText(/Flow is drawing the model sheet/)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Make a model sheet in Flow' }).hasAttribute('disabled')).toBe(true);
   });
 });

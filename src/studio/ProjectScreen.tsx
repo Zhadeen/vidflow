@@ -76,6 +76,7 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
           hasPictures={progress.done > 0}
           onChange={change}
           onContinue={() => setStep('pictures')}
+          sheet={{ run, client, onRunState: reportRun }}
         />
       ) : (
         <PicturesStep project={project} run={run} client={client} media={media} onRunState={reportRun} onSceneState={onSceneState} />

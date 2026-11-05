@@ -28,6 +28,7 @@ function fakeClient(): RunClient {
     stop: vi.fn(ok),
     forget: vi.fn(ok),
     choose: vi.fn(ok),
+    heroSheet: vi.fn(ok),
     subscribe: () => () => undefined,
   };
 }

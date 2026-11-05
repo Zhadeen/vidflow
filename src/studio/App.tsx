@@ -55,9 +55,11 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
     return client.subscribe((state) => {
       setRun(state);
       if (state.projectId !== current.current) return;
-      // The background saved the scene states into the project before announcing; take only those.
+      // The background saved the scene states (or the model sheet) into the project before announcing; take only those.
       void getProject(state.projectId).then((fresh) => {
-        if (fresh) setProject((p) => (p && p.id === fresh.id ? { ...p, sceneStates: fresh.sceneStates } : p));
+        if (fresh) {
+          setProject((p) => (p && p.id === fresh.id ? { ...p, sceneStates: fresh.sceneStates, heroSheet: fresh.heroSheet } : p));
+        }
       });
     });
   }, [client]);

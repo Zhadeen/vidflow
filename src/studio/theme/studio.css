@@ -1086,3 +1086,82 @@ textarea.vf-input {
   border-radius: var(--vf-radius-sm);
   border: 1px solid var(--vf-navy-line);
 }
+
+/* The hero's model sheet: made in Flow, picked as the reference (secondary buttons only; the coral one stays put). */
+.vf-hero-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-2);
+  margin-top: var(--vf-space-4);
+  padding-top: var(--vf-space-4);
+  border-top: 1px solid var(--vf-navy-line);
+}
+
+.vf-hero-sheet-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.vf-hero-sheet-problem {
+  display: flex;
+  gap: var(--vf-space-4);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--vf-space-3) var(--vf-space-4);
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-md);
+}
+
+.vf-hero-sheet-problem p {
+  margin: 0;
+}
+
+.vf-hero-sheet-problem .vf-what {
+  font-weight: 700;
+}
+
+.vf-hero-sheet-problem .vf-why {
+  color: var(--vf-cream-soft);
+}
+
+.vf-hero-sheet-pictures {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--vf-space-3);
+  margin-top: var(--vf-space-2);
+}
+
+.vf-hero-sheet-picture {
+  margin: 0;
+  background: var(--vf-navy-raised);
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-md);
+  overflow: hidden;
+}
+
+.vf-hero-sheet-frame {
+  display: block;
+  width: 100%;
+  background: var(--vf-navy-sunken);
+  border-bottom: 1px solid var(--vf-navy-line-strong);
+}
+
+.vf-hero-sheet-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vf-hero-sheet-picture figcaption {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-3);
+}
+
+.vf-hero-sheet-picture .vf-option-title {
+  font-size: var(--vf-text-sm);
+}

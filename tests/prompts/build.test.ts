@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildImagePrompt } from '../../src/prompts/build';
+import { buildImagePrompt, buildModelSheetPrompt } from '../../src/prompts/build';
 import { STYLE_PRESETS, customStyle } from '../../src/prompts/styles';
 import type { Scene } from '../../src/scenes/types';
 
@@ -86,5 +86,39 @@ describe('customStyle', () => {
     const s = customStyle('chalk on slate');
     expect(s).toMatchObject({ id: 'custom', prefix: 'chalk on slate', enforcement: '', forbiddenWords: [] });
     expect(buildImagePrompt(scene, s, null)).toBe('chalk on slate\n\nScene: A stickman stares at a pile of bills');
+  });
+});
+
+describe('buildModelSheetPrompt', () => {
+  it("the model sheet prompt keeps the style's forbidden words out", () => {
+    const description = 'photorealistic tall stickman, realistic 3D render of a red scarf, CGI hands';
+    for (const style of Object.values(STYLE_PRESETS)) {
+      const out = buildModelSheetPrompt({ description }, style);
+      expect(out).not.toMatch(/realis|render|3D|CGI|photo/i);
+      expect(out).toMatch(/tall stickman/);
+      expect(out).toMatch(/red scarf/);
+      // The same style rules as the scenes: the prefix first, the enforcement last.
+      expect(out.startsWith(style.prefix)).toBe(true);
+      expect(out.endsWith(style.enforcement)).toBe(true);
+      expect(out).toMatch(/front/i);
+      expect(out).toMatch(/side/i);
+      expect(out).toMatch(/back/i);
+      expect(out).toMatch(/3 (facial )?expressions|three (facial )?expressions/i);
+      expect(out).toMatch(/plain (white |empty )?background/i);
+    }
+  });
+
+  it('never asks for an attached reference (the sheet makes the reference)', () => {
+    const out = buildModelSheetPrompt(
+      { description: 'tall stickman', referenceMediaId: 'p1/hero-reference' },
+      STYLE_PRESETS['stickman-whiteboard'],
+    );
+    expect(out).not.toMatch(/Ingredient|reference picture/i);
+  });
+
+  it('works with a custom style, which has no forbidden words or enforcement', () => {
+    const out = buildModelSheetPrompt({ description: 'tall stickman' }, customStyle('chalk on slate'));
+    expect(out.startsWith('chalk on slate')).toBe(true);
+    expect(out).not.toMatch(/\n\n$/);
   });
 });

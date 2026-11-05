@@ -90,7 +90,7 @@ const media: MediaStore = {
 };
 
 const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
-const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, forget: ok, choose: ok, subscribe: () => () => undefined };
+const client: RunClient = { get: ok, start: ok, pause: ok, resume: ok, retry: ok, stop: ok, forget: ok, choose: ok, heroSheet: ok, subscribe: () => () => undefined };
 
 const screen = new URLSearchParams(location.search).get('screen') ?? 'running';
 const noop = () => undefined;
@@ -122,6 +122,23 @@ function view() {
       return (
         <ProjectScreen
           project={{ ...project, character: { description: 'A tall stick figure with messy hair.', referenceMediaId: 'stick1' } }}
+          run={null}
+          client={client}
+          media={media}
+          initialStep="script"
+          onChange={noop}
+          onHome={noop}
+        />
+      );
+    case 'script-model-sheet':
+      setMediaStore(media);
+      return (
+        <ProjectScreen
+          project={{
+            ...project,
+            character: { description: 'A tall stick figure with messy hair.', referenceMediaId: 'stick1' },
+            heroSheet: { status: 'done', pictureIds: ['stick1', 'stick2'] },
+          }}
           run={null}
           client={client}
           media={media}

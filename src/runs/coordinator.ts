@@ -7,12 +7,16 @@ import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { liveView } from '../flow/live';
 import type { LiveView } from '../flow/messages';
 import { detachFlowDebugger } from '../flow/press';
-import { buildImagePrompt } from '../prompts/build';
+import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
 import {
+  HERO_SHEET_ID,
+  initHeroSheetRun,
   initRun,
+  isHeroSheetRun,
+  isLive,
   nextSceneToSubmit,
   normaliseEvent,
   NOT_THIS_SCENES_PICTURE,
@@ -95,6 +99,10 @@ export const REFERENCE_MISSING_MESSAGE =
   "VidFlow can't find the hero's reference picture. Add it again in the Script step, or remove it, then press Resume.";
 
 export const BUSY_MESSAGE = 'Another project is making pictures right now. Pause it or wait for it to finish, then try again.';
+/** A scene run can't start while the hero's model sheet is being made (one run at a time). */
+export const HERO_SHEET_BUSY_MESSAGE = 'VidFlow is making the model sheet right now. Wait for it to finish, then try again.';
+/** The model sheet draws the hero as described: without a description there is nothing to draw. */
+export const HERO_SHEET_NEEDS_HERO = 'Describe the hero first, then make the model sheet.';
 
 /** A run can't start because another project's run is going or waiting; the message says which and what to do. */
 export class RunBlockedError extends Error {
@@ -212,7 +220,8 @@ function noteChanges(prev: RunState | null, next: RunState, project: Project): v
   } else if (next.status === 'running' && prev?.status === 'paused') note(project, null, 'Resumed');
   else if (next.status === 'finished') {
     const { done } = runSummary(next);
-    note(project, null, `Finished: pictures ready for ${done} of ${Object.keys(next.sceneStates).length} scenes`);
+    if (isHeroSheetRun(next)) note(project, null, done > 0 ? 'Finished: the model sheet is ready' : 'Finished: the model sheet needs a look');
+    else note(project, null, `Finished: pictures ready for ${done} of ${Object.keys(next.sceneStates).length} scenes`);
   }
 }
 
@@ -348,6 +357,12 @@ function announce(prev: RunState | null, next: RunState): void {
   if (prev?.status === next.status) return;
   if (next.status === 'paused' && next.pauseReason && next.pauseReason !== USER_PAUSE_REASON) {
     notify(typeof next.resumeAt === 'number' ? next.pauseReason : `VidFlow paused: ${next.pauseReason}`);
+  } else if (next.status === 'finished' && isHeroSheetRun(next)) {
+    notify(
+      runSummary(next).done > 0
+        ? 'The model sheet is ready. Pick the hero reference in VidFlow.'
+        : 'The model sheet needs a look — open VidFlow.',
+    );
   } else if (next.status === 'finished') {
     const { done, refused, failed } = runSummary(next);
     const total = Object.keys(next.sceneStates).length;
@@ -366,10 +381,16 @@ async function commit(next: RunState): Promise<void> {
   state = next;
   await chrome.storage.local.set({ [RUN_KEY]: next });
 
-  // Re-read the project so edits made in Studio meanwhile are not overwritten; only sceneStates is ours.
+  // Re-read the project so edits made in Studio meanwhile are not overwritten; only sceneStates (or, for a model
+  // sheet run, heroSheet) is ours. The sheet never goes into sceneStates: it isn't a scene.
   const project = await getProject(next.projectId);
   if (project) {
-    project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
+    if (isHeroSheetRun(next)) {
+      const sheet = next.sceneStates[HERO_SHEET_ID];
+      if (sheet) {
+        project.heroSheet = { status: sheet.status, pictureIds: sheet.pictureIds, ...(sheet.message ? { message: sheet.message } : {}) };
+      }
+    } else project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
     await saveProject(project);
     noteChanges(prev, next, project);
   }
@@ -455,6 +476,9 @@ async function ensureFlowProject(tabId: number, projectId: string, onOpened?: ()
   await enqueue(async () => {
     if (state?.projectId === projectId) await commit({ ...state, flowProjectUrl });
   });
+  // The last tiles seen were the old Flow project's: never match this run's prompts against them (a re-made sheet or
+  // scene sends the same prompt, and an old refused tile would refuse it at once). The new page reports its own.
+  latestReport = { id: latestReport.id + 1, at: Date.now(), cards: [] };
   onOpened?.();
   return stillRunning(projectId); // paused or stopped meanwhile: the project is kept, nothing more is typed
 }
@@ -484,6 +508,8 @@ function referenceName(flowProjectUrl: string, type: string): string {
  * (hero-sheet runs never have one). Throws FlowBlockedError when the owner must act. Holds the tab.
  */
 async function ensureReference(tabId: number, project: Project): Promise<string | null> {
+  // The model sheet is how a reference is made: its run never uploads or attaches one, even if the hero has one.
+  if (isHeroSheetRun(state)) return null;
   const mediaId = project.character?.referenceMediaId;
   const flowProjectUrl = state?.flowProjectUrl;
   if (!mediaId || !state || !flowProjectUrl) return null;
@@ -836,9 +862,14 @@ function isFlowPictureUrl(url: string): boolean {
   }
 }
 
-/** Fetches each verified card's picture (signed URL, extension-only) and stores it as scene-NN-option-K. */
+/**
+ * Fetches each verified card's picture (signed URL, extension-only) and stores it as scene-NN-option-K, or for the
+ * model sheet as hero-sheet-option-K.
+ */
 async function savePictures(project: Project, sceneId: string, cardKeys: string[], cards: FlowResultCard[]): Promise<void> {
+  const sheet = sceneId === HERO_SHEET_ID && isHeroSheetRun(state);
   const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
+  const base = sheet ? HERO_SHEET_ID : `scene-${nn}`;
   try {
     const mediaIds: string[] = [];
     for (const [i, key] of cardKeys.entries()) {
@@ -850,7 +881,7 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
       }
       const res = await fetch(url);
       if (!res.ok) throw new Error(`picture fetch ${res.status}`);
-      mediaIds.push(await getMediaStore().put(project.id, `scene-${nn}-option-${i + 1}`, await res.blob()));
+      mediaIds.push(await getMediaStore().put(project.id, `${base}-option-${i + 1}`, await res.blob()));
     }
     await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys });
   } catch {
@@ -868,10 +899,12 @@ async function pump(): Promise<void> {
       const projectId = state.projectId;
       const project = await getProject(projectId);
       if (!project) return void (await pauseWith('This project is no longer in VidFlow.'));
-      const sceneId = nextSceneToSubmit(state, project.scenes.map((s) => s.id), MAX_IN_FLIGHT);
+      const sheet = isHeroSheetRun(state);
+      const order = sheet ? [HERO_SHEET_ID] : project.scenes.map((s) => s.id);
+      const sceneId = nextSceneToSubmit(state, order, MAX_IN_FLIGHT);
       if (!sceneId) return;
-      const scene = project.scenes.find((s) => s.id === sceneId);
-      if (!scene) return void (await pauseWith(`VidFlow couldn't find ${sceneId} in this project.`));
+      const scene = sheet ? null : project.scenes.find((s) => s.id === sceneId);
+      if (!sheet && !scene) return void (await pauseWith(`VidFlow couldn't find ${sceneId} in this project.`));
       if (!port) return void (await pauseWith("VidFlow isn't connected to Flow yet. Open VidFlow again, then press Resume."));
 
       let tabId: number;
@@ -880,7 +913,9 @@ async function pump(): Promise<void> {
       } catch {
         return void (await pauseWith("VidFlow couldn't open its Flow window. Check Chrome, then press Resume."));
       }
-      const prompt = buildImagePrompt(scene, projectStyle(project), project.character);
+      const prompt = scene
+        ? buildImagePrompt(scene, projectStyle(project), project.character)
+        : buildModelSheetPrompt(project.character ?? { description: '' }, projectStyle(project));
       if ((await withTab(() => submitScene(tabId, project, sceneId, prompt))) === 'stop') return;
       await sleep(paceMs());
     }
@@ -893,6 +928,7 @@ async function pump(): Promise<void> {
 
 /** Why a run for `projectId` can't start now (another project's run is running, or paused with work left), or null. */
 async function startBlocker(projectId: string): Promise<string | null> {
+  if (state && isHeroSheetRun(state) && isLive(state)) return HERO_SHEET_BUSY_MESSAGE;
   if (!state || state.projectId === projectId) return null;
   if (state.status === 'running') return BUSY_MESSAGE;
   const unfinished = Object.values(state.sceneStates).some((s) => s.status === 'pending' || s.status === 'submitted');
@@ -936,8 +972,28 @@ export async function discardFinishedRun(projectId: string): Promise<void> {
 /** Try again on one refused or failed scene: re-queue it in this project's run, or start a run for it. */
 export async function retryScene(projectId: string, sceneId: string): Promise<void> {
   await ready;
-  if (state?.projectId === projectId && state.status !== 'idle') return dispatch({ type: 'retry', sceneId });
-  return startRun(projectId, sceneId);
+  if (state?.projectId === projectId && state.status !== 'idle' && !isHeroSheetRun(state)) return dispatch({ type: 'retry', sceneId });
+  return startRun(projectId, sceneId); // refused while a model sheet is being made
+}
+
+/**
+ * Makes the hero's model sheet in Flow: one prompt (front, side, back, 3 expressions) in a fresh Flow project, with
+ * the project's outputs per prompt, saved as hero-sheet-option-K on project.heroSheet. It is its own run, so it
+ * refuses (BUSY_MESSAGE) while any run is live; pressing it again after it finished (or was refused) makes it again.
+ */
+export async function startHeroSheetRun(projectId: string): Promise<void> {
+  await ready;
+  const project = await getProject(projectId);
+  if (!project) throw new Error('That project is no longer in VidFlow.');
+  if (!project.character?.description.trim()) throw new Error(HERO_SHEET_NEEDS_HERO);
+  await enqueue(async () => {
+    if (isLive(state)) {
+      if (state!.projectId === projectId && isHeroSheetRun(state) && state!.status === 'running') return; // already at it
+      throw new RunBlockedError(BUSY_MESSAGE);
+    }
+    await commit(reduceRun(initHeroSheetRun(project), { type: 'start' }));
+  });
+  void pump();
 }
 
 /**
@@ -948,7 +1004,7 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
 export async function chooseScenePicture(projectId: string, sceneId: string, pictureId: string): Promise<void> {
   await ready;
   const option = await enqueue(async () => {
-    const inRun = state?.projectId === projectId ? state.sceneStates[sceneId] : undefined;
+    const inRun = state?.projectId === projectId && !isHeroSheetRun(state) ? state.sceneStates[sceneId] : undefined;
     if (state && inRun) {
       if (!inRun.pictureIds.includes(pictureId)) throw new Error(NOT_THIS_SCENES_PICTURE);
       await commit(reduceRun(state, { type: 'choose', sceneId, pictureId }));

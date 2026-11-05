@@ -194,6 +194,8 @@ export const RUN_STOP = 'run/stop';
 export const RUN_FORGET = 'run/forget';
 /** The owner chose one of a scene's pictures; taken by a live run and the stored project alike. */
 export const RUN_CHOOSE = 'run/choose';
+/** Make the hero's model sheet in Flow (its own one-prompt run); Try again on a refused sheet sends this too. */
+export const RUN_HERO_SHEET = 'run/hero-sheet';
 export const RUN_STATE = 'run/state';
 
 /** studio → background. Each is answered with a RunReply. */
@@ -205,7 +207,8 @@ export type StudioRequest =
   | { type: typeof RUN_STOP }
   | { type: typeof RUN_FORGET; projectId: string }
   | { type: typeof RUN_RETRY; projectId: string; sceneId: string }
-  | { type: typeof RUN_CHOOSE; projectId: string; sceneId: string; pictureId: string };
+  | { type: typeof RUN_CHOOSE; projectId: string; sceneId: string; pictureId: string }
+  | { type: typeof RUN_HERO_SHEET; projectId: string };
 
 /** The run as it is now, or why the request was refused (message is shown to the owner word for word). */
 export type RunReply =

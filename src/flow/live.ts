@@ -1,6 +1,6 @@
 import type { Step } from '../runs/activity';
 import { sceneNumber } from '../runs/activity';
-import type { RunState } from '../runs/run';
+import { HERO_SHEET_ID, type RunState } from '../runs/run';
 import type { Project } from '../store/projects';
 import { renderSavedBadges } from './badges';
 import { findTarget, renderHighlight, tagFor } from './highlight';
@@ -16,7 +16,9 @@ export function liveView(state: RunState | null, step: Step | null, project: Pic
   // The tag and badges name the scene as the studio does (its slide); the pill counts "Scene 2 of 3" within the run.
   const scene = current && project ? sceneNumber(project, current.sceneId) : null;
   const place = current && project && state ? placeInRun(project, state, current.sceneId) : null;
-  const pill = pillView(state, current ? { text: current.text, scene: place } : null);
+  // The model sheet isn't a scene: its steps read "Model sheet · Typing the prompt".
+  const text = current && current.sceneId === HERO_SHEET_ID ? `Model sheet · ${current.text}` : current?.text;
+  const pill = pillView(state, current ? { text: text!, scene: place } : null);
   if (!pill || !state) return null;
   const savedCards: Array<[string, number]> = [];
   for (const [sceneId, s] of Object.entries(state.sceneStates)) {
