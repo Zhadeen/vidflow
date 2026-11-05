@@ -26,11 +26,12 @@ interface FieldSelectProps {
   hint?: string;
   value: string;
   options: { value: string; label: string }[];
+  disabled?: boolean;
   onChange(value: string): void;
 }
 
 /** A raised field reading "Style: Classic whiteboard stickman ▾"; the whole box is the (native) select. */
-function FieldSelect({ id, label, prefix = '', hint, value, options, onChange }: FieldSelectProps) {
+function FieldSelect({ id, label, prefix = '', hint, value, options, disabled, onChange }: FieldSelectProps) {
   const shown = options.find((o) => o.value === value)?.label ?? '';
   return (
     <div className="vf-pn-field vf-pn-select">
@@ -38,7 +39,7 @@ function FieldSelect({ id, label, prefix = '', hint, value, options, onChange }:
         {prefix}
         {shown} ▾{hint && <span className="vf-pn-field-hint">{hint}</span>}
       </span>
-      <select id={id} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
+      <select id={id} aria-label={label} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
@@ -182,10 +183,27 @@ interface Props {
   /** Every scene has its pictures: review them in the full studio. */
   onReview(): void;
   onOpenStudio(): void;
+  /** A run of this video's scenes is going or paused: scenes, look and hero wait (as the studio's locked). */
+  locked?: boolean;
+  /** "Go to Queue", the coral action while locked. */
+  onGoToQueue(): void;
 }
 
 /** The Setup tab (spec §19): get the scenes, choose the look, the hero, start. */
-export function PanelSetup({ project, run, client, busy, error, onChange, onRunState, onStart, onReview, onOpenStudio }: Props) {
+export function PanelSetup({
+  project,
+  run,
+  client,
+  busy,
+  error,
+  onChange,
+  onRunState,
+  onStart,
+  onReview,
+  onOpenStudio,
+  locked = false,
+  onGoToQueue,
+}: Props) {
   const ids = useId();
   const draft = useScriptDraft(project, (scenes) => onChange({ scenes }));
   const fileInput = useRef<HTMLInputElement>(null);
@@ -198,6 +216,7 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
   const preview = draft.preview;
   // Flow is drawing this video's model sheet: the look and Start wait until it's done (as in the studio).
   const sheetLive = !!run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused');
+  const lookFrozen = locked || sheetLive;
 
   async function upload(file: File | undefined) {
     if (!file) return;
@@ -213,8 +232,19 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
     }
   }
 
+  const uploadLink = (
+    <button type="button" className="vf-pn-inline" disabled={reading || locked} onClick={() => fileInput.current?.click()}>
+      upload a CSV / TXT / PDF
+    </button>
+  );
+
   return (
     <>
+      {locked && (
+        <p className="vf-pn-sub" role="status">
+          VidFlow is making pictures for this video. Its scenes and look wait until it stops.
+        </p>
+      )}
       <div className="vf-pn-group">
         <span className="vf-pn-label">1 · Get your scenes</span>
         <CopyPrompts script={project.script ?? ''} onOpenStudio={onOpenStudio} />
@@ -224,6 +254,7 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
             aria-label="Paste Claude's reply"
             className="vf-pn-paste"
             value={draft.text}
+            disabled={locked}
             onChange={(e) => draft.setText(e.target.value)}
           />
           {!draft.text && (
@@ -231,9 +262,7 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
               {sceneCount > 0
                 ? `${sceneCount} ${sceneCount === 1 ? 'scene is' : 'scenes are'} loaded. Paste a new reply to replace ${sceneCount === 1 ? 'it' : 'them'}… or `
                 : "Paste Claude's reply here… or "}
-              <button type="button" className="vf-pn-inline" disabled={reading} onClick={() => fileInput.current?.click()}>
-                upload a CSV / TXT / PDF
-              </button>
+              {uploadLink}
             </p>
           )}
           <input
@@ -242,9 +271,12 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
             className="vf-visually-hidden"
             aria-label="Upload a scene file"
             accept={SCENE_FILE_ACCEPT}
+            disabled={locked}
             onChange={(e) => void upload(e.target.files?.[0])}
           />
         </div>
+        {/* With text in the box the link moves below it: a new file replaces the text. */}
+        {draft.text && <p className="vf-pn-note">Or {uploadLink} instead</p>}
         {fileError && (
           <p className="vf-notice vf-pn-notice" role="alert">
             {fileError}
@@ -261,7 +293,7 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
                     ✓ {preview.scenes.length} {preview.scenes.length === 1 ? 'scene' : 'scenes'} found ·{' '}
                     {preview.issues.length === 0 ? 'no problems' : `${preview.issues.length} to check`}
                   </span>
-                  {draft.pending && !draft.needsConfirm && (
+                  {draft.pending && !draft.needsConfirm && !locked && (
                     <button type="button" className="vf-pn-inline" onClick={draft.apply}>
                       Use these scenes
                     </button>
@@ -289,7 +321,7 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
       <div className="vf-pn-group">
         <span className="vf-pn-label">2 · Look</span>
         <div className="vf-pn-chips">
-          <fieldset className="vf-pn-chipset" disabled={sheetLive}>
+          <fieldset className="vf-pn-chipset" disabled={lookFrozen}>
             <legend className="vf-visually-hidden">Shape</legend>
             {ASPECTS.map((a) => (
               <label key={a} className="vf-pn-chip">
@@ -298,19 +330,22 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
               </label>
             ))}
           </fieldset>
-          <select
-            className="vf-pn-chip-select"
-            aria-label="Pictures per scene"
-            value={String(project.outputsPerPrompt)}
-            disabled={sheetLive}
-            onChange={(e) => onChange({ outputsPerPrompt: Number(e.target.value) as 1 | 2 | 4 })}
-          >
+          {/* As in the approved panel: the chosen count reads "2 per scene", the others just "1" and "4". */}
+          <fieldset className="vf-pn-chipset" disabled={lookFrozen}>
+            <legend className="vf-visually-hidden">Pictures per scene</legend>
             {PER_SCENE.map((n) => (
-              <option key={n} value={n}>
-                {n} per scene
-              </option>
+              <label key={n} className="vf-pn-chip">
+                <input
+                  type="radio"
+                  name={`${ids}-per-scene`}
+                  aria-label={`${n} per scene`}
+                  checked={project.outputsPerPrompt === n}
+                  onChange={() => onChange({ outputsPerPrompt: n })}
+                />
+                <span>{project.outputsPerPrompt === n ? `${n} per scene` : n}</span>
+              </label>
             ))}
-          </select>
+          </fieldset>
         </div>
         <FieldSelect
           label="Style"
@@ -320,6 +355,7 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
             ...(Object.keys(STYLE_PRESETS) as Exclude<StyleId, 'custom'>[]).map((id) => ({ value: id, label: STYLE_PRESETS[id].name })),
             { value: 'custom', label: 'Your own style' },
           ]}
+          disabled={lookFrozen}
           onChange={(v) => onChange({ style: v as StyleId })}
         />
         {project.style === 'custom' && (
@@ -328,13 +364,14 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
             aria-label="Your own style"
             rows={2}
             value={project.customStyle ?? ''}
+            disabled={lookFrozen}
             placeholder="Simple stick figures in blue ballpoint on lined paper…"
             onChange={(e) => onChange({ customStyle: e.target.value })}
           />
         )}
       </div>
 
-      <PanelHero project={project} run={run} client={client} onChange={onChange} onRunState={onRunState} />
+      <PanelHero project={project} run={run} client={client} onChange={onChange} onRunState={onRunState} locked={locked} />
 
       <p className="vf-pn-summary">
         {sceneCount === 0
@@ -358,7 +395,11 @@ export function PanelSetup({ project, run, client, busy, error, onChange, onRunS
       )}
 
       <div className="vf-pn-actions vf-pn-end">
-        {draft.needsConfirm ? (
+        {locked ? (
+          <Button variant="primary" onClick={onGoToQueue}>
+            Go to Queue
+          </Button>
+        ) : draft.needsConfirm ? (
           <>
             <Button variant="primary" onClick={draft.confirm}>
               Yes, replace them

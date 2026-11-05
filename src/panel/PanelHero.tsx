@@ -13,6 +13,8 @@ interface Props {
   onChange(patch: ProjectPatch): void;
   /** The run as the background reported it after a request (Make model sheet). */
   onRunState(state: RunState | null): void;
+  /** A run of this video's scenes is going or paused: the hero waits (as the studio's locked). */
+  locked?: boolean;
 }
 
 const NO_ANSWER = "VidFlow's background didn't answer. Try again.";
@@ -21,7 +23,7 @@ const NO_ANSWER = "VidFlow's background didn't answer. Try again.";
  * "3 · Hero" (spec §19): the description, the reference thumbnail with its status, Upload picture and Make model
  * sheet. The same behaviour as the studio's hero section (useHeroPicture, the model-sheet run and its pictures).
  */
-export function PanelHero({ project, run, client, onChange, onRunState }: Props) {
+export function PanelHero({ project, run, client, onChange, onRunState, locked = false }: Props) {
   const ids = useId();
   const picker = useRef<HTMLInputElement>(null);
   const [asking, setAsking] = useState(false);
@@ -36,6 +38,7 @@ export function PanelHero({ project, run, client, onChange, onRunState }: Props)
 
   // Flow is drawing this video's model sheet: the hero waits until it's done (as in the studio).
   const sheetLive = !!run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused');
+  const frozen = locked || sheetLive;
   const anyLive = isLive(run);
 
   async function makeSheet() {
@@ -64,7 +67,7 @@ export function PanelHero({ project, run, client, onChange, onRunState }: Props)
               className="vf-pn-thumb-remove"
               aria-label="Remove picture"
               title="Remove picture"
-              disabled={picture.busy || sheetLive}
+              disabled={picture.busy || frozen}
               onClick={() => void picture.remove()}
             >
               ×
@@ -77,7 +80,7 @@ export function PanelHero({ project, run, client, onChange, onRunState }: Props)
             aria-label="Hero"
             value={description}
             placeholder="Describe the hero: a short stickman with a red cap…"
-            disabled={sheetLive}
+            disabled={frozen}
             onChange={(e) => setHero(e.target.value, character?.referenceMediaId)}
           />
           <p className="vf-pn-note">{picture.mediaId ? 'Reference picture ✓ · attached to every scene' : 'No reference picture'}</p>
@@ -99,13 +102,13 @@ export function PanelHero({ project, run, client, onChange, onRunState }: Props)
         Hero reference picture file
       </label>
       <div className="vf-pn-pair">
-        <Button className="vf-pn-sec" loading={picture.busy} disabled={sheetLive} onClick={() => picker.current?.click()}>
+        <Button className="vf-pn-sec" loading={picture.busy} disabled={frozen} onClick={() => picker.current?.click()}>
           Upload picture
         </Button>
         <Button
           className="vf-pn-sec"
           loading={asking}
-          disabled={!description.trim() || anyLive || picture.busy}
+          disabled={!description.trim() || anyLive || locked || picture.busy}
           onClick={() => void makeSheet()}
         >
           Make model sheet
@@ -120,7 +123,7 @@ export function PanelHero({ project, run, client, onChange, onRunState }: Props)
         compact
         project={project}
         controls={{ run, client, onRunState }}
-        disabled={anyLive}
+        disabled={anyLive || locked}
         busy={picture.busy}
         onUse={(pictureId) => void picture.useSheetPicture(pictureId)}
       />

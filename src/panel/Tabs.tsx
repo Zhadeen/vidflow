@@ -44,7 +44,8 @@ export function Tabs({ idBase, tabs, value, onChange }: Props) {
           id={tabId(idBase, t.id)}
           className="vf-pn-tab"
           aria-selected={t.id === value}
-          aria-controls={panelId(idBase, t.id)}
+          // Only the shown panel exists, so only the selected tab points at it.
+          aria-controls={t.id === value ? panelId(idBase, t.id) : undefined}
           tabIndex={t.id === value ? 0 : -1}
           onClick={() => onChange(t.id)}
           onKeyDown={onKeyDown}

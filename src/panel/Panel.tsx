@@ -243,6 +243,8 @@ export function Panel({ client }: { client: RunClient }) {
                 onStart={() => void act('start', () => client.start(shown.id))}
                 onReview={studio}
                 onOpenStudio={studio}
+                locked={running}
+                onGoToQueue={() => pickTab('queue')}
               />
             ) : (
               error && (

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Panel } from '../../src/panel/Panel';
 import type { CheckRow } from '../../src/runs/checks';
@@ -21,7 +21,7 @@ const ROWS: CheckRow[] = [
   { id: 'agentOff', label: 'Agent mode off', ok: true, detail: 'Off' },
   { id: 'settings', label: 'Flow settings', ok: true, detail: 'Nano Banana 2.1 · 16:9 · x2' },
   { id: 'hero', label: 'Hero reference', ok: true, detail: 'Reference picture ready · attached to every scene' },
-  { id: 'credits', label: 'Credits', ok: true, detail: '1,043 credits · 0 needed for pictures' },
+  { id: 'credits', label: 'Credits', ok: true, detail: '1,043 credits (resets 13 Nov) · 0 needed for pictures' },
 ];
 
 async function openChecks(rows: CheckRow[] = ROWS, flowOpen = true) {
@@ -47,8 +47,9 @@ describe('side panel: Checks tab', () => {
     expect(items[4]!.textContent).toBe('Agent mode✓ Off');
     expect(items[5]!.textContent).toBe('Flow settings · Nano Banana 2.1 · 16:9 · x2✓ Match');
     expect(items[6]!.textContent).toBe('Hero reference✓ Ready');
-    expect(items[7]!.textContent).toBe('Credits · 1,043✓ 0 needed');
-    expect(screen.getByText('Before starting — checked just now')).toBeTruthy();
+    expect(items[7]!.textContent).toBe('Credits · 1,043 (resets 13 Nov)✓ 0 needed');
+    const hhmm = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    expect(screen.getByText(`Before starting — checked ${hhmm}`)).toBeTruthy();
   });
 
   it('without the Flow window: "Not checked yet" and Open Flow', async () => {
@@ -81,6 +82,43 @@ describe('side panel: Checks tab', () => {
     expect(chrome.data[KEEP_AWAKE_KEY]).toBe(false);
     await act(async () => fireEvent.click(awake));
     expect(chrome.data[KEEP_AWAKE_KEY]).toBe(true);
+  });
+
+  it('the switches wait for the stored value, and a change from elsewhere wins over a late read', async () => {
+    const chrome = stubChrome();
+    await seed('Phone Bill Story', 6);
+    const local = (globalThis as unknown as { chrome: { storage: { local: { get: Mock; set(i: object): Promise<void> } } } }).chrome.storage.local;
+    let release!: () => void;
+    const late = new Promise<void>((r) => (release = r));
+    const read = local.get.getMockImplementation()!;
+    local.get.mockImplementation(async (key: string) => {
+      if (key === ACCEPT_NOTICES_KEY) await late;
+      return read(key);
+    });
+    render(<Panel client={fakeBackground(null).client()} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Checks' }));
+    const notices = await screen.findByRole('switch', { name: "Accept Flow's notices automatically" });
+    // Not loaded yet: no state shown and it can't be flipped.
+    expect((notices as HTMLButtonElement).disabled).toBe(true);
+    expect(notices.getAttribute('aria-checked')).toBe('false');
+    // Turned off elsewhere (the studio) before the read arrives …
+    await act(async () => {
+      chrome.data[ACCEPT_NOTICES_KEY] = false;
+      await local.set({ [ACCEPT_NOTICES_KEY]: false });
+    });
+    expect(notices.getAttribute('aria-checked')).toBe('false');
+    expect((notices as HTMLButtonElement).disabled).toBe(false);
+    // … then the old read (on) arrives late: it must not win.
+    chrome.data[ACCEPT_NOTICES_KEY] = true;
+    await act(async () => release());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(notices.getAttribute('aria-checked')).toBe('false');
+
+    // The other switch follows changes made elsewhere too.
+    const awake = screen.getByRole('switch', { name: 'Keep Mac awake while running' });
+    await waitFor(() => expect(awake.getAttribute('aria-checked')).toBe('true'));
+    await act(async () => local.set({ [KEEP_AWAKE_KEY]: false }));
+    expect(awake.getAttribute('aria-checked')).toBe('false');
   });
 
   it('reads switches that were turned off before', async () => {

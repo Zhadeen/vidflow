@@ -961,6 +961,16 @@ describe('FlowDriver checks (read only)', () => {
     expect(driver.readCredits()).toBe(1250);
   });
 
+  it('reads when the credits reset, only when the page shows it', () => {
+    load('prompt-bar.html');
+    const driver = createFlowDriver();
+    expect(driver.readCreditsResets()).toBeNull();
+    document.querySelector('header')!.insertAdjacentHTML('beforeend', '<span>1,250 credits left</span><span>Resets on 13 Nov</span>');
+    expect(driver.readCreditsResets()).toBe('13 Nov');
+    document.querySelector('header')!.lastElementChild!.textContent = '(resets 1 Dec)';
+    expect(driver.readCreditsResets()).toBe('1 Dec');
+  });
+
   it('says whether Agent mode is on', () => {
     load('prompt-bar.html');
     const driver = createFlowDriver();

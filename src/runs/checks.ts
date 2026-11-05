@@ -271,7 +271,13 @@ async function rowsFrom(read: FlowChecksResponse | undefined, url: string, proje
   // Credits: pictures cost 0 on Pro (spec §16.6); a balance only when Flow shows one without opening a menu.
   rows.push(
     read
-      ? row('credits', true, read.credits !== null ? `${read.credits.toLocaleString('en-GB')} credits · 0 needed for pictures` : '0 needed for pictures')
+      ? row(
+          'credits',
+          true,
+          read.credits !== null
+            ? `${read.credits.toLocaleString('en-GB')} credits${read.creditsResets ? ` (resets ${read.creditsResets})` : ''} · 0 needed for pictures`
+            : '0 needed for pictures',
+        )
       : row('credits', null, NOT_CHECKED),
   );
   return rows;

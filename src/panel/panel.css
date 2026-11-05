@@ -124,7 +124,7 @@
 .vf-pn-inline {
   padding: 0;
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--vf-radius-sm);
   background: none;
   color: inherit;
   font: inherit;
@@ -228,7 +228,6 @@
 .vf-pn-tab:focus-visible,
 .vf-pn-field:focus-visible,
 .vf-pn-chip:focus-within,
-.vf-pn-chip-select:focus-visible,
 .vf-pn-link:focus-visible {
   outline: none;
   box-shadow: var(--vf-focus);
@@ -308,7 +307,7 @@
 /* Choice chips: selected = cream with navy text; others outlined */
 .vf-pn-chips {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
 }
 
@@ -330,37 +329,27 @@
   cursor: pointer;
 }
 
-.vf-pn-chip span,
-.vf-pn-chip-select {
-  display: block;
-  padding: 5px 10px;
-  border-radius: var(--vf-radius-pill);
-  font-variant-numeric: tabular-nums;
-}
-
 .vf-pn-chip span {
+  display: block;
+  padding: 5px 8px;
   border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-pill);
+  font-size: var(--vf-text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .vf-pn-chip:hover span {
   border-color: var(--vf-muted);
 }
 
-.vf-pn-chip:has(input:checked) span,
-.vf-pn-chip-select {
+.vf-pn-chip:has(input:checked) span {
   border-color: var(--vf-cream);
   background: var(--vf-cream);
   color: var(--vf-navy);
   font-weight: 600;
 }
 
-.vf-pn-chip-select {
-  border: 0;
-  font: inherit;
-  font-weight: 600;
-  appearance: none;
-  cursor: pointer;
-}
 
 .vf-pn-summary {
   margin: 0;
@@ -559,7 +548,7 @@
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--vf-radius-sm);
   background: none;
   color: var(--vf-cream);
   font: inherit;
@@ -689,4 +678,19 @@
 
 .vf-pn .vf-pn-flow-closed .vf-btn[data-variant].vf-pn-sec {
   flex: none;
+}
+
+/* Locked while this video runs (or its model sheet is made): the controls stay readable but can't be used */
+.vf-pn-chipset:disabled .vf-pn-chip,
+.vf-pn-select:has(select:disabled),
+.vf-pn-pastebox:has(textarea:disabled),
+.vf-pn-field:disabled,
+.vf-pn-hero-name:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.vf-pn-chipset:disabled .vf-pn-chip input,
+.vf-pn-select select:disabled {
+  cursor: default;
 }

@@ -7,6 +7,9 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
+// No cMapUrl / standardFontDataUrl: pdfjs-dist ships them (cmaps 1.6 MB in 169 files, standard fonts 0.8 MB), but
+// standard fonts only matter for drawing pages, and the cMaps only for CJK-encoded fonts; scene files are Latin text.
+// Bundling them would more than double the extension's size for no gain here.
 export async function pdfText(data: Uint8Array): Promise<string> {
   const task = getDocument({ data, useWorkerFetch: false });
   try {

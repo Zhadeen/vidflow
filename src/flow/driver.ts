@@ -94,6 +94,8 @@ export interface FlowDriver {
   readSettings(): FlowSettingsRead;
   /** Flow's credit balance, only when the page shows it without opening a menu; otherwise null. */
   readCredits(): number | null;
+  /** When the credits reset ("13 Nov"), only when the page shows it beside the balance; never opens a menu. */
+  readCreditsResets(): string | null;
   /** True while Flow's Agent mode chip is pressed. */
   agentModeOn(): boolean;
   /** Empties the prompt box (Flow's Clear prompt button, else select-all and delete); true once it is empty. */
@@ -168,6 +170,9 @@ const AGENT_MODE_MESSAGE =
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
 /** A balance ("1,250 credits left", "Credits: 40"); never the popover's "Generating will use 0 credits" cost note. */
 const CREDITS_BALANCE = /^(?:(\d[\d,]*)\s+(?:ai\s+)?credits?\s+(?:left|remaining|available)|(?:ai\s+)?credits?\s*(?:left|remaining|available)?\s*:\s*(\d[\d,]*))$/i;
+
+/** "Resets on 13 Nov", "(resets 1 Dec)". */
+const CREDITS_RESETS = /^\(?\s*resets?\s+(?:on\s+)?([\p{L}\p{N} ,]{1,24}?)\s*\)?$/iu;
 
 const squash = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -562,6 +567,15 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     return null;
   }
 
+  function readCreditsResets(): string | null {
+    for (const el of doc.querySelectorAll<HTMLElement>('body *')) {
+      if (el.children.length > 0 || el.closest('.settings-popover, [role="menu"], [role="listbox"]')) continue;
+      const m = CREDITS_RESETS.exec(squash(el.textContent));
+      if (m && isShown(el)) return m[1]!.trim();
+    }
+    return null;
+  }
+
   async function clearPrompt(): Promise<boolean> {
     const box = q(SEL.promptBox);
     if (!box) return false;
@@ -584,6 +598,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     snapshot,
     readSettings,
     readCredits,
+    readCreditsResets,
     agentModeOn: () => !!q(SEL.agentModeOn),
     clearPrompt,
 

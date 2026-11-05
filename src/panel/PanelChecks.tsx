@@ -1,6 +1,7 @@
+/// <reference types="chrome" />
 import { useEffect, useId, useState } from 'react';
 import type { CheckId, CheckRow } from '../runs/checks';
-import { getAcceptNotices, getKeepAwake, setAcceptNotices, setKeepAwake } from '../settings';
+import { ACCEPT_NOTICES_KEY, getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY, setAcceptNotices, setKeepAwake } from '../settings';
 import type { Project } from '../store/projects';
 import { Button } from '../studio/Button';
 import type { RunClient } from '../studio/runClient';
@@ -35,16 +36,14 @@ function title(row: CheckRow): string {
   if (row.id === 'account') return `${label} · ${row.detail.replace(/@.*$/, '')}`;
   if (row.id === 'settings') return `${label} · ${row.detail}`;
   if (row.id === 'credits') {
-    const balance = /^([\d.,]+) credits/.exec(row.detail)?.[1];
-    return balance ? `${label} · ${balance}` : label;
+    const m = /^([\d.,]+) credits( \(resets [^)]+\))?/.exec(row.detail);
+    return m ? `${label} · ${m[1]}${m[2] ?? ''}` : label;
   }
   return label;
 }
 
-function when(at: number): string {
-  if (Date.now() - at < 60_000) return 'checked just now';
-  return `checked at ${new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
-}
+/** "checked 12:24": the time of the last read. */
+const when = (at: number) => `checked ${new Date(at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
 
 /** "the prompt box", "the prompt box and the Generate button", "a, b and c". */
 function names(list: string[]): string {
@@ -52,16 +51,49 @@ function names(list: string[]): string {
   return the.length <= 1 ? (the[0] ?? '') : `${the.slice(0, -1).join(', ')} and ${the.at(-1)}`;
 }
 
-function Switch({ label, on, onChange }: { label: string; on: boolean; onChange(on: boolean): void }) {
+/** A switch bound to one stored setting. null = not read yet: shown off and disabled, so it can't be flipped blind. */
+function Switch({ label, on, onChange }: { label: string; on: boolean | null; onChange(on: boolean): void }) {
   const id = useId();
   return (
     <li className="vf-pn-check">
       <span id={id}>{label}</span>
-      <button type="button" role="switch" aria-checked={on} aria-labelledby={id} className="vf-switch" onClick={() => onChange(!on)}>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on === true}
+        aria-labelledby={id}
+        className="vf-switch"
+        disabled={on === null}
+        onClick={() => on !== null && onChange(!on)}
+      >
         <span className="vf-switch-knob" />
       </button>
     </li>
   );
+}
+
+/**
+ * A stored on-by-default setting: null until read; a change from anywhere (this panel, the studio, another panel) comes
+ * in through chrome.storage.onChanged, and a read that arrives after such a change never overwrites it.
+ */
+function useStoredSwitch(key: string, read: () => Promise<boolean>): [boolean | null, (on: boolean) => void] {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    read().then(
+      (v) => alive && setOn((now) => now ?? v),
+      () => undefined,
+    );
+    const onChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area === 'local' && key in changes) setOn(changes[key]!.newValue !== false);
+    };
+    chrome.storage.onChanged.addListener(onChanged);
+    return () => {
+      alive = false;
+      chrome.storage.onChanged.removeListener(onChanged);
+    };
+  }, [key, read]);
+  return [on, setOn];
 }
 
 interface Props {
@@ -80,25 +112,10 @@ interface Props {
  */
 export function PanelChecks({ project, client, result, checking, error, onCheck }: Props) {
   const ids = useId();
-  const [notices, setNotices] = useState(true);
-  const [awake, setAwake] = useState(true);
+  const [notices, setNotices] = useStoredSwitch(ACCEPT_NOTICES_KEY, getAcceptNotices);
+  const [awake, setAwake] = useStoredSwitch(KEEP_AWAKE_KEY, getKeepAwake);
   const [tool, setTool] = useState<null | 'open' | 'show' | 'test'>(null);
   const [message, setMessage] = useState<{ text: string; problem: boolean } | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void Promise.all([getAcceptNotices(), getKeepAwake()]).then(
-      ([n, a]) => {
-        if (!alive) return;
-        setNotices(n);
-        setAwake(a);
-      },
-      () => undefined,
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   function flip(set: (on: boolean) => void, save: (on: boolean) => Promise<void>, on: boolean) {
     set(on);

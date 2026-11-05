@@ -118,9 +118,11 @@ describe('side panel: tabs', () => {
     await screen.findByRole('button', { name: 'Pause' });
     expect([...primaries(container)].map((b) => b.textContent)).toEqual(['Pause']);
 
+    // Setup while this video runs is locked: its coral is "Go to Queue", never Start.
     fireEvent.click(await tab('Setup'));
-    await screen.findByRole('button', { name: 'Start making pictures' });
-    expect([...primaries(container)].map((b) => b.textContent)).toEqual(['Start making pictures']);
+    await screen.findByRole('button', { name: 'Go to Queue' });
+    expect([...primaries(container)].map((b) => b.textContent)).toEqual(['Go to Queue']);
+    expect(screen.queryByRole('button', { name: 'Start making pictures' })).toBeNull();
 
     fireEvent.click(await tab('Checks'));
     await screen.findByRole('button', { name: 'Check again' });
@@ -130,6 +132,17 @@ describe('side panel: tabs', () => {
     fireEvent.click(await tab('Files'));
     expect(await screen.findByText('Coming in the next step')).toBeTruthy();
     expect(primaries(container).length).toBeLessThanOrEqual(1);
+  });
+
+  it('only the selected tab names the panel it controls', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 6);
+    render(<Panel client={fakeBackground(null).client()} />);
+    await tab('Queue 6');
+    const controls = screen.getAllByRole('tab').map((t) => t.getAttribute('aria-controls'));
+    expect(controls.filter(Boolean)).toHaveLength(1);
+    const setup = screen.getByRole('tab', { name: 'Setup' });
+    expect(document.getElementById(setup.getAttribute('aria-controls')!)?.getAttribute('role')).toBe('tabpanel');
   });
 
   it('tabs work from the keyboard', async () => {

@@ -18,9 +18,9 @@ const server = await createServer({ root: here, configFile: false, plugins: [rea
 await server.listen();
 const browser = await chromium.launch({ channel: 'chrome' });
 
-for (const screen of ['setup', 'checks', 'running']) {
-  const page = await browser.newPage({ viewport: { width: 320, height: { setup: 680, checks: 760, running: 560 }[screen] }, deviceScaleFactor: 2 });
-  await page.goto(`http://localhost:5197/side-panel.html?screen=${screen === 'checks' ? 'setup' : screen}`);
+for (const screen of ['setup', 'setup-unapplied', 'checks', 'running']) {
+  const page = await browser.newPage({ viewport: { width: 320, height: { setup: 720, 'setup-unapplied': 760, checks: 760, running: 560 }[screen] }, deviceScaleFactor: 2 });
+  await page.goto(`http://localhost:5197/side-panel.html?screen=${screen === 'running' ? 'running' : 'setup'}`);
   await page.waitForFunction(() => window.ready === true);
   if (screen === 'setup' || screen === 'checks') {
     // Paste Claude's reply, then use the scenes: the mockup's "before starting" state.
@@ -28,6 +28,12 @@ for (const screen of ['setup', 'checks', 'running']) {
     await page.getByRole('textbox', { name: "Paste Claude's reply" }).fill(REPLY);
     await page.getByRole('button', { name: 'Use these scenes' }).click();
     await page.getByRole('button', { name: 'Start making pictures' }).waitFor();
+  }
+  if (screen === 'setup-unapplied') {
+    // Pasted but not used yet: "✓ 6 scenes found · no problems  Use these scenes", the coral Start waiting.
+    const REPLY = await page.evaluate(() => window.REPLY);
+    await page.getByRole('textbox', { name: "Paste Claude's reply" }).fill(REPLY);
+    await page.getByRole('button', { name: 'Use these scenes' }).waitFor();
   }
   if (screen === 'checks') {
     await page.getByRole('tab', { name: 'Checks' }).click();

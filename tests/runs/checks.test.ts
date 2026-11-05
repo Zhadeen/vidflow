@@ -84,6 +84,12 @@ describe('runChecks', () => {
     expect(checks.healthLine(rows, flowOpen)).toEqual(['✓ Signed in', '✓ Flow ready', '✓ Hero attached']);
   });
 
+  it('credits with the reset date Flow shows beside them', async () => {
+    const { checks } = await load({ p: withReference(), read: good({ credits: 1043, creditsResets: '13 Nov' }) });
+    const { rows } = await checks.runChecks('p1');
+    expect(rows.find((r) => r.id === 'credits')!.detail).toBe('1,043 credits (resets 13 Nov) · 0 needed for pictures');
+  });
+
   it('credits not shown on the page: the row reads "0 needed" for pictures', async () => {
     const { checks } = await load();
     const { rows } = await checks.runChecks('p1');

@@ -141,6 +141,8 @@ export interface FlowChecksResponse {
   outputs: number | null;
   /** Only when Flow shows a credit balance without opening a menu. */
   credits: number | null;
+  /** When the credits reset ("13 Nov"), if Flow shows it beside the balance. */
+  creditsResets?: string | null;
   noticeDialog: boolean;
   billingDialog: boolean;
 }

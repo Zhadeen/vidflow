@@ -73,6 +73,7 @@ describe('Flow helper: checks', () => {
       aspect: '9:16',
       outputs: 2,
       credits: null,
+      creditsResets: null,
       noticeDialog: false,
       billingDialog: false,
     });

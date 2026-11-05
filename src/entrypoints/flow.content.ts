@@ -170,6 +170,7 @@ export default defineContentScript({
         agentOff: !driver.agentModeOn(),
         ...driver.readSettings(),
         credits: driver.readCredits(),
+        creditsResets: driver.readCreditsResets(),
         noticeDialog: state.noticeDialog,
         billingDialog: state.billingDialog,
       };

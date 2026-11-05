@@ -124,7 +124,7 @@ describe('side panel: before starting', () => {
     const sixteen = (await screen.findByRole('radio', { name: '16:9' })) as HTMLInputElement;
     expect(sixteen.checked).toBe(true);
     fireEvent.click(screen.getByRole('radio', { name: '9:16' }));
-    fireEvent.change(screen.getByRole('combobox', { name: 'Pictures per scene' }), { target: { value: '4' } });
+    fireEvent.click(screen.getByRole('radio', { name: '4 per scene' }));
     fireEvent.change(screen.getByRole('combobox', { name: 'Style' }), { target: { value: 'stickman-colour' } });
     fireEvent.change(screen.getByRole('textbox', { name: 'Hero' }), { target: { value: 'a short stickman with a red cap' } });
 
@@ -414,5 +414,76 @@ describe('side panel: Setup tab', () => {
     await seed('Phone Bill Story', 6);
     render(<Panel client={fakeBackground(null).client()} />);
     expect(((await screen.findByRole('button', { name: 'Make model sheet' })) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('side panel: Setup while this video runs', () => {
+  it('pictures per scene are chips 1, 2 and 4; the chosen one reads "N per scene"', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 6);
+    render(<Panel client={fakeBackground(null).client()} />);
+    const group = await screen.findByRole('group', { name: 'Pictures per scene' });
+    const chips = () => within(group).getAllByRole('radio').map((r) => r.closest('label')!.textContent);
+    expect(chips()).toEqual(['1', '2 per scene', '4']);
+    expect((within(group).getByRole('radio', { name: '2 per scene' }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(within(group).getByRole('radio', { name: '4 per scene' }));
+    expect(chips()).toEqual(['1', '2', '4 per scene']);
+    await waitFor(async () => expect((await getProject(p.id))!.outputsPerPrompt).toBe(4));
+  });
+
+  it('the upload link stays when the paste box has text, and a file replaces the text', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 0);
+    render(<Panel client={fakeBackground(null).client()} />);
+    const paste = (await screen.findByRole('textbox', { name: "Paste Claude's reply" })) as HTMLTextAreaElement;
+    fireEvent.change(paste, { target: { value: 'something else' } });
+    expect(screen.getByRole('button', { name: /upload a CSV \/ TXT \/ PDF/ })).toBeTruthy();
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('Upload a scene file'), {
+        target: { files: [new File([REPLY_6], 'scenes.csv', { type: 'text/csv' })] },
+      });
+    });
+    await waitFor(() => expect(paste.value).toBe(REPLY_6));
+  });
+
+  it('Start is not available while the same video is paused', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 6);
+    const { container } = render(<Panel client={fakeBackground({ ...runningState(p, 2, 1), status: 'paused' }).client()} />);
+    await screen.findByRole('button', { name: 'Resume' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Setup' }));
+    const go = await screen.findByRole('button', { name: 'Go to Queue' });
+    expect(screen.queryByRole('button', { name: 'Start making pictures' })).toBeNull();
+    expect(container.querySelectorAll('[data-variant="primary"]')).toHaveLength(1);
+    fireEvent.click(go);
+    expect(screen.getByRole('tab', { name: 'Queue 6' }).getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByRole('button', { name: 'Resume' })).toBeTruthy();
+  });
+
+  it('the scenes, look and hero are locked while it runs', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 6, (x) => {
+      x.script = 'A script.';
+      x.character = { description: 'a cap', referenceMediaId: `${x.id}/hero-reference` };
+    });
+    render(<Panel client={fakeBackground(runningState(p, 2, 1)).client()} />);
+    await screen.findByRole('button', { name: 'Pause' });
+    fireEvent.click(screen.getByRole('tab', { name: 'Setup' }));
+    await screen.findByRole('button', { name: 'Go to Queue' });
+    const disabled = (el: Element) => el.matches(':disabled');
+    expect(disabled(screen.getByRole('textbox', { name: "Paste Claude's reply" }))).toBe(true);
+    expect(disabled(screen.getByLabelText('Upload a scene file'))).toBe(true);
+    expect(disabled(screen.getByRole('button', { name: /upload a CSV/ }))).toBe(true);
+    for (const name of ['16:9', '9:16', '1:1', '1 per scene', '2 per scene', '4 per scene']) {
+      expect(disabled(screen.getByRole('radio', { name }))).toBe(true);
+    }
+    expect(disabled(screen.getByRole('combobox', { name: 'Style' }))).toBe(true);
+    expect(disabled(screen.getByRole('textbox', { name: 'Hero' }))).toBe(true);
+    expect(disabled(screen.getByRole('button', { name: 'Upload picture' }))).toBe(true);
+    expect(disabled(screen.getByRole('button', { name: 'Remove picture' }))).toBe(true);
+    expect(disabled(screen.getByRole('button', { name: 'Make model sheet' }))).toBe(true);
+    // The prompts only copy: they stay.
+    expect(disabled(screen.getByRole('button', { name: 'Copy Claude prompt' }))).toBe(false);
+    expect(screen.getByText('VidFlow is making pictures for this video. Its scenes and look wait until it stops.')).toBeTruthy();
   });
 });
