@@ -71,11 +71,12 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
   }
 
   const character = project.character;
-  const setHero = (description: string) =>
+  /** The hero from the latest description and reference; none when both are empty. */
+  const setHero = (description: string, referenceMediaId: string | undefined = character?.referenceMediaId) =>
     onChange({
       character:
-        description.trim() || character?.referenceMediaId
-          ? ({ description, ...(character?.referenceMediaId && { referenceMediaId: character.referenceMediaId }) } satisfies CharacterSpec)
+        description.trim() || referenceMediaId
+          ? ({ description, ...(referenceMediaId && { referenceMediaId }) } satisfies CharacterSpec)
           : null,
     });
 
@@ -273,7 +274,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
             <p className="vf-hint" style={{ margin: 'var(--vf-space-2) 0 0' }}>
               Kept the same in every scene.
             </p>
-            <HeroReference project={project} disabled={locked} onChange={(p) => onChange({ character: p.character })} />
+            <HeroReference project={project} disabled={locked} onChange={(id) => setHero(character?.description ?? '', id)} />
           </div>
 
           <Segmented
