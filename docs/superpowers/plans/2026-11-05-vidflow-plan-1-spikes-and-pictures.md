@@ -376,7 +376,7 @@ Rule: use the S5 matching rule. Default if the spike confirms captions reflect t
 **Interfaces:**
 - Consumes: Tasks 2–8. Studio ↔ background messages: `{type:'run/start', projectId}`, `{type:'run/pause'}`, `{type:'run/resume'}`, and background → studio `{type:'run/state', state: RunState}`.
 
-Layout C from the approved mockup (`~/Developer/VidFlint/.superpowers/brainstorm/48768-1793842330/content/studio-layout.html`, option C) in the Navy-with-cream look (`visual-style-v2.html`, option B). Steps bar shows Script, Voice, Pictures, Motion, Edit, Export; in this plan Voice/Motion/Edit/Export show "Coming next" and are not clickable.
+Match the owner-approved design exactly: see `docs/design/approved/README.md` (layout C + look B, screenshot `approved-look-navy-cream.png`). Any visual change needs the owner's approval. Steps bar shows Script, Voice, Pictures, Motion, Edit, Export; in this plan Voice/Motion/Edit/Export show "Coming next" and are not clickable.
 
 - [ ] **Step 1: Write the failing tests:**
   - `each screen has exactly one primary button` — render Projects home, Script step (valid file), Pictures step (idle and running); count elements with `data-variant="primary"` → 1 each.

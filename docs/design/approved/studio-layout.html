@@ -1,0 +1,96 @@
+<h2>How should the studio be laid out?</h2>
+<p class="subtitle">The studio opens in its own Chrome tab. Flow and AI Studio work in the background. Pick the layout that feels easiest to find your way around — click one, then tell me in the chat.</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="steps" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="display:flex;height:300px;font-size:11px;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden;background:#fff">
+        <div style="width:110px;background:#f4f4f5;padding:10px;display:flex;flex-direction:column;gap:6px;border-right:1px solid #e4e4e7">
+          <b style="font-size:12px">My video</b>
+          <div style="padding:6px;border-radius:6px;background:#e4e4e7">✓ 1 Script</div>
+          <div style="padding:6px;border-radius:6px;background:#e4e4e7">✓ 2 Voice</div>
+          <div style="padding:6px;border-radius:6px;background:#111;color:#fff">● 3 Pictures</div>
+          <div style="padding:6px;color:#888">4 Motion</div>
+          <div style="padding:6px;color:#888">5 Edit</div>
+          <div style="padding:6px;color:#888">6 Export</div>
+        </div>
+        <div style="flex:1;padding:12px;display:flex;flex-direction:column;gap:8px">
+          <b style="font-size:13px">Pictures — 38 of 60 done</b>
+          <div style="height:6px;background:#eee;border-radius:3px"><div style="width:63%;height:6px;background:#111;border-radius:3px"></div></div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;flex:1">
+            <div class="placeholder" style="min-height:0">01</div><div class="placeholder" style="min-height:0">02</div><div class="placeholder" style="min-height:0">03</div><div class="placeholder" style="min-height:0">04</div>
+            <div class="placeholder" style="min-height:0">05</div><div class="placeholder" style="min-height:0">06</div><div class="placeholder" style="min-height:0">07…</div><div class="placeholder" style="min-height:0">⏳</div>
+          </div>
+          <div style="display:flex;gap:6px;justify-content:flex-end"><button class="mock-button">Pause</button><button class="mock-button">Next: Motion →</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A · Step by step</h3>
+      <p>A list of six steps on the left. You always see where you are and what's next. Each step has one job. Simplest to learn.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="timeline" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:300px;font-size:11px;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden;background:#fff;display:flex;flex-direction:column">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #e4e4e7">
+          <b style="font-size:12px">My video</b>
+          <div style="display:flex;gap:5px"><button class="mock-button">Script</button><button class="mock-button">Voice</button><button class="mock-button">Generate all ▶</button><button class="mock-button">Export</button></div>
+        </div>
+        <div style="flex:1;display:flex;gap:8px;padding:10px">
+          <div style="flex:2;background:#18181b;border-radius:6px;color:#aaa;display:flex;align-items:center;justify-content:center">▶ Preview — Scene 07</div>
+          <div style="flex:1;border:1px solid #e4e4e7;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:4px">
+            <b>Scene 07</b><span style="color:#666">"So I switched everything off."</span><span>Picture ✓ · Clip ✓ · Voice ✓</span><button class="mock-button">Swap picture</button>
+          </div>
+        </div>
+        <div style="padding:8px 10px;border-top:1px solid #e4e4e7;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;gap:3px">
+            <div style="flex:2;height:26px;background:#d4d4d8;border-radius:3px"></div><div style="flex:3;height:26px;background:#d4d4d8;border-radius:3px"></div><div style="flex:2;height:26px;background:#111;border-radius:3px"></div><div style="flex:4;height:26px;background:#d4d4d8;border-radius:3px"></div><div style="flex:2;height:26px;background:#e4e4e7;border-radius:3px"></div>
+          </div>
+          <div style="height:14px;background:repeating-linear-gradient(90deg,#a1a1aa 0 2px,transparent 2px 5px);border-radius:3px;opacity:.6"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · Video editor</h3>
+      <p>Like CapCut: a big preview, scene details on the side, a timeline with the voiceover underneath. One "Generate all" button does everything. Best for fine-tuning; busier to learn.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="hybrid" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="height:300px;font-size:11px;border:1px solid #d0d0d0;border-radius:8px;overflow:hidden;background:#fff;display:flex;flex-direction:column">
+        <div style="display:flex;gap:4px;align-items:center;padding:8px 10px;border-bottom:1px solid #e4e4e7">
+          <b style="font-size:12px;margin-right:8px">My video</b>
+          <span style="padding:3px 7px;border-radius:10px;background:#e4e4e7">✓ Script</span>›
+          <span style="padding:3px 7px;border-radius:10px;background:#e4e4e7">✓ Voice</span>›
+          <span style="padding:3px 7px;border-radius:10px;background:#111;color:#fff">Pictures 38/60</span>›
+          <span style="padding:3px 7px;color:#888">Motion</span>›
+          <span style="padding:3px 7px;color:#888">Export</span>
+        </div>
+        <div style="flex:1;display:flex;gap:8px;padding:10px">
+          <div style="flex:2;background:#18181b;border-radius:6px;color:#aaa;display:flex;align-items:center;justify-content:center">▶ Preview — Scene 07</div>
+          <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:5px">
+            <div class="placeholder" style="min-height:0">05</div><div class="placeholder" style="min-height:0">06</div><div class="placeholder" style="min-height:0;outline:2px solid #111">07</div><div class="placeholder" style="min-height:0">⏳ 08</div>
+          </div>
+        </div>
+        <div style="padding:8px 10px;border-top:1px solid #e4e4e7">
+          <div style="display:flex;gap:3px"><div style="flex:2;height:22px;background:#d4d4d8;border-radius:3px"></div><div style="flex:3;height:22px;background:#d4d4d8;border-radius:3px"></div><div style="flex:2;height:22px;background:#111;border-radius:3px"></div><div style="flex:4;height:22px;background:#e4e4e7;border-radius:3px"></div></div>
+          <div style="height:12px;margin-top:4px;background:repeating-linear-gradient(90deg,#a1a1aa 0 2px,transparent 2px 5px);opacity:.6"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · Steps on top, editor below</h3>
+      <p>The steps run across the top like a progress bar, so you always know what's happening — and the preview, scene grid and timeline are always there to check and fix. My pick: easy to follow and powerful.</p>
+    </div>
+  </div>
+
+</div>
+
+<div class="section">
+  <h3>In all three</h3>
+  <p class="subtitle">The Flow tab only gets a small status pill ("Making picture 38 of 60 · Pause") — no big panel covering Flow like Flow Flash has. Everything else happens in the studio tab.</p>
+</div>
