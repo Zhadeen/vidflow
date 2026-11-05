@@ -88,6 +88,20 @@ function requeueSubmitted(state: RunState): RunState {
   return { ...state, inFlight: [], sceneStates };
 }
 
+/**
+ * The unconfirmed wait limit counts running time only: on start/resume each pending scene's unconfirmed clock starts
+ * again (as its deadline alarms are re-armed), so a long pause can't fail it at the first look afterwards.
+ */
+function restartUnconfirmedClocks(state: RunState): RunState {
+  const now = Date.now();
+  let sceneStates = state.sceneStates;
+  for (const [id, s] of Object.entries(state.sceneStates)) {
+    if (s.status !== 'pending' || !s.unconfirmed) continue;
+    sceneStates = { ...sceneStates, [id]: { ...s, unconfirmed: { ...s.unconfirmed, at: now } } };
+  }
+  return sceneStates === state.sceneStates ? state : { ...state, sceneStates };
+}
+
 function clearPause(state: RunState): RunState {
   const { pauseReason: _r, resumeAt: _t, ...rest } = state;
   return rest;
@@ -96,10 +110,10 @@ function clearPause(state: RunState): RunState {
 export function reduceRun(state: RunState, event: RunEvent): RunState {
   switch (event.type) {
     case 'start':
-      return settle({ ...clearPause(requeueSubmitted(state)), status: 'running' });
+      return settle({ ...clearPause(restartUnconfirmedClocks(requeueSubmitted(state))), status: 'running' });
     case 'resume':
       if (state.status === 'running') return state;
-      return settle({ ...clearPause(state), status: 'running' });
+      return settle({ ...clearPause(restartUnconfirmedClocks(state)), status: 'running' });
     case 'restore':
       return requeueSubmitted(state);
     case 'pause':

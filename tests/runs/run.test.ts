@@ -233,4 +233,15 @@ describe('Try again (retry)', () => {
     const s = apply(initRun(project(1)), { type: 'start' }, { type: 'unconfirmed', sceneId: 'scene-01', keysBefore: ['a'], prompt: 'p', at: 1234 });
     expect(s.sceneStates['scene-01']!.unconfirmed).toEqual({ keysBefore: ['a'], prompt: 'p', at: 1234 });
   });
+
+  it('resume and start restart the unconfirmed clock (only running time counts)', () => {
+    let s = apply(initRun(project(1)), { type: 'start' }, { type: 'unconfirmed', sceneId: 'scene-01', keysBefore: [], prompt: 'p', at: 1 });
+    s = reduceRun(s, { type: 'pause' });
+    expect(s.sceneStates['scene-01']!.unconfirmed!.at).toBe(1);
+    const before = Date.now();
+    const resumed = reduceRun(s, { type: 'resume' });
+    expect(resumed.sceneStates['scene-01']!.unconfirmed!.at).toBeGreaterThanOrEqual(before);
+    const started = reduceRun(s, { type: 'start' });
+    expect(started.sceneStates['scene-01']!.unconfirmed!.at).toBeGreaterThanOrEqual(before);
+  });
 });

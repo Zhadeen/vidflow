@@ -774,4 +774,43 @@ describe('final review fixes', () => {
     expect(Math.max(0, ...chromeMock.debugger.detach.mock.invocationCallOrder)).toBeGreaterThan(lastAttach);
     expect(port.prepare).not.toHaveBeenCalled();
   });
+
+  it('a pause longer than the unconfirmed limit does not fail the scene at the first look after Resume', async () => {
+    const ctx = await setup(2);
+    ctx.coordinator.setTimingsForTests({ ...FAST, unconfirmedWaitMs: 1000 });
+    const port = ctx.fakePort({ confirmStarted: vi.fn(async () => false), tiles: vi.fn(async () => [card('old', 0)]) });
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused', 'the unconfirmed pause');
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    const generating: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, progress: 40, caption: prompt };
+    vi.mocked(port.tiles).mockResolvedValue([generating, card('old', 1)]);
+    await new Promise((r) => setTimeout(r, 1100)); // paused longer than the limit
+    await ctx.coordinator.resumeRun();
+    const before = vi.mocked(port.tiles).mock.calls.length;
+    await waitFor(
+      () => vi.mocked(port.tiles).mock.calls.length >= before + 3 || ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'failed',
+      'a few looks after Resume',
+    );
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1?.status).toBe('pending');
+    expect(port.prepare).toHaveBeenCalledTimes(1);
+  }, 10_000);
+
+  it('while paused with the tab off the project, a tile report neither moves the tab, presses, nor fails the scene', async () => {
+    const { chromeMock, coordinator, port } = await submitted(1);
+    await coordinator.pauseRun();
+    chromeMock.tab.url = 'https://flow.google.com/'; // the owner took the tab elsewhere to fix something
+    const updates = chromeMock.tabs.update.mock.calls.length;
+    const presses = vi.mocked(port.press).mock.calls.length;
+    for (let i = 0; i < 3; i++) {
+      await coordinator.handleTiles([card('k1', 0)]);
+      await coordinator.settledForTests();
+    }
+    expect(chromeMock.tabs.update.mock.calls.length).toBe(updates);
+    expect(chromeMock.tabs.goBack).not.toHaveBeenCalled();
+    expect(vi.mocked(port.press).mock.calls.length).toBe(presses);
+    expect(port.readDetail).not.toHaveBeenCalled();
+    expect(chromeMock.tab.url).toBe('https://flow.google.com/');
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
+  });
 });

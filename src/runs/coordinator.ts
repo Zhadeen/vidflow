@@ -497,7 +497,7 @@ async function findUnconfirmedStart(
     if (isFinished(card)) {
       const detail = await detailOf(tabId, project.id, card.key, attempt);
       if (detail === null) return null;
-      if (detail === 'unread') return 'wait';
+      if (detail === 'unread') return stillRunning(project.id) ? 'wait' : null;
       ok = verifyMatch(u.prompt, detail);
     } else if (card.refusal !== null) {
       ok = verifyMatch(u.prompt, card.caption); // a refused tile keeps its prompt as caption: Flow did take it
@@ -522,6 +522,8 @@ async function detailOf(tabId: number, projectId: string, key: string, attempt: 
   if (unreadCount.get(key)?.attempt === attempt) return 'unread'; // already tried on this report
   const read = await readDetailFor(tabId, projectId, key);
   if (!stillCollecting(projectId)) return null;
+  // While not running, a read that didn't happen (tab elsewhere, owner busy) is "stopped", not a strike against the card.
+  if (read === null && state?.status !== 'running') return null;
   if (read === null) {
     const tries = (unreadCount.get(key)?.count ?? 0) + 1;
     unreadCount.set(key, { count: tries, attempt });
@@ -541,6 +543,9 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
   const flowUrl = state?.flowProjectUrl;
   if (!flowUrl || !port || !stillCollecting(projectId)) return null;
   const onProject = (u: string) => projectUrlOf(u) === flowUrl && !/\/edit\//.test(u);
+  // A paused run only reads from the project page as it is: it never moves the tab (the owner may be fixing something).
+  const start = await tabUrl(tabId);
+  if (state?.status !== 'running' && (!start || !onProject(start))) return null;
   inDetail = true;
   try {
     const now = await tabUrl(tabId);
