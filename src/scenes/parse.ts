@@ -86,7 +86,21 @@ function buildScene(
 function parseCsv(lines: string[], firstLine: number, headerIdx: number): ParseResult {
   const scenes: Scene[] = [];
   const issues: ParseIssue[] = [];
-  const rows = Papa.parse<string[]>(lines.join('\n'), { skipEmptyLines: false }).data;
+  const whole = Papa.parse<string[]>(lines.join('\n'), { skipEmptyLines: false, delimiter: ',' });
+  let rows = whole.data;
+  if (whole.errors.some((e) => e.type === 'Quotes')) {
+    // An unclosed quote swallows every later row; read line by line so none are lost.
+    rows = lines.map((line, i) => {
+      const one = Papa.parse<string[]>(line, { delimiter: ',' });
+      if (i > headerIdx && one.errors.some((e) => e.type === 'Quotes')) {
+        issues.push({
+          line: firstLine + i,
+          message: `Line ${firstLine + i} has a quote that is never closed, so its columns may be wrong.`,
+        });
+      }
+      return one.data[0] ?? [''];
+    });
+  }
   const columns = rows[headerIdx].map((h) => HEADER_FIELDS[h.trim().toLowerCase()]);
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -116,10 +130,15 @@ function parsePlain(lines: string[], firstLine: number): ParseResult {
   return { scenes, issues };
 }
 
+function isCsvHeader(line: string): boolean {
+  const cells = Papa.parse<string[]>(line, { delimiter: ',' }).data[0] ?? [];
+  return cells.some((c) => HEADER_FIELDS[c.trim().toLowerCase()] === 'imagePrompt');
+}
+
 export function parseSceneFile(text: string): ParseResult {
   const { lines, firstLine } = stripFence(text);
   const headerIdx = lines.findIndex((l) => l.trim() !== '');
-  if (headerIdx !== -1 && lines[headerIdx].includes(',') && /prompt/i.test(lines[headerIdx])) {
+  if (headerIdx !== -1 && isCsvHeader(lines[headerIdx])) {
     return parseCsv(lines, firstLine, headerIdx);
   }
   return parsePlain(lines, firstLine);

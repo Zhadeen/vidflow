@@ -98,6 +98,28 @@ describe('parseSceneFile', () => {
     expect(fenced.scenes).toHaveLength(1);
   });
 
+  it('recovers every row when a quote is never closed', () => {
+    const text = [
+      HEADER,
+      '1,,s1,c,t,img1,m',
+      '2,,"hi,c,t,img2,m',
+      '3,,s3,c,t,img3,m',
+      '4,,s4,c,t,img4,m',
+    ].join('\n');
+    const { scenes, issues } = parseSceneFile(text);
+    expect(scenes).toHaveLength(4);
+    expect(scenes.map((s) => s.slide)).toEqual([1, 2, 3, 4]);
+    expect(scenes[3].imagePrompt).toBe('img4');
+    expect(issues.some((i) => i.line === 3 && /quote/i.test(i.message))).toBe(true);
+  });
+
+  it('does not mistake a numbered line that mentions "prompt" for a header', () => {
+    const text = '1. A stickman gives a prompt, then leaves\n2. A stickman sits';
+    const { scenes } = parseSceneFile(text);
+    expect(scenes).toHaveLength(2);
+    expect(scenes[0]).toMatchObject({ slide: 1, imagePrompt: 'A stickman gives a prompt, then leaves' });
+  });
+
   it('uses plain number ids for slides of 100 or more', () => {
     const { scenes } = parseSceneFile([HEADER, '100,,s,c,t,img,m'].join('\n'));
     expect(scenes[0].id).toBe('scene-100');
