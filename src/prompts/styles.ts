@@ -6,6 +6,8 @@ export interface StylePreset {
   prefix: string;
   enforcement: string;
   forbiddenWords: string[];
+  /** Optional style-specific wording for the hero character line. */
+  characterHint?: string;
 }
 
 const FORBIDDEN = ['photorealistic', 'realistic', '3D', 'CGI', 'render'];
@@ -19,6 +21,7 @@ export const STYLE_PRESETS: Record<Exclude<StyleId, 'custom'>, StylePreset> = {
     enforcement:
       'Style: flat 2D black marker lines on white only, no shading, no gradients, no depth, no colour fills.',
     forbiddenWords: FORBIDDEN,
+    characterHint: 'drawn as a stick figure',
   },
   'stickman-doodle-comic': {
     id: 'stickman-doodle-comic',
@@ -28,6 +31,7 @@ export const STYLE_PRESETS: Record<Exclude<StyleId, 'custom'>, StylePreset> = {
     enforcement:
       'Style: flat 2D hand-drawn ink doodle lines on paper only, no shading, no depth, no polished digital finish.',
     forbiddenWords: FORBIDDEN,
+    characterHint: 'drawn as a stick figure',
   },
   'stickman-colour': {
     id: 'stickman-colour',
@@ -37,6 +41,7 @@ export const STYLE_PRESETS: Record<Exclude<StyleId, 'custom'>, StylePreset> = {
     enforcement:
       'Style: flat 2D vector-like shapes with solid flat colour fills only, no shading, no gradients, no depth.',
     forbiddenWords: FORBIDDEN,
+    characterHint: 'drawn as a stick figure',
   },
 };
 

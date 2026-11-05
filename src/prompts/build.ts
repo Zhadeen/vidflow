@@ -10,24 +10,33 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function stem(word: string): string {
+  return word.length > 6 && word.endsWith('istic') ? word.slice(0, -3) : word;
+}
+
 function stripForbidden(text: string, words: string[]): string {
   let out = text;
   for (const w of words) {
-    out = out.replace(new RegExp(`(?<![\\w])${escapeRe(w)}(?![\\w])`, 'gi'), ' ');
+    const re = new RegExp(
+      `(?<![\\w])(?:(?:photo|hyper|ultra|semi)-?)?${escapeRe(stem(w))}\\w*(?:-\\w+)*(?![\\w])`,
+      'gi',
+    );
+    out = out.replace(re, ' ');
   }
   return out
     .replace(/\s+([,.;])/g, '$1')
     .replace(/([,;])(\s*[,;])+/g, '$1')
-    .replace(/^[\s,;]+|[\s,;]+$/g, '')
+    .replace(/^[\s,;.-]+|[\s,;.-]+$/g, '')
     .replace(/\s{2,}/g, ' ');
 }
 
 function characterBlock(character: CharacterSpec, style: StylePreset): string {
-  const desc = stripForbidden(character.description, style.forbiddenWords);
-  const ref = character.hasReferenceImage
-    ? ' Match the reference picture attached in the Ingredient slot exactly.'
-    : '';
-  return `HERO character (keep identical in every scene, drawn as a stick figure): ${desc}.${ref}`;
+  const desc = stripForbidden(character.description, style.forbiddenWords).replace(/[.\s]+$/, '');
+  const hint = style.characterHint ? `, ${style.characterHint}` : '';
+  let block = `HERO character (keep identical in every scene${hint})`;
+  block += desc ? `: ${desc}.` : '.';
+  if (character.hasReferenceImage) block += ' Match the reference picture attached in the Ingredient slot exactly.';
+  return block;
 }
 
 export function buildImagePrompt(scene: Scene, style: StylePreset, character: CharacterSpec | null): string {

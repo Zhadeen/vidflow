@@ -54,6 +54,33 @@ describe('buildImagePrompt', () => {
   });
 });
 
+describe('character block is style-aware', () => {
+  it('only says stick figure for presets that carry a characterHint', () => {
+    expect(buildImagePrompt(scene, customStyle('chalk on slate'), hero)).not.toMatch(/stick figure/i);
+    expect(buildImagePrompt(scene, STYLE_PRESETS['stickman-doodle-comic'], hero)).toMatch(/stick figure/i);
+  });
+});
+
+describe('forbidden word stripping', () => {
+  const cases = [
+    'photo-realistic face', 'hyper-realistic skin', 'photorealism look', 'realistically shaded',
+    'rendered in 3D-rendered style', 'glossy renders', 'CGI-style hands', 'Photorealistic, 3D, CGI.',
+    'tall man with a hat.',
+  ];
+  it.each(cases)('cleans %s', (description) => {
+    for (const style of Object.values(STYLE_PRESETS)) {
+      const out = buildImagePrompt(scene, style, { description, hasReferenceImage: false });
+      const hero = out.split('\n\n').find((b) => b.startsWith('HERO')) ?? '';
+      expect(hero).not.toMatch(/realis|render|3D|CGI|photo|hyper/i);
+      expect(hero).not.toMatch(/\.\.|-\s|\s-|,\s*,|\s,/);
+    }
+  });
+  it('drops the description sentence when nothing is left', () => {
+    const out = buildImagePrompt(scene, STYLE_PRESETS['stickman-colour'], { description: 'photorealistic 3D', hasReferenceImage: false });
+    expect(out).not.toMatch(/:\s*\./);
+  });
+});
+
 describe('customStyle', () => {
   it('uses the text as prefix with no enforcement', () => {
     const s = customStyle('chalk on slate');
