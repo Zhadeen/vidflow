@@ -645,7 +645,19 @@ textarea.vf-input {
 
 /* The picture in use: coral border + the coral "★ Using this" pill (a label, not a button; approved look). */
 .vf-option[data-best='true'] {
-  border: 2px solid var(--vf-coral);
+  /* 1px border + 1px ring = the approved 2px coral edge, without moving the picture on a swap. */
+  border-color: var(--vf-coral);
+  box-shadow: 0 0 0 1px var(--vf-coral);
+}
+
+/* Focus lands on the chosen card after a swap (tabindex -1): keep the coral edge, add the cream ring outside it. */
+.vf-option[data-best='true']:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--vf-coral), 0 0 0 3px var(--vf-navy), 0 0 0 5px var(--vf-cream);
+}
+
+.vf-option[data-best='true']:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .vf-best {

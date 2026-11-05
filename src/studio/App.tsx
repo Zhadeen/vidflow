@@ -139,7 +139,9 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
             onChange={change}
             onHome={() => open(null)}
             onRunState={setRun}
-            onSceneStates={(sceneStates) => setProject((p) => (p && p.id === project.id ? { ...p, sceneStates } : p))}
+            onSceneState={(sceneId, state) =>
+              setProject((p) => (p && p.id === project.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
+            }
           />
         ) : (
           !error && <p className="vf-hint">Opening your video…</p>

@@ -224,6 +224,74 @@ describe('one-click picture swap', () => {
     expect(primaries()).toHaveLength(1);
   });
 
+  it('each "Use this picture" button is described by its card\'s "Option K of N" title', async () => {
+    const p = await stored({ s1: done(1), s2: done(2, { pictureIds: ['m/a2', 'm/b2', 'm/c2'] }) });
+    window.location.hash = `#/project/${p.id}`;
+    render(<App client={backgroundClient()} media={media} />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Use this picture' })).toHaveLength(2));
+    const descriptions = screen.getAllByRole('button', { name: 'Use this picture' }).map((b) => {
+      const ids = b.getAttribute('aria-describedby')!.split(' ');
+      return ids.map((id) => document.getElementById(id)?.textContent).join(' ');
+    });
+    expect(descriptions).toEqual(['Option 2 of 3', 'Option 3 of 3']);
+  });
+
+  it('after a swap, focus moves to the newly chosen card; after a refusal it stays on the pressed button', async () => {
+    const p = await stored();
+    await openStudio(p);
+    expect(option(1).getAttribute('tabindex')).toBe('-1'); // focusable by script, not a tab stop
+    const use = within(option(2)).getByRole('button', { name: 'Use this picture' });
+    use.focus();
+    fireEvent.click(use);
+    await waitFor(() => expect(document.activeElement).toBe(option(2)));
+    expect(option(2).getAttribute('tabindex')).toBe('-1');
+    expect(option(1).getAttribute('tabindex')).toBeNull();
+
+    cleanup();
+    const refused = backgroundClient({ choose: vi.fn(async (): Promise<RunReply> => ({ ok: false, reason: 'error', message: 'No.' })) });
+    await openStudio(await stored(), refused);
+    const again = within(option(2)).getByRole('button', { name: 'Use this picture' });
+    again.focus();
+    fireEvent.click(again);
+    await screen.findByText('No.');
+    await waitFor(() => expect(document.activeElement).toBe(within(option(2)).getByRole('button', { name: 'Use this picture' })));
+  });
+
+  it('says which option is in use: a status line and aria-current on the chosen card', async () => {
+    const p = await stored();
+    await openStudio(p);
+    const status = () => within(preview()).getByRole('status');
+    expect(status().textContent).toBe('Using option 1 of 2');
+    expect(status().className).toContain('vf-visually-hidden');
+    expect(option(1).getAttribute('aria-current')).toBe('true');
+    expect(option(2).getAttribute('aria-current')).toBeNull();
+    fireEvent.click(within(option(2)).getByRole('button', { name: 'Use this picture' }));
+    await waitFor(() => expect(status().textContent).toBe('Using option 2 of 2'));
+    expect(option(2).getAttribute('aria-current')).toBe('true');
+    expect(option(1).getAttribute('aria-current')).toBeNull();
+  });
+
+  it('the read-back after a swap takes only the swapped scene, not the whole saved project', async () => {
+    const p = await stored();
+    // Meanwhile something else saved scene 1 as failed; only scene 2 may come from the read-back.
+    const client = backgroundClient();
+    const choose = client.choose;
+    client.choose = vi.fn(async (projectId: string, sceneId: string, pictureId: string) => {
+      const reply = await choose(projectId, sceneId, pictureId);
+      const q = (await getProject(projectId))!;
+      q.sceneStates = { ...q.sceneStates, s1: { sceneId: 's1', status: 'failed', pictureIds: [], message: 'x' } };
+      await saveProject(q);
+      return reply;
+    });
+    await openStudio(p, client);
+    fireEvent.click(within(option(2)).getByRole('button', { name: 'Use this picture' }));
+    await waitFor(async () => expect((await getProject(p.id))!.sceneStates.s1?.status).toBe('failed'));
+    await act(() => new Promise((r) => setTimeout(r, 30)));
+    expect(option(2).getAttribute('data-best')).toBe('true');
+    expect(tileImg(1)?.getAttribute('src')).toBe('blob:m/a1'); // scene 1 still shown as it was
+    expect(screen.queryByRole('heading', { name: /needs a look/ })).toBeNull();
+  });
+
   it('puts the pill back and says why when the background refuses the swap', async () => {
     const p = await stored();
     const client = backgroundClient({

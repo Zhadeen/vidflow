@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type Ref } from 'react';
 import type { RunReply } from '../flow/messages';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
@@ -19,8 +19,8 @@ interface Props {
   media: MediaStore;
   /** The run as the background reported it after a request. */
   onRunState(state: RunState | null): void;
-  /** The project's scene states as saved, read back after a swap (with no run live the background sends no broadcast). */
-  onSceneStates?(sceneStates: Record<string, SceneState>): void;
+  /** One scene's state as saved, read back after a swap (with no run live the background sends no broadcast). */
+  onSceneState?(sceneId: string, state: SceneState): void;
 }
 
 type Busy = null | 'start' | 'pause' | 'resume' | 'stop' | `retry:${string}`;
@@ -29,7 +29,7 @@ const MOTION_NEXT = 'Motion is coming next in VidFlow. Your pictures are saved i
 const SWAP_HINT = "VidFlow uses Flow's first picture. Click another to swap.";
 const SWAP_FAILED = "VidFlow couldn't save that choice. Try again.";
 
-export function PicturesStep({ project, run, client, media, onRunState, onSceneStates }: Props) {
+export function PicturesStep({ project, run, client, media, onRunState, onSceneState }: Props) {
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +37,9 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
   // Swaps shown at once, before the background confirms them; each goes once the saved state agrees (or it fails).
   const [swaps, setSwaps] = useState<Record<string, string>>({});
   const [swapping, setSwapping] = useState(false);
+  // Where focus goes once a swap settles: the newly chosen card, or back to the button that was pressed.
+  const [focusTo, setFocusTo] = useState<{ pictureId: string; on: 'card' | 'button' } | null>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
 
   const phase = runPhase(project, run);
   const saved = useMemo(() => sceneStatesFor(project, run), [project, run]);
@@ -96,6 +99,14 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
   const stop = () => act('stop', () => client.stop());
   const retry = (sceneId: string) => act(`retry:${sceneId}`, () => client.retry(project.id, sceneId));
 
+  useEffect(() => {
+    if (!focusTo || swapping) return;
+    const card = [...(optionsRef.current?.querySelectorAll<HTMLElement>('figure') ?? [])].find((f) => f.dataset.pictureId === focusTo.pictureId);
+    const target = focusTo.on === 'card' ? card : card?.querySelector<HTMLElement>('button');
+    target?.focus();
+    setFocusTo(null);
+  }, [focusTo, swapping, states]);
+
   /** One click: the pill moves now; the background (the single writer) saves it; a refusal puts it back and says why. */
   async function swap(sceneId: string, pictureId: string) {
     if (swapping || chosenPicture(states[sceneId]) === pictureId) return;
@@ -111,13 +122,17 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
         return next;
       });
       setError(e instanceof Error && e.message ? e.message : SWAP_FAILED);
+      setFocusTo({ pictureId, on: 'button' });
       setSwapping(false);
       return;
     }
+    setFocusTo({ pictureId, on: 'card' });
     try {
       // Saved. Read it back: with no run live there is no broadcast to bring it; with one, the run has it too.
       const fresh = await getProject(project.id);
-      if (fresh) onSceneStates?.(fresh.sceneStates);
+      // Only this scene: anything else in the stored project is not this swap's to bring in.
+      const scene = fresh?.sceneStates[sceneId];
+      if (scene) onSceneState?.(sceneId, scene);
       if (phase === 'running' || phase === 'paused') {
         const reply = await client.get();
         if (reply.ok) onRunState(reply.state);
@@ -140,6 +155,7 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
           ) : (
             shown && (
               <Options
+                ref={optionsRef}
                 project={project}
                 state={shownState}
                 urls={urls}
@@ -157,6 +173,11 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
           )}
           {shown && !showBeforeStart && (shownState?.pictureIds.length ?? 0) > 1 && !project.scenes.some((s) => hasChoice(states[s.id])) && (
             <p className="vf-hint vf-swap-hint">{SWAP_HINT}</p>
+          )}
+          {shown && !showBeforeStart && (
+            <p role="status" className="vf-visually-hidden">
+              {usingLine(shownState)}
+            </p>
           )}
         </section>
 
@@ -298,7 +319,15 @@ function BeforeStart({ scenes, total, perScene }: { scenes: number; total: numbe
   );
 }
 
+/** "Using option 2 of 3" for screen readers; nothing while the scene has no pictures. */
+function usingLine(state: SceneState | undefined): string {
+  const inUse = chosenPicture(state);
+  if (!state || !inUse) return '';
+  return `Using option ${state.pictureIds.indexOf(inUse) + 1} of ${state.pictureIds.length}`;
+}
+
 interface OptionsProps {
+  ref?: Ref<HTMLDivElement>;
   project: Project;
   state: SceneState | undefined;
   urls: Record<string, string>;
@@ -307,7 +336,7 @@ interface OptionsProps {
   onUse(pictureId: string): void;
 }
 
-function Options({ project, state, urls, busy, onUse }: OptionsProps) {
+function Options({ ref, project, state, urls, busy, onUse }: OptionsProps) {
   const ids = state?.pictureIds ?? [];
   const count = ids.length > 0 ? ids.length : project.outputsPerPrompt;
   const inUse = chosenPicture(state);
@@ -315,7 +344,7 @@ function Options({ project, state, urls, busy, onUse }: OptionsProps) {
     state?.status === 'submitted' ? 'Flow is making this…' : state?.status === 'refused' || state?.status === 'failed' ? 'No picture' : 'Not made yet';
   const titleId = useId();
   return (
-    <div className="vf-options">
+    <div className="vf-options" ref={ref}>
       {Array.from({ length: count }, (_, i) => {
         const id = ids[i];
         const url = id ? urls[id] : undefined;
@@ -330,6 +359,9 @@ function Options({ project, state, urls, busy, onUse }: OptionsProps) {
             aria-labelledby={`${titleId}-${i}`}
             data-best={chosen || undefined}
             data-swap={other || undefined}
+            data-picture-id={id}
+            aria-current={chosen || undefined}
+            tabIndex={chosen ? -1 : undefined}
             onClick={onClick}
           >
             {chosen && <span className="vf-best">★ Using this</span>}
@@ -348,7 +380,7 @@ function Options({ project, state, urls, busy, onUse }: OptionsProps) {
                 Option {i + 1} of {count}
               </span>
               {other && (
-                <Button small className="vf-option-use" disabled={busy}>
+                <Button small className="vf-option-use" disabled={busy} aria-describedby={`${titleId}-${i}`}>
                   Use this picture
                 </Button>
               )}
