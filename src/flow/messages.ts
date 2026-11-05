@@ -79,7 +79,16 @@ export type PrepareResponse =
   | { kind: 'blocked'; event: BlockingEvent }
   | { kind: 'error'; message: string };
 
-/** Flow tab → background: something the run must react to. */
+/**
+ * The only events a Flow tab may send (FLOW_EVENT): page-level blocks. Scene outcomes come from the coordinator's own
+ * matching, never from the page. Returns the event, or null for anything else.
+ */
+export function flowTabEvent(event: unknown): BlockingEvent | null {
+  const type = (event as { type?: unknown } | null)?.type;
+  return type === 'limit' || type === 'needsOwner' ? (event as BlockingEvent) : null;
+}
+
+/** Flow tab → background: something the run must react to (only limit / needsOwner are accepted). */
 export interface FlowEventMessage {
   type: typeof FLOW_EVENT;
   event: RunEvent;

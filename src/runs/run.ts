@@ -7,8 +7,11 @@ export type RunEvent =
   | { type: 'restore' } // after a real browser restart: pages are gone, so submitted scenes go back in the queue
   | { type: 'submitted'; sceneId: string; prompt?: string; at?: number }
   | { type: 'pictures'; sceneId: string; mediaIds: string[]; cardKeys?: string[] }
-  /** Generate was pressed but Flow's start wasn't seen; the scene stays pending (and the run pauses separately). */
-  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string }
+  /**
+   * Generate is about to be pressed (recorded first, so a worker suspended mid-press looks before pressing again), or
+   * was pressed but Flow's start wasn't seen. The scene stays pending until `submitted`; `at` starts its wait limit.
+   */
+  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string; at?: number }
   /** The full prompt read from a Flow card's detail view. */
   | { type: 'detail'; cardKey: string; prompt: string }
   | { type: 'refused'; sceneId: string; message: string }
@@ -100,6 +103,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'restore':
       return requeueSubmitted(state);
     case 'pause':
+      if (state.status !== 'running' && state.status !== 'paused') return state; // nothing to pause
       return { ...state, status: 'paused', pauseReason: USER_PAUSE_REASON, resumeAt: null };
     case 'submitted': {
       const current = state.sceneStates[event.sceneId];
@@ -117,7 +121,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'unconfirmed': {
       const current = state.sceneStates[event.sceneId];
       if (!current || current.status !== 'pending') return state;
-      const unconfirmed = { keysBefore: event.keysBefore, prompt: event.prompt };
+      const unconfirmed = { keysBefore: event.keysBefore, prompt: event.prompt, at: event.at ?? Date.now() };
       return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, unconfirmed } } };
     }
     case 'detail':

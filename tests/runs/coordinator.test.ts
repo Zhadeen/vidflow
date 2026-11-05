@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { memoryMediaStore } from '../../src/store/media';
 import type { FlowResultCard } from '../../src/flow/driver';
 import type { FlowPort } from '../../src/runs/coordinator';
@@ -33,7 +33,7 @@ function mockChrome() {
   const chromeMock = {
     tab,
     storage: { local: area(), session: area() },
-    alarms: { create: vi.fn(async () => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
+    alarms: { create: vi.fn(async (_name: string, _info: unknown) => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
     power: { requestKeepAwake: vi.fn(), releaseKeepAwake: vi.fn() },
     notifications: { create: vi.fn(async () => '') },
     windows: { create: vi.fn(async () => ({ id: 3, tabs: [{ id: 7 }] })), onRemoved: listener() },
@@ -41,12 +41,13 @@ function mockChrome() {
       get: vi.fn(async () => ({ ...tab })),
       update: vi.fn(async (_id: number, props: { url: string }) => void (tab.url = props.url)),
       goBack: vi.fn(async () => void (tab.url = tab.url.replace(/\/edit\/.*$/, ''))),
+      setZoomSettings: vi.fn(async () => undefined),
       setZoom: vi.fn(async () => undefined),
       getZoom: vi.fn(async () => 1),
     },
     runtime: { onStartup: listener(), getURL: (p: string) => `chrome-extension://test/${p}` },
     debugger: {
-      attach: vi.fn(async () => undefined),
+      attach: vi.fn(async (_target: unknown) => undefined),
       detach: vi.fn(async () => undefined),
       sendCommand: vi.fn(async () => undefined),
     },
@@ -55,13 +56,16 @@ function mockChrome() {
   return chromeMock;
 }
 
+/** Short pauses between scenes and URL polls, so tests don't wait out the real pacing. */
+const FAST = { paceMinMs: 1, paceMaxMs: 2, urlPollMs: 5, backWaitMs: 200 };
+
 async function setup(outputs: 1 | 2 | 4 = 4) {
   vi.resetModules();
   const chromeMock = mockChrome();
   const store = await import('../../src/store/projects');
   const media = memoryMediaStore();
   store.setMediaStore(media);
-  const coordinator = await import('../../src/runs/coordinator');
+  const coordinator = await loadCoordinator();
   // Same module instances as the coordinator's, so instanceof holds after resetModules.
   const { FlowBlockedError } = await import('../../src/flow/messages');
   const { createFlowPort } = await import('../../src/flow/port');
@@ -103,12 +107,34 @@ async function setup(outputs: 1 | 2 | 4 = 4) {
   return { chromeMock, coordinator, project, media, FlowBlockedError, createFlowPort, pressAt, fakePort };
 }
 
-async function waitFor(check: () => boolean) {
-  for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 5));
-  expect(check()).toBe(true);
+/** Polls until `check` holds; throws with `what` after 5 s. */
+async function waitFor(check: () => boolean, what = 'the expected state') {
+  const deadline = Date.now() + 5_000;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`waitFor timed out after 5 s waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/** The listener the coordinator registered on a mocked chrome event. */
+function listenerOf<T extends (...args: never[]) => unknown>(event: { addListener: { mock: { calls: unknown[][] } } }): T {
+  const calls = event.addListener.mock.calls;
+  return calls[calls.length - 1]![0] as T;
+}
+
+/** Every coordinator a test loaded; each is stopped afterwards so it can't act on the next test's chrome. */
+const live: (typeof import('../../src/runs/coordinator'))[] = [];
+async function loadCoordinator() {
+  const coordinator = await import('../../src/runs/coordinator');
+  coordinator.setTimingsForTests(FAST);
+  live.push(coordinator);
+  return coordinator;
 }
 
 beforeEach(() => vi.unstubAllGlobals());
+afterEach(async () => {
+  for (const c of live.splice(0)) await c.stopRun().catch(() => undefined);
+});
 
 describe('coordinator ↔ Flow port', () => {
   it('a new run opens a new Flow project, then prepares, presses, confirms and marks the scene submitted', async () => {
@@ -127,6 +153,73 @@ describe('coordinator ↔ Flow port', () => {
     expect(port.confirmStarted).toHaveBeenCalledWith(7);
     expect(coordinator.getRunState()!.flowProjectUrl).toBe(PROJECT_URL);
     expect(chromeMock.tabs.setZoom).toHaveBeenCalledWith(7, 1);
+    // Per-tab first, so the owner's other Flow tabs keep their own zoom.
+    expect(chromeMock.tabs.setZoomSettings).toHaveBeenCalledWith(7, expect.objectContaining({ scope: 'per-tab' }));
+    expect(chromeMock.tabs.setZoomSettings.mock.invocationCallOrder[0]!).toBeLessThan(chromeMock.tabs.setZoom.mock.invocationCallOrder[0]!);
+  });
+
+  it("leaves the zoom alone when it can't be made per-tab", async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    chromeMock.tabs.setZoomSettings.mockRejectedValue(new Error('no'));
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    expect(chromeMock.tabs.setZoom).not.toHaveBeenCalled();
+  });
+
+  it('pauses and says so when the owner closes VidFlow\'s Flow window; Resume opens a new one', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    expect(chromeMock.windows.create).toHaveBeenCalledTimes(1);
+    await listenerOf<(id: number) => Promise<void>>(chromeMock.windows.onRemoved)(3);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'the run to pause');
+    expect(coordinator.getRunState()!.pauseReason).toBe("VidFlow's Flow window was closed. Press Resume to open it again.");
+    expect(chromeMock.storage.local.data['vidflow.flowWindow']).toBeUndefined();
+    expect(chromeMock.windows.create).toHaveBeenCalledTimes(1); // not silently reopened
+    await coordinator.resumeRun();
+    await waitFor(() => chromeMock.windows.create.mock.calls.length === 2, 'a new Flow window');
+    expect(coordinator.getRunState()!.status).toBe('running');
+  });
+
+  it('Resume with scenes both waiting and in Flow opens only one new window', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    const store = await import('../../src/store/projects');
+    const saved = (await store.getProject(project.id))!;
+    saved.scenes = [...saved.scenes, { ...saved.scenes[0]!, id: 's2', slide: 2, imagePrompt: 'A stickman sits' }];
+    await store.saveProject(saved);
+    let release = () => undefined as void;
+    const gate = new Promise<void>((r) => (release = r));
+    const port = fakePort();
+    vi.mocked(port.prepare).mockImplementation(async (_tab, sceneId) => {
+      if (sceneId === 's2' && vi.mocked(port.prepare).mock.calls.length === 2) await gate; // s2 is being typed…
+      return { x: 120, y: 620 };
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => vi.mocked(port.prepare).mock.calls.length === 2, 's2 being prepared');
+    await listenerOf<(id: number) => Promise<void>>(chromeMock.windows.onRemoved)(3); // …when the window is closed
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'the run to pause');
+    release();
+    await coordinator.settledForTests();
+    expect(coordinator.getRunState()!.sceneStates.s2?.status).toBe('pending');
+    chromeMock.windows.create.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20)); // Chrome takes a moment to open it
+      return { id: 3, tabs: [{ id: 7 }] };
+    });
+    await coordinator.resumeRun();
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 's2 submitted');
+    expect(chromeMock.windows.create).toHaveBeenCalledTimes(2); // the first window, and one new one
+  });
+
+  it('closing some other window changes nothing', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await listenerOf<(id: number) => Promise<void>>(chromeMock.windows.onRemoved)(99);
+    expect(coordinator.getRunState()!.status).toBe('running');
   });
 
   it('pauses (scene still queued) when Flow is blocked', async () => {
@@ -168,7 +261,7 @@ describe('coordinator ↔ Flow port', () => {
       Math.max(0, ...chromeMock.debugger.detach.mock.invocationCallOrder) >
       Math.max(0, ...chromeMock.debugger.attach.mock.invocationCallOrder);
     await waitFor(detachedAfterAttach);
-    await new Promise((r) => setTimeout(r, 30)); // give a wrongly-unguarded press time to show up
+    await coordinator.settledForTests(); // a wrongly-unguarded press would have happened by now
 
     const presses = chromeMock.debugger.sendCommand.mock.calls as unknown as [unknown, string, { x: number }][];
     expect(presses.every(([, , params]) => params.x === 5)).toBe(true); // nothing at Generate
@@ -373,14 +466,14 @@ describe('matching results to scenes', () => {
     vi.mocked(port.readDetail).mockResolvedValueOnce({ prompt: 'A stickman reads a book', mediaId: 'other' });
     await coordinator.handleTiles([card('other', 0)]);
     await waitFor(() => coordinator.getRunState()?.detailPrompts?.other !== undefined);
-    await new Promise((r) => setTimeout(r, 30));
+    await coordinator.settledForTests();
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted'); // still waiting for its own picture
     expect(fetchMock).not.toHaveBeenCalled();
 
     vi.mocked(port.readDetail).mockResolvedValue({ prompt: null, mediaId: 'k1' });
     await coordinator.handleTiles([card('k1', 0), card('other', 1)]);
     await waitFor(() => vi.mocked(port.readDetail).mock.calls.length === 2);
-    await new Promise((r) => setTimeout(r, 30));
+    await coordinator.settledForTests();
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted'); // one unreadable read: try again later
     await coordinator.handleTiles([card('k1', 0), card('other', 1)]); // the next report: still unreadable
     await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed');
@@ -396,7 +489,7 @@ describe('matching results to scenes', () => {
     vi.mocked(port.readDetail).mockResolvedValue({ prompt, mediaId: null }); // right prompt, but whose picture?
     await coordinator.handleTiles([card('k1', 0)]);
     await waitFor(() => vi.mocked(port.readDetail).mock.calls.length >= 1);
-    await new Promise((r) => setTimeout(r, 50));
+    await coordinator.settledForTests();
     expect(port.readDetail).toHaveBeenCalledTimes(1); // one read per tile report, however often matching runs
     expect(fetchMock).not.toHaveBeenCalled();
     expect(coordinator.getRunState()!.detailPrompts?.k1).toBeUndefined(); // not recorded as verified
@@ -411,7 +504,7 @@ describe('matching results to scenes', () => {
     // A refused tile for some other prompt where s1's picture should be: no consistent assignment in this report.
     const foreign: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, caption: 'A stickman in a fight', refusal: 'Might violate' };
     await coordinator.handleTiles([foreign]);
-    await new Promise((r) => setTimeout(r, 50));
+    await coordinator.settledForTests();
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
 
     // The next report is complete: s1's own picture arrives and is saved.
@@ -425,7 +518,7 @@ describe('matching results to scenes', () => {
     const { coordinator } = await submitted(1);
     const foreign: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, caption: 'A stickman in a fight', refusal: 'Might violate' };
     await coordinator.handleTiles([foreign]);
-    await new Promise((r) => setTimeout(r, 50));
+    await coordinator.settledForTests();
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
     await coordinator.handleTiles([foreign, { ...foreign, key: 'pending-1', domIndex: 1 }]);
     await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed');
@@ -443,7 +536,7 @@ describe('matching results to scenes', () => {
     await waitFor(() => coordinator.getRunState()?.status === 'paused');
     const scene = coordinator.getRunState()!.sceneStates.s1!;
     expect(scene.status).toBe('pending');
-    expect(scene.unconfirmed).toEqual({ keysBefore: ['old'], prompt: vi.mocked(port.prepare).mock.calls[0]![2] });
+    expect(scene.unconfirmed).toEqual({ keysBefore: ['old'], prompt: vi.mocked(port.prepare).mock.calls[0]![2], at: expect.any(Number) });
   });
 
   async function unconfirmedThenResume(newTiles: FlowResultCard[], detail: (key: string) => string | null) {
@@ -483,8 +576,8 @@ describe('matching results to scenes', () => {
     const generating: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, progress: 40, caption: prompt };
     vi.mocked(port.tiles).mockResolvedValue([generating, card('old', 1)]);
     await ctx.coordinator.resumeRun();
-    await waitFor(() => vi.mocked(port.tiles).mock.calls.length >= 2);
-    await new Promise((r) => setTimeout(r, 50));
+    const before = vi.mocked(port.tiles).mock.calls.length;
+    await waitFor(() => vi.mocked(port.tiles).mock.calls.length >= before + 4, 'several looks at the tiles'); // several pump rounds
     expect(ctx.coordinator.getRunState()!.sceneStates.s1).toMatchObject({ status: 'pending' });
     expect(port.prepare).toHaveBeenCalledTimes(1); // not pressed again
     await ctx.coordinator.pauseRun(); // stop this run's pump looking again, so it can't touch the next test's chrome
@@ -494,5 +587,191 @@ describe('matching results to scenes', () => {
     const { port, generatePresses } = await unconfirmedThenResume([card('n1', 0)], () => 'A stickman reads a book');
     expect(generatePresses()).toBe(2);
     expect(port.prepare).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('final review fixes', () => {
+  async function submitted(outputs: 1 | 2 | 4, over: Partial<FlowPort> = {}) {
+    const ctx = await setup(outputs);
+    const port = ctx.fakePort(over);
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 submitted');
+    await ctx.coordinator.settledForTests(); // the state is set before commit() finishes (alarms, listeners)
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    return { ...ctx, port, prompt };
+  }
+
+  function stubFetch() {
+    const fetchMock = vi.fn(async (url: string) => ({ ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  /** readDetail answers with `prompt` for whichever tile was opened last. */
+  function detailsAnswer(port: ReturnType<Awaited<ReturnType<typeof setup>>['fakePort']>, prompt: string) {
+    let opened = '';
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ((opened = key), { x: TILE_X, y: 300 }));
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt, mediaId: opened }));
+  }
+
+  const deadlineAlarm = (chromeMock: ReturnType<typeof mockChrome>) =>
+    listenerOf<(alarm: { name: string }) => void>(chromeMock.alarms.onAlarm);
+
+  it('a pause keeps collecting: deadlines are cleared, the alarm fails nothing, finished tiles are still saved', async () => {
+    const { chromeMock, coordinator, port, prompt } = await submitted(1);
+    expect(chromeMock.alarms.create).toHaveBeenCalledWith('vidflow-deadline:s1', { delayInMinutes: 10 });
+    await coordinator.handleFlowEvent({ type: 'limit', message: 'quota', resumeAt: null }); // paused until midnight
+    expect(coordinator.getRunState()!.status).toBe('paused');
+    expect(chromeMock.alarms.clear).toHaveBeenCalledWith('vidflow-deadline:s1');
+
+    deadlineAlarm(chromeMock)({ name: 'vidflow-deadline:s1' }); // a deadline that fired anyway (e.g. raced the clear)
+    await coordinator.settledForTests();
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
+
+    const fetchMock = stubFetch();
+    detailsAnswer(port, prompt);
+    vi.mocked(port.press).mockImplementation(async (_tab, x) => {
+      if (x !== TILE_X) return;
+      await chromeMock.debugger.attach({ tabId: 7 }); // a real press attaches the debugger
+      chromeMock.tab.url = `${PROJECT_URL}/edit/generation-1`;
+    });
+    await coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 saved while paused');
+    await coordinator.settledForTests();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(coordinator.getRunState()!.status).toBe('paused'); // still paused: nothing more is sent
+    expect(vi.mocked(port.press).mock.calls.filter(([, x]) => x === 120)).toHaveLength(1);
+    // Opening the picture's detail attached the debugger; a paused run drops it again.
+    const lastAttach = Math.max(...chromeMock.debugger.attach.mock.invocationCallOrder);
+    expect(Math.max(0, ...chromeMock.debugger.detach.mock.invocationCallOrder)).toBeGreaterThan(lastAttach);
+  });
+
+  it('the deadline alarm still fails a scene stuck in Flow while the run is running', async () => {
+    const { chromeMock, coordinator } = await submitted(1);
+    deadlineAlarm(chromeMock)({ name: 'vidflow-deadline:s1' });
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed', 's1 failed at its deadline');
+    expect(coordinator.getRunState()!.sceneStates.s1?.message).toBe(
+      "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
+    );
+  });
+
+  it('the deadline alarm leaves a scene that was already refused alone', async () => {
+    const { chromeMock, coordinator } = await submitted(1);
+    await coordinator.handleFlowEvent({ type: 'refused', sceneId: 's1', message: 'Flow said no.' });
+    deadlineAlarm(chromeMock)({ name: 'vidflow-deadline:s1' });
+    await coordinator.settledForTests();
+    expect(coordinator.getRunState()!.sceneStates.s1).toMatchObject({ status: 'refused', message: 'Flow said no.' });
+  });
+
+  it('Resume re-arms a fresh deadline for each scene in Flow and pulls the tiles itself', async () => {
+    const { chromeMock, coordinator, port, prompt } = await submitted(1);
+    await coordinator.pauseRun();
+    const fetchMock = stubFetch();
+    detailsAnswer(port, prompt);
+    vi.mocked(port.tiles).mockResolvedValue([card('k1', 0)]); // finished while paused; the page reports nothing new
+    const armed = () => chromeMock.alarms.create.mock.calls.filter(([name]) => name === 'vidflow-deadline:s1').length;
+    expect(armed()).toBe(1);
+    await coordinator.resumeRun();
+    expect(armed()).toBe(2);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 saved from pulled tiles');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(coordinator.getRunState()!.status).toBe('finished');
+  });
+
+  it('on worker start, pulls the tiles and saves pictures that finished while it slept', async () => {
+    const ctx = await submitted(1);
+    const fetchMock = stubFetch();
+    // The worker restarts: same storage and database, fresh module state, a new port.
+    vi.resetModules();
+    const store = await import('../../src/store/projects');
+    store.setMediaStore(ctx.media);
+    const coordinator = await loadCoordinator();
+    const port = ctx.fakePort({ tiles: vi.fn(async () => [card('k1', 0)]) });
+    detailsAnswer(port, ctx.prompt);
+    coordinator.registerCoordinator();
+    coordinator.setFlowPort(port);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 saved after restart');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails an unconfirmed scene whose tile stays generating past the limit, instead of waiting forever', async () => {
+    const ctx = await setup(2);
+    ctx.coordinator.setTimingsForTests({ ...FAST, unconfirmedWaitMs: 300 });
+    const port = ctx.fakePort({ confirmStarted: vi.fn(async () => false), tiles: vi.fn(async () => [card('old', 0)]) });
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused', 'the unconfirmed pause');
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1?.unconfirmed?.at).toEqual(expect.any(Number));
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    const generating: FlowResultCard = { ...card('pending-0', 0), imageUrl: null, progress: 40, caption: prompt };
+    vi.mocked(port.tiles).mockResolvedValue([generating, card('old', 1)]);
+    await ctx.coordinator.resumeRun();
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'failed', 's1 failed after the wait');
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1?.message).toBe(
+      "VidFlow couldn't confirm which picture belongs to this scene. Press Try again.",
+    );
+    expect(port.prepare).toHaveBeenCalledTimes(1); // never pressed again
+    expect(ctx.coordinator.getRunState()!.status).toBe('finished');
+  });
+
+  it('records the unconfirmed start before pressing, so a worker restarted mid-confirm looks before pressing again', async () => {
+    const ctx = await setup(1);
+    const hung = ctx.fakePort({
+      confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)), // the worker is suspended here
+      tiles: vi.fn(async () => [card('old', 0)]),
+    });
+    ctx.coordinator.setFlowPort(hung);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => vi.mocked(hung.confirmStarted).mock.calls.length === 1, 'the confirm after the press');
+    const prompt = vi.mocked(hung.prepare).mock.calls[0]![2];
+    const saved = () => (ctx.chromeMock.storage.local.data['vidflow.run'] as { sceneStates: Record<string, { status: string; unconfirmed?: unknown }> }).sceneStates.s1!;
+    expect(saved()).toMatchObject({ status: 'pending', unconfirmed: { keysBefore: ['old'], prompt } });
+
+    stubFetch();
+    vi.resetModules();
+    const store = await import('../../src/store/projects');
+    store.setMediaStore(ctx.media);
+    const coordinator = await loadCoordinator();
+    const port = ctx.fakePort({ tiles: vi.fn(async () => [card('n1', 0), card('old', 1)]) });
+    detailsAnswer(port, prompt);
+    coordinator.registerCoordinator();
+    coordinator.setFlowPort(port);
+    await waitFor(() => ['submitted', 'done'].includes(coordinator.getRunState()?.sceneStates.s1?.status ?? ''), 's1 found in Flow');
+    expect(vi.mocked(port.press).mock.calls.filter(([, x]) => x === 120)).toHaveLength(0); // not pressed again
+    expect(port.prepare).not.toHaveBeenCalled();
+  });
+
+  it('never fetches a picture from an address outside Flow, and says so', async () => {
+    for (const bad of ['https://evil.example/image/k1', 'http://flow-content.google/image/k1', 'https://flow-content.google.evil.example/k1']) {
+      const { coordinator, port, prompt } = await submitted(1);
+      const fetchMock = stubFetch();
+      detailsAnswer(port, prompt);
+      await coordinator.handleTiles([{ ...card('k1', 0), imageUrl: bad }]);
+      await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed', `s1 failed for ${bad}`);
+      expect(coordinator.getRunState()!.sceneStates.s1?.message).toBe(
+        "Flow gave VidFlow a picture from an address it doesn't trust, so it wasn't saved. Press Try again.",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('drops the debugger after the New project press when the run stopped meanwhile', async () => {
+    const { chromeMock, coordinator, project, fakePort } = await setup();
+    const port = fakePort();
+    vi.mocked(port.press).mockImplementation(async (_tab, x) => {
+      if (x === 5) {
+        await coordinator.pauseRun(); // the owner pauses while VidFlow presses New project…
+        await chromeMock.debugger.attach({ tabId: 7 }); // …and the press attaches the debugger after that
+        chromeMock.tab.url = PROJECT_URL;
+      }
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.flowProjectUrl === PROJECT_URL, 'the new project recorded');
+    await coordinator.settledForTests();
+    const lastAttach = Math.max(...chromeMock.debugger.attach.mock.invocationCallOrder);
+    expect(Math.max(0, ...chromeMock.debugger.detach.mock.invocationCallOrder)).toBeGreaterThan(lastAttach);
+    expect(port.prepare).not.toHaveBeenCalled();
   });
 });

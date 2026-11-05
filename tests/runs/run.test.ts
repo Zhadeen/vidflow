@@ -218,4 +218,19 @@ describe('Try again (retry)', () => {
     const s = apply(initRun(project(1)), { type: 'start' });
     expect(reduceRun(s, { type: 'retry', sceneId: 'scene-01' })).toBe(s);
   });
+
+  it('a finished or idle run cannot be paused', () => {
+    const idle = initRun(project(1));
+    expect(reduceRun(idle, { type: 'pause' })).toBe(idle);
+    let done = apply(idle, { type: 'start' }, { type: 'submitted', sceneId: 'scene-01' }, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m'] });
+    expect(done.status).toBe('finished');
+    expect(reduceRun(done, { type: 'pause' })).toBe(done);
+    done = apply(apply(initRun(project(1)), { type: 'start' }), { type: 'pause' });
+    expect(done.status).toBe('paused');
+  });
+
+  it('records when a scene became unconfirmed', () => {
+    const s = apply(initRun(project(1)), { type: 'start' }, { type: 'unconfirmed', sceneId: 'scene-01', keysBefore: ['a'], prompt: 'p', at: 1234 });
+    expect(s.sceneStates['scene-01']!.unconfirmed).toEqual({ keysBefore: ['a'], prompt: 'p', at: 1234 });
+  });
 });

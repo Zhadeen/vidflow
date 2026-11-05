@@ -173,6 +173,15 @@ describe('studio', () => {
     expect(patches.filter((x) => 'scenes' in (x as object))).toHaveLength(1);
   });
 
+  it('the replace question says "1 scene" for a single scene', () => {
+    const p = project(1);
+    const run = runningState(p, 1);
+    render(<Harness start={{ ...p, sceneStates: run.sceneStates }} run={null} client={fakeClient()} />);
+    fireEvent.change(screen.getByLabelText(/claude's reply/i), { target: { value: REPLY_3 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use these scenes' }));
+    expect(screen.getByText('This replaces 1 scene and its pictures. Continue?')).toBeTruthy();
+  });
+
   it('after a finished run, a new scene file starts fresh: new count, no old pictures, no Try again', async () => {
     const p = project(60);
     let run = runningState(p, 59);

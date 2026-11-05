@@ -5,6 +5,7 @@ import {
   FLOW_PILL,
   FLOW_PILL_TOGGLE,
   FLOW_TILES,
+  flowTabEvent,
   RUN_GET,
   RUN_PAUSE,
   RUN_RESUME,
@@ -98,10 +99,13 @@ export default defineBackground(() => {
     message = message as ToBackground;
     const tabId = sender.tab?.id;
     switch (message?.type) {
-      case FLOW_EVENT:
-        // Only VidFlow's own Flow tab may move the run; other Flow tabs are the owner's own.
-        void isFlowTab(tabId).then((ours) => (ours ? handleFlowEvent(message.event) : undefined));
+      case FLOW_EVENT: {
+        // Only VidFlow's own Flow tab may move the run, and only by pausing it (limit, needs the owner).
+        const event = flowTabEvent(message.event);
+        if (!event) return;
+        void isFlowTab(tabId).then((ours) => (ours ? handleFlowEvent(event) : undefined));
         return;
+      }
       case FLOW_TILES:
         // Raw tile observations from VidFlow's own Flow tab; the coordinator matches them to scenes.
         void isFlowTab(tabId).then((ours) => (ours ? handleTiles(message.cards) : undefined));

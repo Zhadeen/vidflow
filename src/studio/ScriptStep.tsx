@@ -181,7 +181,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
                 rows={8}
                 value={reply}
                 disabled={locked}
-                placeholder={sceneCount > 0 ? `${sceneCount} scenes are loaded. Paste a new reply to replace them.` : 'Slide,Timecode,Sentence,…'}
+                placeholder={sceneCount > 0 ? `${sceneCount} ${sceneCount === 1 ? 'scene is' : 'scenes are'} loaded. Paste a new reply to replace ${sceneCount === 1 ? 'it' : 'them'}.` : 'Slide,Timecode,Sentence,…'}
                 onChange={(e) => readReply(e.target.value)}
               />
             </div>
@@ -328,7 +328,9 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
 
       {confirming && (
         <p className="vf-notice" role="alert">
-          This replaces {sceneCount} scenes and their pictures. Continue?
+          {sceneCount === 1
+            ? 'This replaces 1 scene and its pictures. Continue?'
+            : `This replaces ${sceneCount} scenes and their pictures. Continue?`}
         </p>
       )}
       <div className="vf-actions">

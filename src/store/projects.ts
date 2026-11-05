@@ -16,8 +16,11 @@ export interface SceneState {
   submission?: { seq: number; at: number; prompt: string };
   /** Flow media ids of the cards saved as this scene's pictures; never matched again. */
   cardKeys?: string[];
-  /** Generate was pressed but Flow's start wasn't seen: the finished tiles before the press, to look for it on Resume. */
-  unconfirmed?: { keysBefore: string[]; prompt: string };
+  /**
+   * Generate was (about to be) pressed but Flow's start wasn't seen: the finished tiles before the press, to look for
+   * it on Resume, and when that was (missing in runs saved before it was recorded).
+   */
+  unconfirmed?: { keysBefore: string[]; prompt: string; at?: number };
 }
 export interface Project {
   id: string;

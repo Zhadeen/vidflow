@@ -55,11 +55,22 @@ const DEADLINE_PREFIX = 'vidflow-deadline:';
 const DEADLINE_MINUTES = 10;
 const FLOW_URL = 'https://flow.google.com/';
 const MAX_IN_FLIGHT = 3;
-const PACE_MIN_MS = 4000;
-const PACE_MAX_MS = 7000;
-const URL_WAIT_MS = 30_000;
-const URL_POLL_MS = 500;
-const BACK_WAIT_MS = 5_000;
+
+/** Waits and pacing. Tests shorten them with setTimingsForTests; the extension always uses these defaults. */
+const timings = {
+  paceMinMs: 4000,
+  paceMaxMs: 7000,
+  urlWaitMs: 30_000,
+  urlPollMs: 500,
+  backWaitMs: 5_000,
+  /** How long a scene whose start VidFlow didn't see may wait on a still-generating tile before it fails. */
+  unconfirmedWaitMs: DEADLINE_MINUTES * 60_000,
+};
+
+/** Tests only: shorter waits, so a test doesn't sit out the real pacing between scenes. */
+export function setTimingsForTests(over: Partial<typeof timings>): void {
+  Object.assign(timings, over);
+}
 // A blocked run is always left paused, so owner-facing messages from the pump name Resume.
 const PUMP_VERB: StartVerb = 'Resume';
 export const NOT_STARTED_MESSAGE = "VidFlow pressed Generate but Flow didn't start. Check the Flow window, then press Resume.";
@@ -68,6 +79,8 @@ const SETTLE_MS = 3_000;
 /** Consecutive qualifying reports (or unreadable detail reads) before VidFlow gives up on a scene. */
 const GIVE_UP_AFTER = 2;
 const SAVE_FAILED_MESSAGE = "VidFlow couldn't save this scene's pictures. Press Try again.";
+const UNTRUSTED_PICTURE_MESSAGE = "Flow gave VidFlow a picture from an address it doesn't trust, so it wasn't saved. Press Try again.";
+export const WINDOW_CLOSED_MESSAGE = "VidFlow's Flow window was closed. Press Resume to open it again.";
 const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then press Resume.";
 
 export const BUSY_MESSAGE = 'Another project is making pictures right now. Pause it or wait for it to finish, then try again.';
@@ -137,8 +150,24 @@ export function getRunState(): RunState | null {
   return state;
 }
 
+/**
+ * Tests only: resolves once nothing is queued, matching or pumping (checked over a few turns of the event loop), so a
+ * test can assert that something did NOT happen without a fixed sleep. Gives up after ~2 s (a pump that keeps looking).
+ */
+export async function settledForTests(): Promise<void> {
+  let quiet = 0;
+  for (let i = 0; i < 400 && quiet < 3; i++) {
+    const q = queue;
+    const t = tabQueue;
+    await q;
+    await t;
+    await new Promise((r) => setTimeout(r, 5));
+    quiet = q === queue && t === tabQueue && !matching && !pumping ? quiet + 1 : 0;
+  }
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const paceMs = () => PACE_MIN_MS + Math.random() * (PACE_MAX_MS - PACE_MIN_MS);
+const paceMs = () => timings.paceMinMs + Math.random() * (timings.paceMaxMs - timings.paceMinMs);
 
 function notify(message: string): void {
   void chrome.notifications.create({ type: 'basic', iconUrl: notificationIcon(), title: 'VidFlow', message });
@@ -167,8 +196,20 @@ function isFlowUrl(url: string | undefined): boolean {
   return !!url && (url.startsWith('https://flow.google.com/') || url.startsWith('https://labs.google/'));
 }
 
-/** Returns the tab id of VidFlow's own Flow tab, opening a dedicated window if needed. */
-async function ensureFlowTab(): Promise<number> {
+let openingFlowTab: Promise<number> | null = null;
+
+/**
+ * Returns the tab id of VidFlow's own Flow tab, opening a dedicated window if needed. One at a time: the pump and a
+ * Resume's tile pull can ask together, and must not open two windows.
+ */
+function ensureFlowTab(): Promise<number> {
+  openingFlowTab ??= findOrOpenFlowTab().finally(() => {
+    openingFlowTab = null;
+  });
+  return openingFlowTab;
+}
+
+async function findOrOpenFlowTab(): Promise<number> {
   const saved = await savedFlowWindow();
   if (saved) {
     try {
@@ -190,8 +231,16 @@ async function ensureFlowTab(): Promise<number> {
   return tabId;
 }
 
-/** Page zoom changes what CSS pixels mean to the debugger's input; keep VidFlow's tab at 100% (the port scales otherwise). */
+/**
+ * Page zoom changes what CSS pixels mean to the debugger's input; keep VidFlow's tab at 100% (the port scales
+ * otherwise). Zoom is per-site by default, so the tab is made per-tab first: the owner's other Flow tabs keep theirs.
+ */
 async function resetZoom(tabId: number): Promise<void> {
+  try {
+    await chrome.tabs.setZoomSettings(tabId, { mode: 'automatic', scope: 'per-tab' });
+  } catch {
+    return; // Not per-tab: setting the zoom would change every Flow tab. The port scales by getZoom instead.
+  }
   try {
     await chrome.tabs.setZoom(tabId, 1);
   } catch {
@@ -208,22 +257,28 @@ async function tabUrl(tabId: number): Promise<string | undefined> {
   }
 }
 
-/** Polls the tab until its URL satisfies `ok`; returns that URL, or null after URL_WAIT_MS. */
-async function waitForUrl(tabId: number, ok: (url: string) => boolean, waitMs = URL_WAIT_MS): Promise<string | null> {
+/** Polls the tab until its URL satisfies `ok`; returns that URL, or null after timings.urlWaitMs. */
+async function waitForUrl(tabId: number, ok: (url: string) => boolean, waitMs = timings.urlWaitMs): Promise<string | null> {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const url = await tabUrl(tabId);
     if (url && ok(url)) return url;
     if (Date.now() >= deadline) return null;
-    await sleep(URL_POLL_MS);
+    await sleep(timings.urlPollMs);
   }
 }
 
 // ---- State changes -------------------------------------------------------
 
+/**
+ * A scene in Flow has a 10-minute deadline only while the run is running: a pause clears them all, and Resume arms a
+ * fresh 10 minutes for each (results are still collected while paused; see matchOnce).
+ */
+const armedDeadlines = (s: RunState | null) => new Set(s?.status === 'running' ? s.inFlight : []);
+
 async function syncDeadlines(prev: RunState | null, next: RunState): Promise<void> {
-  const before = new Set(prev?.inFlight ?? []);
-  const after = new Set(next.inFlight);
+  const before = armedDeadlines(prev);
+  const after = armedDeadlines(next);
   for (const id of before) if (!after.has(id)) await chrome.alarms.clear(DEADLINE_PREFIX + id);
   for (const id of after) {
     if (!before.has(id)) await chrome.alarms.create(DEADLINE_PREFIX + id, { delayInMinutes: DEADLINE_MINUTES });
@@ -299,14 +354,19 @@ function pauseWith(message: string): Promise<void> {
 
 // ---- Submitting ----------------------------------------------------------
 
-/** True while the run that the pump is working for is still running. Checked right before every press. */
+/** True while the run that the pump is working for is still running. Checked right before every Generate press. */
 function stillRunning(projectId: string): boolean {
   return state?.status === 'running' && state.projectId === projectId;
 }
 
+/** True while this run is running or paused: results already in Flow are still collected (nothing new is sent). */
+function stillCollecting(projectId: string): boolean {
+  return (state?.status === 'running' || state?.status === 'paused') && state.projectId === projectId;
+}
+
 /**
  * Puts the Flow tab on this run's own project, creating a fresh one on the run's first scene (spec §16.5).
- * Returns false when the run stopped meanwhile (nothing pressed). Throws FlowBlockedError when the owner must act.
+ * Returns false when the run stopped meanwhile (no Generate press follows). Throws FlowBlockedError when the owner must act.
  */
 async function ensureFlowProject(tabId: number, projectId: string): Promise<boolean> {
   const action = flowProjectAction(state?.flowProjectUrl, await tabUrl(tabId));
@@ -325,6 +385,7 @@ async function ensureFlowProject(tabId: number, projectId: string): Promise<bool
   const at = await port!.findNewProject(tabId, PUMP_VERB);
   if (!stillRunning(projectId)) return false;
   await port!.press(tabId, at.x, at.y);
+  if (!stillRunning(projectId)) await detachFlowDebugger(tabId); // paused or stopped during the press
   const url = await waitForUrl(tabId, (u) => projectUrlOf(u) !== null);
   const flowProjectUrl = projectUrlOf(url ?? undefined);
   if (!flowProjectUrl) {
@@ -333,7 +394,7 @@ async function ensureFlowProject(tabId: number, projectId: string): Promise<bool
   await enqueue(async () => {
     if (state?.projectId === projectId) await commit({ ...state, flowProjectUrl });
   });
-  return true;
+  return stillRunning(projectId); // paused or stopped meanwhile: the project is kept, nothing more is typed
 }
 
 const isFinished = (c: FlowResultCard) => c.imageUrl !== null && c.progress === null && !c.key.startsWith('pending-');
@@ -357,7 +418,15 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
       const found = await findUnconfirmedStart(tabId, project, unconfirmed);
       if (found === null) return 'stop';
-      if (found === 'wait') return 'next'; // look again after the pace pause, without pressing
+      if (found === 'wait') {
+        // Look again after the pace pause, without pressing; but a tile that never finishes can't stall the run.
+        if (unconfirmed.at === undefined) {
+          await dispatch({ type: 'unconfirmed', sceneId, keysBefore: unconfirmed.keysBefore, prompt: unconfirmed.prompt });
+        } else if (Date.now() - unconfirmed.at >= timings.unconfirmedWaitMs) {
+          await dispatch({ type: 'failed', sceneId, message: UNCONFIRMED_MESSAGE });
+        }
+        return 'next';
+      }
       if (found) {
         await dispatch({ type: 'submitted', sceneId, prompt: unconfirmed.prompt, at: Date.now() });
         return 'next';
@@ -372,10 +441,13 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     if (!stillRunning(projectId)) return 'stop';
     const keysBefore = (await port!.tiles(tabId)).filter(isFinished).map((c) => c.key);
     if (!stillRunning(projectId)) return 'stop';
+    // Recorded before the press: if the worker is suspended before Flow's start is confirmed, the next pump looks for
+    // this scene's tiles before pressing again (no surplus batch). `submitted` clears it.
+    await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
+    if (!stillRunning(projectId)) return 'stop';
     await port!.press(tabId, at.x, at.y);
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
     if (!(await port!.confirmStarted(tabId))) {
-      await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt });
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
       return 'stop';
     }
@@ -449,7 +521,7 @@ async function detailOf(tabId: number, projectId: string, key: string, attempt: 
   if (known !== undefined) return known;
   if (unreadCount.get(key)?.attempt === attempt) return 'unread'; // already tried on this report
   const read = await readDetailFor(tabId, projectId, key);
-  if (!stillRunning(projectId)) return null;
+  if (!stillCollecting(projectId)) return null;
   if (read === null) {
     const tries = (unreadCount.get(key)?.count ?? 0) + 1;
     unreadCount.set(key, { count: tries, attempt });
@@ -467,7 +539,7 @@ async function detailOf(tabId: number, projectId: string, key: string, attempt: 
  */
 async function readDetailFor(tabId: number, projectId: string, key: string): Promise<string | null> {
   const flowUrl = state?.flowProjectUrl;
-  if (!flowUrl || !port || !stillRunning(projectId)) return null;
+  if (!flowUrl || !port || !stillCollecting(projectId)) return null;
   const onProject = (u: string) => projectUrlOf(u) === flowUrl && !/\/edit\//.test(u);
   inDetail = true;
   try {
@@ -477,7 +549,7 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
       if (!(await waitForUrl(tabId, onProject))) return null;
     }
     const at = await port.tilePoint(tabId, key);
-    if (!stillRunning(projectId)) return null;
+    if (!stillCollecting(projectId)) return null;
     await port.press(tabId, at.x, at.y);
     if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
     const { prompt, mediaId } = await port.readDetail(tabId);
@@ -493,7 +565,7 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
         let back = false;
         try {
           await chrome.tabs.goBack(tabId);
-          back = (await waitForUrl(tabId, onProject, BACK_WAIT_MS)) !== null;
+          back = (await waitForUrl(tabId, onProject, timings.backWaitMs)) !== null;
         } catch {
           back = false;
         }
@@ -505,6 +577,8 @@ async function readDetailFor(tabId: number, projectId: string, key: string): Pro
     } catch {
       // The pump puts the tab back on the project before its next press.
     }
+    // Opening the tile attached the debugger; drop it (and Chrome's bar) when the run isn't pressing Generate.
+    if (state?.status !== 'running') await detachFlowDebugger(tabId);
     lastDetailReturn = Date.now();
     inDetail = false;
   }
@@ -538,10 +612,45 @@ async function processTiles(): Promise<void> {
   }
 }
 
-/** Settles every in-flight scene the latest tiles complete. A picture is saved only after its detail prompt verifies. */
+/**
+ * Asks VidFlow's Flow tab for its tiles now and matches them, instead of waiting for the page to report: it only
+ * reports changes, so results that finished while VidFlow was paused or asleep would otherwise never be seen.
+ * A running run (re)opens its Flow window and project when needed; a paused one only looks at the tab it has.
+ */
+async function pullTiles(): Promise<void> {
+  try {
+    await ready;
+    if (!state || !port || state.inFlight.length === 0) return;
+    if (state.status !== 'running' && state.status !== 'paused') return;
+    const p = port;
+    const projectId = state.projectId;
+    let tabId = (await savedFlowWindow())?.tabId;
+    if (state.status === 'running') tabId = await ensureFlowTab();
+    if (tabId === undefined) return;
+    const id = tabId;
+    await withTab(async () => {
+      if (!stillCollecting(projectId)) return;
+      const action = flowProjectAction(state?.flowProjectUrl, await tabUrl(id));
+      if (action.kind === 'navigate') {
+        if (!stillRunning(projectId)) return; // a paused run doesn't move the tab
+        await chrome.tabs.update(id, { url: action.url });
+        if (!(await waitForUrl(id, (u) => projectUrlOf(u) === action.url))) return;
+      } else if (action.kind !== 'ok') return;
+      latestReport = { id: latestReport.id + 1, at: Date.now(), cards: await p.tiles(id) };
+    });
+    await processTiles();
+  } catch {
+    // The page reports its tiles itself as they change; this was only a head start.
+  }
+}
+
+/**
+ * Settles every in-flight scene the latest tiles complete. A picture is saved only after its detail prompt verifies.
+ * Runs while paused too: a pause (the owner, a limit, a page that needs the owner) only stops sending.
+ */
 async function matchOnce(): Promise<void> {
   for (let round = 0; round < 100; round++) {
-    if (!state || state.status !== 'running' || !port) return;
+    if (!state || (state.status !== 'running' && state.status !== 'paused') || !port) return;
     const run = state;
     const project = await getProject(run.projectId);
     const tabId = (await savedFlowWindow())?.tabId;
@@ -590,6 +699,16 @@ async function matchOnce(): Promise<void> {
   }
 }
 
+/** Only Flow's own picture host, over https, is fetched (the URL comes from the page). */
+function isFlowPictureUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && u.hostname === 'flow-content.google';
+  } catch {
+    return false;
+  }
+}
+
 /** Fetches each verified card's picture (signed URL, extension-only) and stores it as scene-NN-option-K. */
 async function savePictures(project: Project, sceneId: string, cardKeys: string[], cards: FlowResultCard[]): Promise<void> {
   const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
@@ -598,6 +717,10 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
     for (const [i, key] of cardKeys.entries()) {
       const url = cards.find((c) => c.key === key)?.imageUrl;
       if (!url) throw new Error('no picture address');
+      if (!isFlowPictureUrl(url)) {
+        await dispatch({ type: 'failed', sceneId, message: UNTRUSTED_PICTURE_MESSAGE });
+        return;
+      }
       const res = await fetch(url);
       if (!res.ok) throw new Error(`picture fetch ${res.status}`);
       mediaIds.push(await getMediaStore().put(project.id, `scene-${nn}-option-${i + 1}`, await res.blob()));
@@ -691,7 +814,10 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
 }
 
 export const pauseRun = () => dispatch({ type: 'pause' });
-export const resumeRun = () => dispatch({ type: 'resume' });
+export async function resumeRun(): Promise<void> {
+  await dispatch({ type: 'resume' });
+  void pullTiles();
+}
 
 /**
  * The background calls this when the Flow helper reports something. Waits for state to load; never drops scene events.
@@ -731,31 +857,48 @@ async function load(): Promise<void> {
   }
 }
 
+/**
+ * A scene's 10 minutes in Flow are up. Decided inside the queue, against the state then: only a scene still in Flow
+ * ('submitted') of a running run fails; one that was saved, refused or failed meanwhile, or a paused run, is left alone.
+ */
+async function handleDeadline(sceneId: string): Promise<void> {
+  await ready;
+  await enqueue(async () => {
+    if (!state || state.status !== 'running' || !state.inFlight.includes(sceneId)) return;
+    if (state.sceneStates[sceneId]?.status !== 'submitted') return;
+    await commit(
+      reduceRun(state, {
+        type: 'failed',
+        sceneId,
+        // A scene VidFlow couldn't match consistently says so, rather than blaming Flow's speed.
+        message: unconfirmedStreak.has(sceneId)
+          ? UNCONFIRMED_MESSAGE
+          : "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
+      }),
+    );
+  });
+  void pump();
+  void processTiles();
+}
+
 /** Register listeners synchronously from the background entry, once. */
 export function registerCoordinator(): void {
   ready = load().catch(() => undefined);
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === RESUME_ALARM) void resumeRun();
-    else if (alarm.name.startsWith(DEADLINE_PREFIX)) {
-      const sceneId = alarm.name.slice(DEADLINE_PREFIX.length);
-      void ready?.then(() => {
-        if (state?.inFlight.includes(sceneId)) {
-          void dispatch({
-            type: 'failed',
-            sceneId,
-            // A scene VidFlow couldn't match consistently says so, rather than blaming Flow's speed.
-            message: unconfirmedStreak.has(sceneId)
-              ? UNCONFIRMED_MESSAGE
-              : "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",
-          });
-        }
-      });
-    }
+    else if (alarm.name.startsWith(DEADLINE_PREFIX)) void handleDeadline(alarm.name.slice(DEADLINE_PREFIX.length));
   });
   chrome.windows.onRemoved.addListener(async (windowId) => {
     const saved = await savedFlowWindow();
-    if (saved?.windowId === windowId) await forgetFlowWindow();
+    if (saved?.windowId !== windowId) return;
+    await forgetFlowWindow();
+    // Never reopened behind the owner's back: the run pauses and says so; Resume opens a new window.
+    await ready;
+    if (state?.status === 'running') await pauseWith(WINDOW_CLOSED_MESSAGE);
   });
   chrome.runtime.onStartup.addListener(() => void forgetFlowWindow());
-  void ready.then(() => pump());
+  void ready.then(() => {
+    void pump();
+    void pullTiles(); // results that finished while the worker slept
+  });
 }
