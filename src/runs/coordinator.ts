@@ -1359,7 +1359,7 @@ export async function chooseScenePicture(projectId: string, sceneId: string, pic
     await updateProject(projectId, (project) => {
       const scene = project.sceneStates[sceneId];
       if (!scene || !scene.pictureIds.includes(pictureId)) return;
-      project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId } };
+      project.sceneStates = { ...project.sceneStates, [sceneId]: { ...scene, chosenPictureId: pictureId, choiceSource: 'owner' } };
       option = scene.pictureIds.indexOf(pictureId) + 1;
     });
     if (!option) throw new Error(NOT_THIS_SCENES_PICTURE);

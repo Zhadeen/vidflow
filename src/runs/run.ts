@@ -218,6 +218,9 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
           status: 'done',
           pictureIds: event.mediaIds,
           chosenPictureId: undefined, // new pictures: the best-picture choice is made again (Plan 2)
+          choiceSource: undefined,
+          autoReason: undefined,
+          autoChecked: undefined,
           message: undefined,
           withHero: event.withHero === true,
           ...(event.cardKeys ? { cardKeys: event.cardKeys } : {}),
@@ -262,7 +265,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'choose': {
       const current = state.sceneStates[event.sceneId];
       if (!current || !current.pictureIds.includes(event.pictureId)) return state;
-      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, chosenPictureId: event.pictureId } } };
+      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, chosenPictureId: event.pictureId, choiceSource: 'owner' } } };
     }
     case 'limit':
       return { ...state, status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };

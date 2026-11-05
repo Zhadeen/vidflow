@@ -110,3 +110,19 @@ describe('scene grid', () => {
     expect(img?.getAttribute('src')).toBe('blob:b');
   });
 });
+
+describe('choice source', () => {
+  it('swap marks choiceSource owner', async () => {
+    const { reduceRun } = await import('../../src/runs/run');
+    const state: any = { projectId: 'p', status: 'running', inFlight: [], sceneStates: { s1: done({ choiceSource: 'auto' }) } };
+    const next = reduceRun(state, { type: 'choose', sceneId: 's1', pictureId: 'p/b' });
+    expect(next.sceneStates.s1?.choiceSource).toBe('owner');
+    expect(next.sceneStates.s1?.chosenPictureId).toBe('p/b');
+  });
+  it('choices saved before Plan 3 count as owner', async () => {
+    const { choiceSourceOf } = await import('../../src/studio/chosen');
+    expect(choiceSourceOf(done({ chosenPictureId: 'p/b' }))).toBe('owner');
+    expect(choiceSourceOf(done({ chosenPictureId: 'p/b', choiceSource: 'auto' }))).toBe('auto');
+    expect(choiceSourceOf(done())).toBeUndefined();
+  });
+});

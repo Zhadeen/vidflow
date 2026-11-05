@@ -2,6 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { Scene } from '../scenes/types';
 import type { StyleId } from '../prompts/styles';
 import type { CharacterSpec } from '../prompts/build';
+import type { ClipRecord } from '../motion/timing';
 import { opfsMediaStore, type MediaStore } from './media';
 
 export type AspectRatio = '16:9' | '9:16' | '1:1';
@@ -12,6 +13,13 @@ export interface SceneState {
   message?: string;
   pictureIds: string[];
   chosenPictureId?: string;
+  /** Who made the choice: the owner, or the auto-pick. Absent on a choice saved before Plan 3 (counts as owner). */
+  choiceSource?: 'owner' | 'auto';
+  autoReason?: string;
+  autoChecked?: boolean;
+  /** The motion clip made from the chosen picture, and a note when it could not be made. */
+  clip?: ClipRecord;
+  clipNote?: string;
   /** While generating: the order and exact prompt this scene went to Flow with (result matching). */
   submission?: { seq: number; at: number; prompt: string };
   /**
@@ -35,6 +43,7 @@ export interface HeroSheet {
   /** The shape the sheet was drawn in (absent in sheets saved before it was kept: use the project's). */
   aspect?: AspectRatio;
 }
+export type MotionMode = 'stills' | 'picked' | 'all';
 export interface Project {
   id: string;
   name: string;
@@ -55,6 +64,10 @@ export interface Project {
   downloadFolder?: string;
   /** Pictures VidFlow already downloaded for this video: media id → the file name it was given. */
   downloaded?: Record<string, string>;
+  /** Which slides get a motion clip (absent: 'stills'). */
+  motionMode?: MotionMode;
+  /** Scene ids picked for a clip when motionMode is 'picked' (absent: none). */
+  clipPicks?: string[];
 }
 
 interface VidflowDB extends DBSchema {
