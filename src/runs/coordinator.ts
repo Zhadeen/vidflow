@@ -520,14 +520,17 @@ async function detailOf(tabId: number, projectId: string, key: string, attempt: 
   const known = state?.detailPrompts?.[key];
   if (known !== undefined) return known;
   if (unreadCount.get(key)?.attempt === attempt) return 'unread'; // already tried on this report
+  // While not running, the last strike is left for after Resume: a paused run doesn't keep opening a tile that won't
+  // read (each visit changes the tiles, which would bring the next read) and never gives up on a card.
+  if (state?.status !== 'running' && (unreadCount.get(key)?.count ?? 0) >= GIVE_UP_AFTER - 1) return null;
   const read = await readDetailFor(tabId, projectId, key);
   if (!stillCollecting(projectId)) return null;
-  // While not running, a read that didn't happen (tab elsewhere, owner busy) is "stopped", not a strike against the card.
-  if (read === null && state?.status !== 'running') return null;
+  if (read === SKIPPED) return null; // paused with the tab elsewhere: not read, so not a strike against the card
   if (read === null) {
     const tries = (unreadCount.get(key)?.count ?? 0) + 1;
     unreadCount.set(key, { count: tries, attempt });
     if (tries < GIVE_UP_AFTER) return 'unread';
+    if (state?.status !== 'running') return null; // never given up on while paused
     await dispatch({ type: 'detail', cardKey: key, prompt: '' });
     return '';
   }
@@ -535,17 +538,21 @@ async function detailOf(tabId: number, projectId: string, key: string, attempt: 
   return read;
 }
 
+/** readDetailFor didn't try (paused, tab off the project): unlike an unreadable detail, it doesn't count. */
+const SKIPPED = Symbol('skipped');
+
 /**
  * Opens a card's detail view in the Flow tab (trusted press on the tile), reads the full prompt, and goes back to the
- * run's project. null when anything doesn't line up. Holds the tab.
+ * run's project. null when anything doesn't line up; SKIPPED when a paused run's tab is off the project (it is never
+ * moved then). Holds the tab.
  */
-async function readDetailFor(tabId: number, projectId: string, key: string): Promise<string | null> {
+async function readDetailFor(tabId: number, projectId: string, key: string): Promise<string | null | typeof SKIPPED> {
   const flowUrl = state?.flowProjectUrl;
   if (!flowUrl || !port || !stillCollecting(projectId)) return null;
   const onProject = (u: string) => projectUrlOf(u) === flowUrl && !/\/edit\//.test(u);
   // A paused run only reads from the project page as it is: it never moves the tab (the owner may be fixing something).
   const start = await tabUrl(tabId);
-  if (state?.status !== 'running' && (!start || !onProject(start))) return null;
+  if (state?.status !== 'running' && (!start || !onProject(start))) return SKIPPED;
   inDetail = true;
   try {
     const now = await tabUrl(tabId);

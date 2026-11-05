@@ -813,4 +813,19 @@ describe('final review fixes', () => {
     expect(chromeMock.tab.url).toBe('https://flow.google.com/');
     expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
   });
+
+  it('while paused, a detail that stays unreadable is opened at most GIVE_UP_AFTER - 1 times and fails nothing', async () => {
+    const { chromeMock, coordinator, port, prompt } = await submitted(1);
+    await coordinator.pauseRun();
+    expect(chromeMock.tab.url).toBe(PROJECT_URL); // on the project: reads are allowed
+    vi.mocked(port.readDetail).mockResolvedValue({ prompt, mediaId: 'someone-else' }); // never this card
+    const tilePresses = () => vi.mocked(port.press).mock.calls.filter(([, x]) => x === TILE_X).length;
+    for (let i = 0; i < 5; i++) {
+      await coordinator.handleTiles([{ ...card('k1', 0), caption: `Stickman title k1 (report ${i})` }]); // a fresh report each time
+      await coordinator.settledForTests();
+    }
+    expect(tilePresses()).toBeLessThanOrEqual(1); // GIVE_UP_AFTER (2) - 1
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted');
+    expect(coordinator.getRunState()!.detailPrompts?.k1).toBeUndefined(); // not given up on while paused
+  });
 });
