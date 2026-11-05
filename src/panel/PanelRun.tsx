@@ -103,7 +103,7 @@ export function PanelRun({ project, run, busy, error, step: stepProp, onPause, o
       </ol>
 
       <div className="vf-pn-activity">
-        <ActivityList projectId={project.id} project={project} limit={5} />
+        <ActivityList projectId={project.id} project={project} limit={5} showSwitch={false} />
       </div>
 
       {pauseReason && (

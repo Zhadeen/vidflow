@@ -1,5 +1,5 @@
 /// <reference types="chrome" />
-import { openForTab } from '../background/action';
+import { isOwnPage, registerToolbar } from '../background/action';
 import { registerE2e } from '../e2e/background';
 import {
   FLOW_EVENT,
@@ -82,9 +82,6 @@ export default defineBackground(() => {
   // Set synchronously on every worker start, so a plain wake never finds the run "not connected".
   setFlowPort(createFlowPort());
 
-  // VidFlow's own pages: the studio tab and the side panel beside Flow.
-  const ownPages = [browser.runtime.getURL('/studio.html'), browser.runtime.getURL('/sidepanel.html')];
-
   // Every run change goes to the studio tab and the side panel (if open; nothing listening is fine).
   onRunState((state) => {
     const message: RunStateMessage = { type: RUN_STATE, state };
@@ -94,7 +91,7 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message: ToBackground | StudioRequest, sender, sendResponse) => {
     if (STUDIO_TYPES.has(message?.type)) {
       // Only VidFlow's own pages may control runs (content scripts in Flow tabs share this channel).
-      if (sender.id !== chrome.runtime.id || !ownPages.some((page) => sender.url?.startsWith(page))) return;
+      if (!isOwnPage(sender)) return;
       void answerStudio(message as StudioRequest).then(sendResponse);
       return true; // answer asynchronously
     }
@@ -123,8 +120,6 @@ export default defineBackground(() => {
     }
   });
 
-  // No popup and openPanelOnActionClick stays off, so every click lands here (the side panel opens inside it).
-  chrome.action.onClicked.addListener((tab) => {
-    void openForTab(tab);
-  });
+  // Toolbar: the side panel on a Flow tab, the studio anywhere else.
+  registerToolbar();
 });

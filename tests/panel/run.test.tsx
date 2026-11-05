@@ -51,11 +51,11 @@ describe('side panel: while it runs', () => {
     expect(rule('upcoming')).toBe('');
     expect(/\.vf-pn-strip li \{[^}]*background: var\(--vf-navy-line\)/.test(panelCss)).toBe(true);
 
-    // The newest five activity lines, with the switch for the Flow page.
+    // The newest five activity lines; no switch here (the approved panel has one coral element: the primary).
     const activity = screen.getByRole('region', { name: 'Activity' });
     await waitFor(() => expect(within(activity).getAllByRole('listitem')).toHaveLength(5));
     expect(within(activity).getByText('Line 6')).toBeTruthy();
-    expect(within(activity).getByRole('switch', { name: 'Show live activity in Flow' })).toBeTruthy();
+    expect(screen.queryByRole('switch')).toBeNull();
   });
 
   it('follows the step as it changes', async () => {
@@ -124,5 +124,8 @@ describe('side panel: while it runs', () => {
     expect(await within(panel.container).findByRole('button', { name: 'Resume' })).toBeTruthy();
     expect(within(panel.container).queryByRole('button', { name: 'Pause' })).toBeNull();
     expect(within(panel.container).getByText(/Paused/)).toBeTruthy();
+    // The studio keeps its live-activity switch; the panel leaves it out.
+    expect(within(studio.container).getByRole('switch', { name: 'Show live activity in Flow' })).toBeTruthy();
+    expect(within(panel.container).queryByRole('switch')).toBeNull();
   });
 });

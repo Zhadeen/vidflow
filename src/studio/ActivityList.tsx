@@ -29,10 +29,12 @@ interface Props {
   limit?: number;
   /** Lets "Scene N" use the same numbers as the scene grid; without it, lines show just what happened. */
   project?: Pick<Project, 'scenes'>;
+  /** The "Show live activity in Flow" switch (default on; the side panel leaves it out). */
+  showSwitch?: boolean;
 }
 
 /** What VidFlow is doing, newest first, plus the switch for the highlights on the Flow page. */
-export function ActivityList({ projectId, limit = DEFAULT_LIMIT, project }: Props) {
+export function ActivityList({ projectId, limit = DEFAULT_LIMIT, project, showSwitch = true }: Props) {
   const [entries, setEntries] = useState<ActivityEntry[]>([]);
   const [live, setLive] = useState(true);
 
@@ -71,19 +73,21 @@ export function ActivityList({ projectId, limit = DEFAULT_LIMIT, project }: Prop
     <section className="vf-activity" aria-label="Activity">
       <div className="vf-activity-head">
         <h2 className="vf-h2">Activity</h2>
-        <span className="vf-switch-row">
-          <span id="vf-live-label">Show live activity in Flow</span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={live}
-            aria-labelledby="vf-live-label"
-            className="vf-switch"
-            onClick={toggle}
-          >
-            <span className="vf-switch-knob" />
-          </button>
-        </span>
+        {showSwitch && (
+          <span className="vf-switch-row">
+            <span id="vf-live-label">Show live activity in Flow</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={live}
+              aria-labelledby="vf-live-label"
+              className="vf-switch"
+              onClick={toggle}
+            >
+              <span className="vf-switch-knob" />
+            </button>
+          </span>
+        )}
       </div>
       {entries.length === 0 ? (
         <p className="vf-hint" style={{ margin: 0 }}>

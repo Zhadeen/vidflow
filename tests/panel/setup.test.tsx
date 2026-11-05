@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Panel } from '../../src/panel/Panel';
-import { getProject, listProjects } from '../../src/store/projects';
+import { getProject, listProjects, saveProject } from '../../src/store/projects';
 import { clearProjects, fakeBackground, REPLY_6, runningState, seed, STUDIO, stubChrome } from './helpers';
 
 beforeEach(async () => {
@@ -162,6 +162,28 @@ describe('side panel: before starting', () => {
     await screen.findByRole('button', { name: 'Resume' });
     expect(primaries(container)).toHaveLength(1); // paused
     expect(primaries(container)[0]!.textContent).toBe('Resume');
+
+    // Done: every scene has pictures (the finished run's states are saved in the project).
+    const done = runningState(p, 6);
+    await saveProject({ ...(await getProject(p.id))!, sceneStates: done.sceneStates });
+    act(() => void bg.announce(done));
+    await screen.findByRole('button', { name: 'Review in the full studio' });
+    expect(primaries(container)).toHaveLength(1);
+    expect(screen.getByText('All 6 scenes have pictures.')).toBeTruthy();
+  });
+
+  it('a request that fails outright shows a plain message', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 6);
+    const client = fakeBackground(null).client();
+    client.start = vi.fn(async () => {
+      throw new Error('Extension context invalidated.');
+    });
+    render(<Panel client={client} />);
+    const start = await screen.findByRole('button', { name: 'Start making pictures' });
+    await act(async () => fireEvent.click(start));
+    expect(await screen.findByText('Something went wrong — try again.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Start making pictures' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('Open full studio ↗ opens or focuses the studio tab on this project', async () => {

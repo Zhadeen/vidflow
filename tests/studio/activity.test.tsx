@@ -68,6 +68,13 @@ describe('ActivityList', () => {
     await waitFor(() => expect(screen.getAllByRole('listitem')[0]!.textContent).toContain('Second'));
   });
 
+  it('can leave out the switch (the side panel)', async () => {
+    data[ACTIVITY_KEY] = [entry(at(10, 0, 1), 'First')];
+    render(<ActivityList projectId="p1" showSwitch={false} />);
+    await screen.findByText('First');
+    expect(screen.queryByRole('switch')).toBeNull();
+  });
+
   it('stops listening when it unmounts', async () => {
     render(<ActivityList projectId="p1" />);
     await screen.findByRole('switch');

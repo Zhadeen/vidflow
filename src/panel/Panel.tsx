@@ -15,6 +15,7 @@ export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop';
 
 const LOAD_FAILED = "VidFlow couldn't load your videos. Close this panel and open it again.";
 const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
+const REQUEST_FAILED = 'Something went wrong \u2014 try again.';
 const CREATE_FAILED = "VidFlow couldn't make a new video. Check Chrome has free disk space, then try again.";
 
 const isLive = (run: RunState | null) => !!run && (run.status === 'running' || run.status === 'paused');
@@ -122,6 +123,8 @@ export function Panel({ client }: { client: RunClient }) {
       const reply = await request();
       if (reply.ok) setRun(reply.state);
       else setError(reply.message);
+    } catch {
+      setError(REQUEST_FAILED);
     } finally {
       setBusy(null);
     }
