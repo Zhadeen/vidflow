@@ -128,10 +128,10 @@ describe('side panel: tabs', () => {
     await screen.findByRole('button', { name: 'Check again' });
     expect([...primaries(container)].map((b) => b.textContent)).toEqual(['Check again']);
 
-    // Files is a placeholder until its own step (which brings its coral "Download all").
+    // Files: its one coral is Download all (the two saved scenes' chosen pictures).
     fireEvent.click(await tab('Files'));
-    expect(await screen.findByText('Coming in the next step')).toBeTruthy();
-    expect(primaries(container).length).toBeLessThanOrEqual(1);
+    await screen.findByRole('button', { name: 'Download all 2 pictures' });
+    expect([...primaries(container)].map((b) => b.textContent)).toEqual(['Download all 2 pictures']);
   });
 
   it('only the selected tab names the panel it controls', async () => {

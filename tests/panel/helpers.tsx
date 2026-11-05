@@ -93,7 +93,7 @@ export function fakeBackground(initial: RunState | null) {
 
 type Listener = (changes: Record<string, { newValue?: unknown }>, area: string) => void;
 
-/** chrome.* as the panel uses it: local storage (step, activity, switch), tabs and windows. */
+/** chrome.* as the panel uses it: local storage (step, activity, switch), tabs, windows and downloads. */
 export function stubChrome(data: Record<string, unknown> = {}) {
   const listeners = new Set<Listener>();
   const tabs = {
@@ -107,6 +107,7 @@ export function stubChrome(data: Record<string, unknown> = {}) {
     getAll: vi.fn(async (): Promise<unknown[]> => []),
     create: vi.fn(async () => ({ id: 50 })),
   };
+  const downloads = { download: vi.fn(async (_opts: chrome.downloads.DownloadOptions) => 1) };
   vi.stubGlobal('chrome', {
     runtime: { id: 'vidflow', getURL: (p: string) => `chrome-extension://vidflow${p}` },
     storage: {
@@ -123,6 +124,7 @@ export function stubChrome(data: Record<string, unknown> = {}) {
     },
     tabs,
     windows,
+    downloads,
   });
-  return { data, tabs, windows, listeners };
+  return { data, tabs, windows, downloads, listeners };
 }

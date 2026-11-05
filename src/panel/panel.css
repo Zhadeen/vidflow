@@ -874,3 +874,71 @@ button.vf-pn-qopen {
 .vf-pn-select select:disabled {
   cursor: default;
 }
+
+/* ---- Files ---- */
+
+/* The chosen pictures, four to a row (cream frames until a picture loads); the last cell says how many more */
+.vf-pn-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-pn-gridcell {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--vf-cream);
+}
+
+.vf-pn-gridcell img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vf-pn-gridmore {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--vf-navy) 62%, transparent);
+  color: var(--vf-cream);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Folder: Downloads / [name]": the sub-folder is typed in place */
+.vf-pn-folder {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  cursor: text;
+}
+
+.vf-pn-folder > span {
+  flex: none;
+}
+
+.vf-pn-folder input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.vf-pn-folder:focus-within {
+  outline: none;
+  box-shadow: var(--vf-focus);
+}

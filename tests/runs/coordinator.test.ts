@@ -36,6 +36,7 @@ function mockChrome() {
     alarms: { create: vi.fn(async (_name: string, _info: unknown) => undefined), clear: vi.fn(async () => true), onAlarm: listener() },
     power: { requestKeepAwake: vi.fn(), releaseKeepAwake: vi.fn() },
     notifications: { create: vi.fn(async () => '') },
+    downloads: { download: vi.fn(async (_opts: chrome.downloads.DownloadOptions) => 1) },
     windows: { create: vi.fn(async () => ({ id: 3, tabs: [{ id: 7 }] })), update: vi.fn(async () => undefined), onRemoved: listener() },
     tabs: {
       get: vi.fn(async () => ({ ...tab })),
@@ -518,6 +519,49 @@ describe('matching results to scenes', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(port.readDetail).toHaveBeenCalledTimes(2);
     expect(chromeMock.tab.url).toBe(PROJECT_URL); // back on the project after each detail
+  });
+
+  it('auto-save runs after a scene is saved only when the switch is on', async () => {
+    for (const on of [false, true]) {
+      const { chromeMock, coordinator, port, prompt, project } = await submitted(2);
+      if (on) chromeMock.storage.local.data['vidflow.autoSave'] = true;
+      stubFetch();
+      let opened = '';
+      vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ((opened = key), { x: TILE_X, y: 300 }));
+      vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt, mediaId: opened }));
+      await coordinator.handleTiles([card('k2', 0), card('k1', 1)]);
+      await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 done');
+      await coordinator.settledForTests();
+      if (!on) {
+        expect(chromeMock.downloads.download).not.toHaveBeenCalled();
+        continue;
+      }
+      await waitFor(() => chromeMock.downloads.download.mock.calls.length === 1, 'the auto-save download');
+      expect(chromeMock.downloads.download.mock.calls[0]![0]).toMatchObject({ filename: 'Demo/Slide_01.png', conflictAction: 'uniquify', saveAs: false });
+      const store = await import('../../src/store/projects');
+      let downloaded: Record<string, string> | undefined;
+      for (let i = 0; i < 200 && !downloaded; i++) {
+        downloaded = (await store.getProject(project.id))!.downloaded;
+        if (!downloaded) await new Promise((r) => setTimeout(r, 5));
+      }
+      expect(downloaded).toEqual({ [`${project.id}/scene-01-option-1`]: 'Slide_01.png' });
+    }
+  });
+
+  it('a failing auto-save never fails the scene or the run', async () => {
+    const { chromeMock, coordinator, port, prompt, project } = await submitted(1);
+    chromeMock.storage.local.data['vidflow.autoSave'] = true;
+    chromeMock.downloads.download.mockRejectedValue(new Error('Download failed'));
+    stubFetch();
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt, mediaId: 'k1' }));
+    await coordinator.handleTiles([card('k1', 0)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 done');
+    const texts = () =>
+      ((chromeMock.storage.local.data['vidflow.activity'] ?? []) as { projectId: string; text: string }[])
+        .filter((e) => e.projectId === project.id)
+        .map((e) => e.text);
+    await waitFor(() => texts().includes("Couldn't save scene 1 to your Mac"), 'the auto-save problem line');
+    expect(coordinator.getRunState()!.sceneStates.s1!.status).toBe('done');
   });
 
   it('never saves a card whose detail prompt differs, and fails the scene when the detail stays unreadable', async () => {

@@ -31,7 +31,7 @@ interface FieldSelectProps {
 }
 
 /** A raised field reading "Style: Classic whiteboard stickman ▾"; the whole box is the (native) select. */
-function FieldSelect({ id, label, prefix = '', hint, value, options, disabled, onChange }: FieldSelectProps) {
+export function FieldSelect({ id, label, prefix = '', hint, value, options, disabled, onChange }: FieldSelectProps) {
   const shown = options.find((o) => o.value === value)?.label ?? '';
   return (
     <div className="vf-pn-field vf-pn-select">

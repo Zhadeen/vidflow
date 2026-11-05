@@ -4,7 +4,11 @@ import type { ProjectPatch } from './ScriptStep';
 /** The studio's edit applied to a project. A new scene file starts the pictures again (old ones belong to old scenes). */
 export function applyPatch(project: Project, patch: ProjectPatch): Project {
   const next = { ...project, ...patch };
-  if (patch.scenes) next.sceneStates = {};
+  if (patch.scenes) {
+    next.sceneStates = {};
+    // New scenes reuse the old pictures' media ids: nothing of theirs is downloaded yet.
+    delete next.downloaded;
+  }
   return next;
 }
 

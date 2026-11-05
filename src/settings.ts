@@ -64,3 +64,12 @@ export async function getNamingFormat(): Promise<NamingFormat> {
 export async function setNamingFormat(f: NamingFormat): Promise<void> {
   await write(NAMING_FORMAT_KEY, f);
 }
+
+/** Files tab: download both options of each scene (the chosen one plainly named, the other "_option2"). Off by default. */
+export const DOWNLOAD_BOTH_KEY = 'vidflow.downloadBoth';
+export async function getDownloadBoth(): Promise<boolean> {
+  return (await read(DOWNLOAD_BOTH_KEY)) === true;
+}
+export async function setDownloadBoth(on: boolean): Promise<void> {
+  await write(DOWNLOAD_BOTH_KEY, on);
+}

@@ -29,8 +29,11 @@ describe('studio edits', () => {
   it('a new scene file starts the pictures again', async () => {
     const p = await createProject('B');
     p.sceneStates = { 'scene-01': { sceneId: 'scene-01', status: 'done', pictureIds: ['x'] } };
+    p.downloaded = { x: 'Slide_01.png' };
     await saveProject(p);
     await saveEdits(p.id, { scenes: [scene('scene-01')] });
     expect((await getProject(p.id))!.sceneStates).toEqual({});
+    // The new scenes' pictures reuse the old media ids: none of them is downloaded yet.
+    expect((await getProject(p.id))!.downloaded).toBeUndefined();
   });
 });

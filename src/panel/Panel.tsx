@@ -10,6 +10,7 @@ import type { RunClient } from '../studio/runClient';
 import type { ProjectPatch } from '../studio/ScriptStep';
 import { HealthLine } from './HealthLine';
 import { PanelChecks, type ChecksResult } from './PanelChecks';
+import { PanelFiles } from './PanelFiles';
 import { PanelQueue } from './PanelQueue';
 import { PanelSetup, VideoPicker } from './PanelSetup';
 import { panelId, tabId, Tabs, type PanelTab } from './Tabs';
@@ -282,9 +283,10 @@ export function Panel({ client }: { client: RunClient }) {
           ) : (
             <p className="vf-pn-sub">Pick a video on Setup first.</p>
           )
+        ) : shown ? (
+          <PanelFiles key={shown.id} project={shown} run={run} onChange={change} />
         ) : (
-          // Files: the next step.
-          <p className="vf-pn-sub">Coming in the next step</p>
+          <p className="vf-pn-sub">Pick a video on Setup first.</p>
         )}
       </div>
     </div>

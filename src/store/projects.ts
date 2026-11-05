@@ -51,6 +51,10 @@ export interface Project {
   sceneStates: Record<string, SceneState>;
   /** The latest model sheet of the hero; absent until one is made. */
   heroSheet?: HeroSheet;
+  /** Files tab: the sub-folder of Downloads this video's files go to (absent: the video's name, made file-safe). */
+  downloadFolder?: string;
+  /** Pictures VidFlow already downloaded for this video: media id → the file name it was given. */
+  downloaded?: Record<string, string>;
 }
 
 interface VidflowDB extends DBSchema {
@@ -103,6 +107,23 @@ export async function getProject(id: string): Promise<Project | undefined> {
 export async function saveProject(p: Project): Promise<void> {
   p.updatedAt = Date.now();
   await (await db()).put('projects', p);
+}
+
+/**
+ * Changes one stored project in a single IndexedDB transaction (read and write together), so a change made by another
+ * page meanwhile can't be lost between the read and the write. `edit` must not await anything. Returns the saved
+ * project, or undefined when it is gone.
+ */
+export async function updateProject(id: string, edit: (p: Project) => void): Promise<Project | undefined> {
+  const tx = (await db()).transaction('projects', 'readwrite');
+  const p = await tx.store.get(id);
+  if (p) {
+    edit(p);
+    p.updatedAt = Date.now();
+    await tx.store.put(p);
+  }
+  await tx.done;
+  return p;
 }
 
 export async function listProjects(): Promise<Pick<Project, 'id' | 'name' | 'updatedAt'>[]> {

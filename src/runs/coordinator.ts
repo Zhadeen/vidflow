@@ -12,6 +12,7 @@ import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
 import { getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
+import { autoSaveScene, forgetDownloads } from '../files/downloads';
 import {
   HERO_SHEET_ID,
   initHeroSheetRun,
@@ -1036,10 +1037,15 @@ async function savePictures(project: Project, sceneId: string, cardKeys: string[
       if (!wanted()) return;
       mediaIds.push(await getMediaStore().put(project.id, `${base}-option-${i + 1}`, blob));
     }
+    // Made again under the same media ids: the old files on the Mac are not these pictures.
+    if (!sheet) await enqueue(() => forgetDownloads(project.id, mediaIds)).catch((err) => console.warn('[VidFlow] download record failed', err));
     await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys, withHero });
   } catch {
     await dispatch({ type: 'failed', sceneId, message: SAVE_FAILED_MESSAGE });
+    return;
   }
+  // Auto-save (when its switch is on): never awaited, never fails the run; its project write takes the queue's turn.
+  if (!sheet) void autoSaveScene(project.id, sceneId, { writer: (write) => enqueue(write) });
 }
 
 async function pump(): Promise<void> {

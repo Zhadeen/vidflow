@@ -1,7 +1,17 @@
 /// <reference types="chrome" />
 import { useEffect, useId, useState } from 'react';
 import type { CheckId, CheckRow } from '../runs/checks';
-import { ACCEPT_NOTICES_KEY, getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY, setAcceptNotices, setKeepAwake } from '../settings';
+import {
+  ACCEPT_NOTICES_KEY,
+  AUTO_SAVE_KEY,
+  getAcceptNotices,
+  getAutoSave,
+  getKeepAwake,
+  KEEP_AWAKE_KEY,
+  setAcceptNotices,
+  setAutoSave,
+  setKeepAwake,
+} from '../settings';
 import type { Project } from '../store/projects';
 import { Button } from '../studio/Button';
 import type { RunClient } from '../studio/runClient';
@@ -52,7 +62,7 @@ function names(list: string[]): string {
 }
 
 /** A switch bound to one stored setting. null = not read yet: shown off and disabled, so it can't be flipped blind. */
-function Switch({ label, on, onChange }: { label: string; on: boolean | null; onChange(on: boolean): void }) {
+export function Switch({ label, on, onChange }: { label: string; on: boolean | null; onChange(on: boolean): void }) {
   const id = useId();
   return (
     <li className="vf-pn-check">
@@ -73,10 +83,11 @@ function Switch({ label, on, onChange }: { label: string; on: boolean | null; on
 }
 
 /**
- * A stored on-by-default setting: null until read; a change from anywhere (this panel, the studio, another panel) comes
- * in through chrome.storage.onChanged, and a read that arrives after such a change never overwrites it.
+ * A stored on/off setting (on by default unless `defaultOn` is false): null until read; a change from anywhere (this
+ * panel, the studio, another panel) comes in through chrome.storage.onChanged, and a read that arrives after such a
+ * change never overwrites it.
  */
-function useStoredSwitch(key: string, read: () => Promise<boolean>): [boolean | null, (on: boolean) => void] {
+export function useStoredSwitch(key: string, read: () => Promise<boolean>, defaultOn = true): [boolean | null, (on: boolean) => void] {
   const [on, setOn] = useState<boolean | null>(null);
   useEffect(() => {
     let alive = true;
@@ -85,14 +96,17 @@ function useStoredSwitch(key: string, read: () => Promise<boolean>): [boolean | 
       () => undefined,
     );
     const onChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
-      if (area === 'local' && key in changes) setOn(changes[key]!.newValue !== false);
+      if (area === 'local' && key in changes) {
+        const value = changes[key]!.newValue;
+        setOn(defaultOn ? value !== false : value === true);
+      }
     };
     chrome.storage.onChanged.addListener(onChanged);
     return () => {
       alive = false;
       chrome.storage.onChanged.removeListener(onChanged);
     };
-  }, [key, read]);
+  }, [key, read, defaultOn]);
   return [on, setOn];
 }
 
@@ -107,13 +121,14 @@ interface Props {
 }
 
 /**
- * Checks (spec §19): what VidFlow read from its own Flow tab, row by row, the two automation switches, Show me in
+ * Checks (spec §19): what VidFlow read from its own Flow tab, row by row, the automation switches, Show me in
  * Flow, Test one prompt and the coral Check again.
  */
 export function PanelChecks({ project, client, result, checking, error, onCheck }: Props) {
   const ids = useId();
   const [notices, setNotices] = useStoredSwitch(ACCEPT_NOTICES_KEY, getAcceptNotices);
   const [awake, setAwake] = useStoredSwitch(KEEP_AWAKE_KEY, getKeepAwake);
+  const [autoSave, setAutoSaveOn] = useStoredSwitch(AUTO_SAVE_KEY, getAutoSave, false);
   const [tool, setTool] = useState<null | 'open' | 'show' | 'test'>(null);
   const [message, setMessage] = useState<{ text: string; problem: boolean } | null>(null);
 
@@ -203,6 +218,7 @@ export function PanelChecks({ project, client, result, checking, error, onCheck 
       <ul className="vf-pn-checks" aria-label="Automation">
         <Switch label="Accept Flow's notices automatically" on={notices} onChange={(on) => flip(setNotices, setAcceptNotices, on)} />
         <Switch label="Keep Mac awake while running" on={awake} onChange={(on) => flip(setAwake, setKeepAwake, on)} />
+        <Switch label="Save automatically as each scene finishes" on={autoSave} onChange={(on) => flip(setAutoSaveOn, setAutoSave, on)} />
       </ul>
 
       <div className="vf-pn-pair">
