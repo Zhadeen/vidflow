@@ -2,17 +2,23 @@
 import { checkCanStart, createFlowDriver, type FlowResultCard, type FlowSnapshot } from '../flow/driver';
 import {
   FLOW_CONFIRM,
+  FLOW_DETAIL,
   FLOW_EVENT,
   FLOW_NEW_PROJECT,
   FLOW_PILL,
   FLOW_PILL_TOGGLE,
   FLOW_PREPARE,
   FLOW_TILES,
+  FLOW_TILE_POINT,
+  FLOW_TILES_NOW,
   type ConfirmResponse,
+  type DetailResponse,
   type NewProjectRequest,
   type PillResponse,
   type PrepareRequest,
   type PrepareResponse,
+  type TilePointRequest,
+  type TilesNowResponse,
   type ToBackground,
 } from '../flow/messages';
 import { placePill, renderPill } from '../flow/pill';
@@ -23,6 +29,7 @@ import { getExpectedAccount } from '../settings';
 const OBSERVE_THROTTLE_MS = 1_000;
 const READY_WAIT_MS = 10_000; // Flow may still be rendering a project it just opened
 const CONFIRM_WAIT_MS = 8_000;
+const DETAIL_WAIT_MS = 10_000; // the detail page renders its History panel after the picture
 
 export default defineContentScript({
   matches: ['https://flow.google.com/*', 'https://labs.google/fx/*'],
@@ -90,11 +97,38 @@ export default defineContentScript({
       return { started };
     }
 
+    async function tilePoint(req: TilePointRequest): Promise<PrepareResponse> {
+      // Right after VidFlow returns from a detail page, Flow may still be drawing the list.
+      const deadline = Date.now() + READY_WAIT_MS;
+      let at = driver.tilePoint(req.key);
+      while (!at && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+        at = driver.tilePoint(req.key);
+      }
+      if (!at) return { kind: 'error', message: "VidFlow can't find that picture in Flow's list." };
+      await new Promise((r) => setTimeout(r, 300)); // let the scroll settle, then measure again
+      const settled = driver.tilePoint(req.key) ?? at;
+      return { kind: 'ready', ...settled };
+    }
+
+    async function detail(): Promise<DetailResponse> {
+      const deadline = Date.now() + DETAIL_WAIT_MS;
+      let prompt = driver.readDetailPrompt();
+      while (prompt === null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+        prompt = driver.readDetailPrompt();
+      }
+      return { prompt, mediaId: driver.detailMediaId() };
+    }
+
     chrome.runtime.onMessage.addListener((message: { type?: string }, _sender, sendResponse) => {
       const handlers: Record<string, () => Promise<unknown>> = {
         [FLOW_PREPARE]: () => prepare(message as PrepareRequest),
         [FLOW_NEW_PROJECT]: () => newProject(message as NewProjectRequest),
         [FLOW_CONFIRM]: () => confirm(),
+        [FLOW_TILES_NOW]: async (): Promise<TilesNowResponse> => ({ cards: driver.resultCards() }),
+        [FLOW_TILE_POINT]: () => tilePoint(message as TilePointRequest),
+        [FLOW_DETAIL]: () => detail(),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;

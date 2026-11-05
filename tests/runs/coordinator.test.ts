@@ -1,7 +1,19 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { memoryMediaStore } from '../../src/store/media';
+import type { FlowResultCard } from '../../src/flow/driver';
 import type { FlowPort } from '../../src/runs/coordinator';
+
+const TILE_X = 50;
+/** A finished result tile, newest first by domIndex. */
+const card = (key: string, domIndex: number): FlowResultCard => ({
+  key,
+  caption: `Stickman title ${key}`,
+  imageUrl: `https://flow-content.google/image/${key}`,
+  progress: null,
+  refusal: null,
+  domIndex,
+});
 
 const PROJECT_URL = 'https://flow.google.com/u/0/project/3f1c2a9e-1111-4222-8333-944455556666';
 
@@ -42,11 +54,12 @@ function mockChrome() {
   return chromeMock;
 }
 
-async function setup() {
+async function setup(outputs: 1 | 2 | 4 = 4) {
   vi.resetModules();
   const chromeMock = mockChrome();
   const store = await import('../../src/store/projects');
-  store.setMediaStore(memoryMediaStore());
+  const media = memoryMediaStore();
+  store.setMediaStore(media);
   const coordinator = await import('../../src/runs/coordinator');
   // Same module instances as the coordinator's, so instanceof holds after resetModules.
   const { FlowBlockedError } = await import('../../src/flow/messages');
@@ -55,7 +68,7 @@ async function setup() {
   coordinator.registerCoordinator();
   const project = await store.createProject('Demo');
   project.aspect = '9:16';
-  project.outputsPerPrompt = 4;
+  project.outputsPerPrompt = outputs;
   project.scenes = [
     {
       id: 's1',
@@ -78,11 +91,15 @@ async function setup() {
     prepare: vi.fn(async () => ({ x: 120, y: 620 })),
     press: vi.fn(async (_tabId: number, x: number) => {
       if (x === 5) chromeMock.tab.url = PROJECT_URL;
+      if (x === TILE_X) chromeMock.tab.url = `${PROJECT_URL}/edit/generation-1`; // a tile opens its detail page
     }),
     confirmStarted: vi.fn(async () => true),
+    tiles: vi.fn(async (): Promise<FlowResultCard[]> => []),
+    tilePoint: vi.fn(async () => ({ x: TILE_X, y: 300 })),
+    readDetail: vi.fn(async () => ({ prompt: null as string | null, mediaId: null as string | null })),
     ...over,
   });
-  return { chromeMock, coordinator, project, FlowBlockedError, createFlowPort, pressAt, fakePort };
+  return { chromeMock, coordinator, project, media, FlowBlockedError, createFlowPort, pressAt, fakePort };
 }
 
 async function waitFor(check: () => boolean) {
@@ -189,5 +206,114 @@ describe('coordinator ↔ Flow port', () => {
     expect(await coordinator.isFlowTab(7)).toBe(true);
     expect(await coordinator.isFlowTab(8)).toBe(false);
     expect(await coordinator.isFlowTab(undefined)).toBe(false);
+  });
+
+});
+
+describe('matching results to scenes', () => {
+  /** Starts a run of one scene and waits until Flow has it; returns the exact prompt VidFlow typed. */
+  async function submitted(outputs: 1 | 2 | 4, over: Partial<FlowPort> = {}) {
+    const ctx = await setup(outputs);
+    const port = ctx.fakePort(over);
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    return { ...ctx, port, prompt };
+  }
+
+  function stubFetch() {
+    const fetchMock = vi.fn(async (url: string) => ({ ok: true, status: 200, blob: async () => new Blob([`png:${url}`]) }));
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it("saves a scene's pictures only after each card's detail prompt verifies", async () => {
+    const { chromeMock, coordinator, port, prompt, media, project } = await submitted(2);
+    const fetchMock = stubFetch();
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ({ x: TILE_X, y: key === 'k1' ? 1 : 2 }));
+    let opened = '';
+    vi.mocked(port.press).mockImplementation(async (_tab, x, y) => {
+      if (x === TILE_X) {
+        opened = y === 1 ? 'k1' : 'k2';
+        chromeMock.tab.url = `${PROJECT_URL}/edit/gen-${opened}`;
+      }
+    });
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt: `  ${prompt.toUpperCase()} `, mediaId: opened }));
+
+    await coordinator.handleTiles([card('k2', 0), card('k1', 1)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done');
+
+    const scene = coordinator.getRunState()!.sceneStates.s1!;
+    expect(scene.pictureIds).toEqual([`${project.id}/scene-01-option-1`, `${project.id}/scene-01-option-2`]);
+    expect(scene.cardKeys).toEqual(['k1', 'k2']);
+    expect(scene.chosenPictureId).toBeUndefined();
+    expect(await (await media.get(`${project.id}/scene-01-option-1`))!.text()).toBe('png:https://flow-content.google/image/k1');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(port.readDetail).toHaveBeenCalledTimes(2);
+    expect(chromeMock.tab.url).toBe(PROJECT_URL); // back on the project after each detail
+  });
+
+  it('never saves a card whose detail prompt differs, and fails the scene when the detail cannot be read', async () => {
+    const { coordinator, port } = await submitted(1);
+    const fetchMock = stubFetch();
+    vi.mocked(port.readDetail).mockResolvedValueOnce({ prompt: 'A stickman reads a book', mediaId: null });
+    await coordinator.handleTiles([card('other', 0)]);
+    await waitFor(() => coordinator.getRunState()?.detailPrompts?.other !== undefined);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(coordinator.getRunState()!.sceneStates.s1?.status).toBe('submitted'); // still waiting for its own picture
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.mocked(port.readDetail).mockResolvedValueOnce({ prompt: null, mediaId: null });
+    await coordinator.handleTiles([card('k1', 0), card('other', 1)]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed');
+    expect(coordinator.getRunState()!.sceneStates.s1?.message).toBe(
+      "VidFlow couldn't confirm which picture belongs to this scene. Press Try again.",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('records an unconfirmed start with the tiles seen just before the press', async () => {
+    const { coordinator, project, fakePort } = await setup(2);
+    const port = fakePort({ confirmStarted: vi.fn(async () => false), tiles: vi.fn(async () => [card('old', 0)]) });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused');
+    const scene = coordinator.getRunState()!.sceneStates.s1!;
+    expect(scene.status).toBe('pending');
+    expect(scene.unconfirmed).toEqual({ keysBefore: ['old'], prompt: vi.mocked(port.prepare).mock.calls[0]![2] });
+  });
+
+  async function unconfirmedThenResume(newTiles: FlowResultCard[], detail: (key: string) => string | null) {
+    const ctx = await setup(2);
+    const port = ctx.fakePort({ confirmStarted: vi.fn(async () => false), tiles: vi.fn(async () => [card('old', 0)]) });
+    ctx.coordinator.setFlowPort(port);
+    await ctx.coordinator.startRun(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused');
+    const prompt = vi.mocked(port.prepare).mock.calls[0]![2];
+    let opened = '';
+    vi.mocked(port.tilePoint).mockImplementation(async (_tab, key) => ((opened = key), { x: TILE_X, y: 300 }));
+    vi.mocked(port.readDetail).mockImplementation(async () => ({ prompt: detail(opened) === 'PROMPT' ? prompt : detail(opened), mediaId: opened }));
+    vi.mocked(port.tiles).mockResolvedValue([...newTiles, card('old', newTiles.length)]);
+    vi.mocked(port.confirmStarted).mockResolvedValue(true);
+    const generatePresses = () => vi.mocked(port.press).mock.calls.filter(([, x]) => x === 120).length;
+    expect(generatePresses()).toBe(1);
+    await ctx.coordinator.resumeRun();
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    return { ...ctx, port, prompt, generatePresses };
+  }
+
+  it('on Resume, treats an unconfirmed scene as submitted when a new tile verifies against its prompt', async () => {
+    const { coordinator, port, generatePresses } = await unconfirmedThenResume([card('n2', 0), card('n1', 1)], () => 'PROMPT');
+    expect(generatePresses()).toBe(1); // not pressed again: no surplus batch
+    expect(port.prepare).toHaveBeenCalledTimes(1);
+    expect(coordinator.getRunState()!.sceneStates.s1?.unconfirmed).toBeUndefined();
+    expect(coordinator.getRunState()!.detailPrompts?.n1).toBeDefined();
+  });
+
+  it("on Resume, presses again when no new tile is the scene's", async () => {
+    const { port, generatePresses } = await unconfirmedThenResume([card('n1', 0)], () => 'A stickman reads a book');
+    expect(generatePresses()).toBe(2);
+    expect(port.prepare).toHaveBeenCalledTimes(2);
   });
 });

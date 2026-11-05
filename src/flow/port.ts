@@ -4,9 +4,14 @@ import type { StartVerb } from './driver';
 import {
   FlowBlockedError,
   FLOW_CONFIRM,
+  FLOW_DETAIL,
   FLOW_NEW_PROJECT,
   FLOW_PREPARE,
+  FLOW_TILE_POINT,
+  FLOW_TILES_NOW,
   type ConfirmResponse,
+  type DetailResponse,
+  type TilesNowResponse,
   type Point,
   type PrepareResponse,
   type ToFlowTab,
@@ -78,6 +83,18 @@ export function createFlowPort(deps: PortDeps = defaultDeps): FlowPort {
         zoom = 1;
       }
       await deps.press(tabId, x * zoom, y * zoom);
+    },
+
+    tilePoint: (tabId, key) => point(tabId, { type: FLOW_TILE_POINT, key }),
+
+    async tiles(tabId) {
+      const reply = (await ask(tabId, { type: FLOW_TILES_NOW })) as TilesNowResponse | undefined;
+      return reply?.cards ?? [];
+    },
+
+    async readDetail(tabId) {
+      const reply = (await ask(tabId, { type: FLOW_DETAIL })) as DetailResponse | undefined;
+      return { prompt: reply?.prompt ?? null, mediaId: reply?.mediaId ?? null };
     },
 
     async confirmStarted(tabId) {

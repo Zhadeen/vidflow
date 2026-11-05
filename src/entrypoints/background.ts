@@ -3,6 +3,7 @@ import { FLOW_EVENT, FLOW_PILL, FLOW_PILL_TOGGLE, FLOW_TILES, type ToBackground 
 import { createFlowPort } from '../flow/port';
 import {
   handleFlowEvent,
+  handleTiles,
   isFlowTab,
   pauseRun,
   pillFor,
@@ -24,7 +25,8 @@ export default defineBackground(() => {
         void isFlowTab(tabId).then((ours) => (ours ? handleFlowEvent(message.event) : undefined));
         return;
       case FLOW_TILES:
-        // Raw tile observations. Task 8 matches them to scenes (matchResults).
+        // Raw tile observations from VidFlow's own Flow tab; the coordinator matches them to scenes.
+        void isFlowTab(tabId).then((ours) => (ours ? handleTiles(message.cards) : undefined));
         return;
       case FLOW_PILL:
         void pillFor(tabId).then(sendResponse, () => sendResponse(null));

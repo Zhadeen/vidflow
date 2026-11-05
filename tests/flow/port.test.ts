@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FlowBlockedError, FLOW_CONFIRM, FLOW_NEW_PROJECT, FLOW_PREPARE } from '../../src/flow/messages';
+import { FlowBlockedError, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW } from '../../src/flow/messages';
 import { createFlowPort } from '../../src/flow/port';
 
 function setup(responses: unknown[], zoom = 1) {
-  const send = vi.fn(async () => {
+  const send = vi.fn(async (_tabId: number, _message: unknown) => {
     const next = responses.shift();
     if (next instanceof Error) throw next;
     return next;
@@ -77,5 +77,28 @@ describe('Flow port', () => {
     expect(send).toHaveBeenCalledWith(7, { type: FLOW_CONFIRM });
     expect(await port.confirmStarted(7)).toBe(false);
     expect(await port.confirmStarted(7)).toBe(false);
+  });
+
+  it('asks for the tiles, a tile to open, and the detail prompt', async () => {
+    const card = { key: 'k1', caption: 't', imageUrl: 'u', progress: null, refusal: null, domIndex: 0 };
+    const { send, port } = setup([
+      { cards: [card] },
+      { kind: 'ready', x: 50, y: 60 },
+      { kind: 'error', message: 'gone' },
+      { prompt: 'A stickman waves', mediaId: 'k1' },
+      undefined,
+    ]);
+    expect(await port.tiles(7)).toEqual([card]);
+    expect(await port.tilePoint(7, 'k1')).toEqual({ x: 50, y: 60 });
+    await expect(port.tilePoint(7, 'k2')).rejects.toThrow('gone');
+    expect(await port.readDetail(7)).toEqual({ prompt: 'A stickman waves', mediaId: 'k1' });
+    expect(await port.readDetail(7)).toEqual({ prompt: null, mediaId: null });
+    expect(send.mock.calls.map(([, m]) => m)).toEqual([
+      { type: FLOW_TILES_NOW },
+      { type: FLOW_TILE_POINT, key: 'k1' },
+      { type: FLOW_TILE_POINT, key: 'k2' },
+      { type: FLOW_DETAIL },
+      { type: FLOW_DETAIL },
+    ]);
   });
 });

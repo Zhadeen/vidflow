@@ -8,6 +8,9 @@ export const FLOW_NEW_PROJECT = 'flow/new-project';
 export const FLOW_CONFIRM = 'flow/confirm';
 export const FLOW_EVENT = 'flow/event';
 export const FLOW_TILES = 'flow/tiles';
+export const FLOW_TILES_NOW = 'flow/tiles-now';
+export const FLOW_TILE_POINT = 'flow/tile-point';
+export const FLOW_DETAIL = 'flow/detail';
 export const FLOW_PILL = 'flow/pill';
 export const FLOW_PILL_TOGGLE = 'flow/pill-toggle';
 
@@ -43,11 +46,34 @@ export interface ConfirmResponse {
   started: boolean;
 }
 
-export type ToFlowTab = PrepareRequest | NewProjectRequest | ConfirmRequest;
+/** background → Flow tab: the result tiles in the DOM right now. */
+export interface TilesNowRequest {
+  type: typeof FLOW_TILES_NOW;
+}
+export interface TilesNowResponse {
+  cards: FlowResultCard[];
+}
+
+/** background → Flow tab: scroll the finished tile with this media id into view; answer with its centre (to open it). */
+export interface TilePointRequest {
+  type: typeof FLOW_TILE_POINT;
+  key: string;
+}
+
+/** background → Flow tab, on a picture's detail page: the full original prompt shown there. */
+export interface DetailRequest {
+  type: typeof FLOW_DETAIL;
+}
+export interface DetailResponse {
+  prompt: string | null;
+  mediaId: string | null;
+}
+
+export type ToFlowTab = PrepareRequest | NewProjectRequest | ConfirmRequest | TilesNowRequest | TilePointRequest | DetailRequest;
 
 export type BlockingEvent = Extract<RunEvent, { type: 'needsOwner' } | { type: 'limit' }>;
 
-/** Answer to PrepareRequest and NewProjectRequest. */
+/** Answer to PrepareRequest, NewProjectRequest and TilePointRequest. */
 export type PrepareResponse =
   | { kind: 'ready'; x: number; y: number }
   | { kind: 'blocked'; event: BlockingEvent }
@@ -59,7 +85,7 @@ export interface FlowEventMessage {
   event: RunEvent;
 }
 
-/** Flow tab → background: the result tiles currently in the DOM (raw; Task 8 matches them to scenes). */
+/** Flow tab → background: the result tiles currently in the DOM (raw; the coordinator matches them to scenes). */
 export interface FlowTilesMessage {
   type: typeof FLOW_TILES;
   cards: FlowResultCard[];

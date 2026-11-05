@@ -5,8 +5,12 @@ export type RunEvent =
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'restore' } // after a real browser restart: pages are gone, so submitted scenes go back in the queue
-  | { type: 'submitted'; sceneId: string }
-  | { type: 'pictures'; sceneId: string; mediaIds: string[] }
+  | { type: 'submitted'; sceneId: string; prompt?: string; at?: number }
+  | { type: 'pictures'; sceneId: string; mediaIds: string[]; cardKeys?: string[] }
+  /** Generate was pressed but Flow's start wasn't seen; the scene stays pending (and the run pauses separately). */
+  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string }
+  /** The full prompt read from a Flow card's detail view. */
+  | { type: 'detail'; cardKey: string; prompt: string }
   | { type: 'refused'; sceneId: string; message: string }
   | { type: 'failed'; sceneId: string; message: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
@@ -27,6 +31,10 @@ export interface RunState {
   sceneStates: Record<string, SceneState>;
   /** The fresh Flow project this run works in (spec §16.5). Unset until the run creates it; a new run starts without. */
   flowProjectUrl?: string;
+  /** Submission counter for result matching (Flow lists tiles in submission order). */
+  nextSeq?: number;
+  /** Full prompts read from Flow cards' detail views, by card key (verification before saving). */
+  detailPrompts?: Record<string, string>;
 }
 
 /** Every scene without a done/refused state starts (again) as pending. */
@@ -64,7 +72,11 @@ function setScene(state: RunState, sceneId: string, patch: Partial<SceneState>):
 function requeueSubmitted(state: RunState): RunState {
   const sceneStates: Record<string, SceneState> = {};
   for (const [id, s] of Object.entries(state.sceneStates)) {
-    sceneStates[id] = s.status === 'submitted' ? { ...s, status: 'pending' } : s;
+    if (s.status !== 'submitted') sceneStates[id] = s;
+    else {
+      const { submission: _gone, ...rest } = s;
+      sceneStates[id] = { ...rest, status: 'pending' };
+    }
   }
   return { ...state, inFlight: [], sceneStates };
 }
@@ -88,15 +100,34 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'submitted': {
       const current = state.sceneStates[event.sceneId];
       if (!current || current.status !== 'pending') return state;
+      const seq = (state.nextSeq ?? 0) + 1;
+      const { unconfirmed: _seen, ...rest } = current;
+      const submission = { seq, at: event.at ?? Date.now(), prompt: event.prompt ?? '' };
       return {
         ...state,
+        nextSeq: seq,
         inFlight: [...state.inFlight.filter((id) => id !== event.sceneId), event.sceneId],
-        sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, status: 'submitted' } },
+        sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'submitted', submission } },
       };
     }
+    case 'unconfirmed': {
+      const current = state.sceneStates[event.sceneId];
+      if (!current || current.status !== 'pending') return state;
+      const unconfirmed = { keysBefore: event.keysBefore, prompt: event.prompt };
+      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, unconfirmed } } };
+    }
+    case 'detail':
+      return { ...state, detailPrompts: { ...state.detailPrompts, [event.cardKey]: event.prompt } };
     case 'pictures':
       if (!state.inFlight.includes(event.sceneId)) return state; // stale
-      return settle(setScene(state, event.sceneId, { status: 'done', pictureIds: event.mediaIds, message: undefined }));
+      return settle(
+        setScene(state, event.sceneId, {
+          status: 'done',
+          pictureIds: event.mediaIds,
+          message: undefined,
+          ...(event.cardKeys ? { cardKeys: event.cardKeys } : {}),
+        }),
+      );
     case 'refused':
     case 'failed': {
       const current = state.sceneStates[event.sceneId];

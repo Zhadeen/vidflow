@@ -12,6 +12,12 @@ export interface SceneState {
   message?: string;
   pictureIds: string[];
   chosenPictureId?: string;
+  /** While generating: the order and exact prompt this scene went to Flow with (result matching). */
+  submission?: { seq: number; at: number; prompt: string };
+  /** Flow media ids of the cards saved as this scene's pictures; never matched again. */
+  cardKeys?: string[];
+  /** Generate was pressed but Flow's start wasn't seen: the finished tiles before the press, to look for it on Resume. */
+  unconfirmed?: { keysBefore: string[]; prompt: string };
 }
 export interface Project {
   id: string;
@@ -44,6 +50,9 @@ function db() {
 let media: MediaStore | undefined;
 export function setMediaStore(store: MediaStore): void {
   media = store;
+}
+export function getMediaStore(): MediaStore {
+  return mediaStore();
 }
 function mediaStore(): MediaStore {
   return (media ??= opfsMediaStore());

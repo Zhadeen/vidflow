@@ -1,12 +1,13 @@
 /// <reference types="chrome" />
-import type { StartVerb } from '../flow/driver';
+import type { FlowResultCard, StartVerb } from '../flow/driver';
+import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import { FlowBlockedError, type Point, type SubmitOptions } from '../flow/messages';
 import { flowProjectAction, isFlowHome, projectUrlOf } from '../flow/project';
 import { pillView, type PillView } from '../flow/pill';
 import { detachFlowDebugger } from '../flow/press';
 import { buildImagePrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
-import { getProject, saveProject, type Project } from '../store/projects';
+import { getMediaStore, getProject, saveProject, type Project, type SceneState } from '../store/projects';
 import {
   initRun,
   nextSceneToSubmit,
@@ -31,6 +32,12 @@ export interface FlowPort {
   press(tabId: number, x: number, y: number): Promise<void>;
   /** After pressing Generate: true once Flow cleared the box or showed a new in-progress tile (~8 s). */
   confirmStarted(tabId: number): Promise<boolean>;
+  /** The result tiles in the Flow tab's DOM right now. */
+  tiles(tabId: number): Promise<FlowResultCard[]>;
+  /** Where the finished tile with this media id is (scrolled into view), to open its detail view. */
+  tilePoint(tabId: number, key: string): Promise<Point>;
+  /** On a picture's detail page: the full prompt it shows, and the picture's media id when the page has one. */
+  readDetail(tabId: number): Promise<{ prompt: string | null; mediaId: string | null }>;
 }
 
 // Plain dark square; the extension has no icon files yet (chrome requires an iconUrl on basic notifications).
@@ -51,6 +58,7 @@ const URL_POLL_MS = 500;
 // A blocked run is always left paused, so owner-facing messages from the pump name Resume.
 const PUMP_VERB: StartVerb = 'Resume';
 export const NOT_STARTED_MESSAGE = "VidFlow pressed Generate but Flow didn't start. Check the Flow window, then press Resume.";
+const SAVE_FAILED_MESSAGE = "VidFlow couldn't save this scene's pictures. Press Try again.";
 const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one. Check the Flow window, then press Resume.";
 
 interface FlowWindow {
@@ -63,11 +71,25 @@ let state: RunState | null = null;
 let pumping = false;
 let ready: Promise<void> | null = null;
 let queue: Promise<unknown> = Promise.resolve();
+/** Everything that drives the Flow tab (submitting, opening a picture's detail) takes turns through this. */
+let tabQueue: Promise<unknown> = Promise.resolve();
+/** The latest tiles VidFlow's Flow tab reported; matched to scenes by processTiles. */
+let latestCards: FlowResultCard[] = [];
+/** True while the Flow tab is away on a picture's detail page; tile reports from there are ignored. */
+let inDetail = false;
+let matching = false;
+let matchAgain = false;
 
 /** Run `fn` after everything queued before it, so state changes and saves never interleave. */
 function enqueue<T>(fn: () => Promise<T>): Promise<T> {
   const result = queue.then(fn);
   queue = result.catch(() => undefined);
+  return result;
+}
+
+function withTab<T>(fn: () => Promise<T>): Promise<T> {
+  const result = tabQueue.then(fn);
+  tabQueue = result.catch(() => undefined);
   return result;
 }
 
@@ -226,6 +248,7 @@ async function dispatch(event: RunEvent): Promise<void> {
     await commit(reduceRun(state, normaliseEvent(event, Date.now())));
   });
   void pump();
+  void processTiles();
 }
 
 function pauseWith(message: string): Promise<void> {
@@ -271,6 +294,234 @@ async function ensureFlowProject(tabId: number, projectId: string): Promise<bool
   return true;
 }
 
+const isFinished = (c: FlowResultCard) => c.imageUrl !== null && c.progress === null && !c.key.startsWith('pending-');
+const oldestFirst = (cards: FlowResultCard[]) => [...cards].sort((a, b) => b.domIndex - a.domIndex);
+
+/** Flow card keys already saved for a scene; never matched again. */
+function claimedKeys(s: RunState): Set<string> {
+  return new Set(Object.values(s.sceneStates).flatMap((x) => x.cardKeys ?? []));
+}
+
+/**
+ * Sends one scene to Flow. Holds the tab. 'stop' ends this pump round (paused, stopped, or blocked); the scene stays
+ * pending unless Flow confirmed the start.
+ */
+async function submitScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
+  const projectId = project.id;
+  try {
+    if (!(await ensureFlowProject(tabId, projectId))) return 'stop'; // stopped meanwhile; scene stays pending
+    const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
+    if (unconfirmed) {
+      // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
+      const found = await findUnconfirmedStart(tabId, project, unconfirmed);
+      if (found === null) return 'stop';
+      if (found) {
+        await dispatch({ type: 'submitted', sceneId, prompt: unconfirmed.prompt, at: Date.now() });
+        return 'next';
+      }
+    }
+    const at = await port!.prepare(tabId, sceneId, prompt, {
+      aspect: project.aspect,
+      outputs: project.outputsPerPrompt,
+      verb: PUMP_VERB,
+    });
+    // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
+    if (!stillRunning(projectId)) return 'stop';
+    const keysBefore = (await port!.tiles(tabId)).filter(isFinished).map((c) => c.key);
+    if (!stillRunning(projectId)) return 'stop';
+    await port!.press(tabId, at.x, at.y);
+    if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
+    if (!(await port!.confirmStarted(tabId))) {
+      await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt });
+      await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
+      return 'stop';
+    }
+    await dispatch({ type: 'submitted', sceneId, prompt, at: Date.now() });
+    return 'next';
+  } catch (err) {
+    // The page needs the owner (wrong account, limit, policy dialog…): pause, and leave the scene queued.
+    if (err instanceof FlowBlockedError) {
+      await dispatch(err.event);
+      return 'stop';
+    }
+    await dispatch({
+      type: 'failed',
+      sceneId,
+      message: "VidFlow couldn't send this scene to Flow. Press Try again to send it again.",
+    });
+    return 'next';
+  }
+}
+
+/**
+ * Before pressing Generate again for a scene whose start wasn't confirmed: true when Flow has tiles for it after all
+ * (a new card whose detail prompt verifies, or an in-progress/refused tile still captioned with its prompt), beyond
+ * what in-flight scenes with the same prompt are owed. null when the run stopped meanwhile. Holds the tab.
+ */
+async function findUnconfirmedStart(
+  tabId: number,
+  project: Project,
+  u: NonNullable<SceneState['unconfirmed']>,
+): Promise<boolean | null> {
+  if (!state) return null;
+  const claimed = claimedKeys(state);
+  const before = new Set(u.keysBefore);
+  const fresh = oldestFirst(await port!.tiles(tabId)).filter((c) => !before.has(c.key) && !claimed.has(c.key));
+  const samePromptInFlight = state.inFlight.filter((id) =>
+    verifyMatch(u.prompt, state?.sceneStates[id]?.submission?.prompt ?? ''),
+  ).length;
+  const owedToOthers = samePromptInFlight * project.outputsPerPrompt;
+  let hits = 0;
+  for (const card of fresh) {
+    let ok: boolean;
+    if (isFinished(card)) {
+      const detail = await detailOf(tabId, project.id, card.key);
+      if (detail === null) return null;
+      ok = verifyMatch(u.prompt, detail);
+    } else {
+      ok = verifyMatch(u.prompt, card.caption); // still generating (or refused): the caption is the prompt
+    }
+    if (ok && ++hits > owedToOthers) return true;
+  }
+  return stillRunning(project.id) ? false : null;
+}
+
+/** A card's full prompt: known already, or read from its detail view ('' when unreadable). null if the run stopped. */
+async function detailOf(tabId: number, projectId: string, key: string): Promise<string | null> {
+  const known = state?.detailPrompts?.[key];
+  if (known !== undefined) return known;
+  const read = await readDetailFor(tabId, projectId, key);
+  if (!stillRunning(projectId)) return null;
+  await dispatch({ type: 'detail', cardKey: key, prompt: read ?? '' });
+  return read ?? '';
+}
+
+/**
+ * Opens a card's detail view in the Flow tab (trusted press on the tile), reads the full prompt, and goes back to the
+ * run's project. null when anything doesn't line up. Holds the tab.
+ */
+async function readDetailFor(tabId: number, projectId: string, key: string): Promise<string | null> {
+  const flowUrl = state?.flowProjectUrl;
+  if (!flowUrl || !port || !stillRunning(projectId)) return null;
+  const onProject = (u: string) => projectUrlOf(u) === flowUrl && !/\/edit\//.test(u);
+  inDetail = true;
+  try {
+    const now = await tabUrl(tabId);
+    if (!now || !onProject(now)) {
+      await chrome.tabs.update(tabId, { url: flowUrl });
+      if (!(await waitForUrl(tabId, onProject))) return null;
+    }
+    const at = await port.tilePoint(tabId, key);
+    if (!stillRunning(projectId)) return null;
+    await port.press(tabId, at.x, at.y);
+    if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
+    const { prompt, mediaId } = await port.readDetail(tabId);
+    if (mediaId && mediaId !== key) return null; // opened a different picture
+    return prompt;
+  } catch {
+    return null;
+  } finally {
+    try {
+      const now = await tabUrl(tabId);
+      if (!now || !onProject(now)) {
+        await chrome.tabs.update(tabId, { url: flowUrl });
+        await waitForUrl(tabId, onProject);
+      }
+    } catch {
+      // The pump puts the tab back on the project before its next press.
+    }
+    inDetail = false;
+  }
+}
+
+// ---- Matching results ----------------------------------------------------
+
+/** The Flow tab reported its tiles. Ignored while VidFlow has it on a picture's detail page. */
+export async function handleTiles(cards: FlowResultCard[]): Promise<void> {
+  await ready;
+  if (inDetail) return;
+  latestCards = cards;
+  void processTiles();
+}
+
+async function processTiles(): Promise<void> {
+  if (matching) {
+    matchAgain = true;
+    return;
+  }
+  matching = true;
+  try {
+    do {
+      matchAgain = false;
+      await withTab(matchOnce);
+    } while (matchAgain);
+  } catch {
+    // A failed pass is retried on the next tile report.
+  } finally {
+    matching = false;
+  }
+}
+
+/** Settles every in-flight scene the latest tiles complete. A picture is saved only after its detail prompt verifies. */
+async function matchOnce(): Promise<void> {
+  for (let round = 0; round < 100; round++) {
+    if (!state || state.status !== 'running' || !port) return;
+    const run = state;
+    const project = await getProject(run.projectId);
+    const tabId = (await savedFlowWindow())?.tabId;
+    if (!project || tabId === undefined) return;
+    const submissions: Submission[] = run.inFlight.flatMap((sceneId) => {
+      const s = run.sceneStates[sceneId];
+      return s?.status === 'submitted' && s.submission
+        ? [{ sceneId, prompt: s.submission.prompt, seq: s.submission.seq, submittedAt: s.submission.at }]
+        : [];
+    });
+    if (submissions.length === 0) return;
+    const cards = latestCards;
+    const details = run.detailPrompts ?? {};
+    const matches = matchResults(submissions, cards, claimedKeys(run), project.outputsPerPrompt, details);
+
+    let changed = false;
+    for (const m of matches) {
+      if (m.kind === 'refused') await dispatch({ type: 'refused', sceneId: m.sceneId, message: m.message });
+      else if (m.kind === 'unconfirmed') await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
+      else {
+        const [key] = unverifiedKeys(m, details);
+        if (key !== undefined) {
+          // Check it in Flow's detail view, then match again with what that showed.
+          const read = await readDetailFor(tabId, run.projectId, key);
+          if (!stillRunning(run.projectId)) return;
+          await dispatch({ type: 'detail', cardKey: key, prompt: read ?? '' });
+          if (read === null) await dispatch({ type: 'failed', sceneId: m.sceneId, message: UNCONFIRMED_MESSAGE });
+          changed = true;
+          break;
+        }
+        await savePictures(project, m.sceneId, m.cardKeys, cards);
+      }
+      changed = true;
+    }
+    if (!changed) return;
+  }
+}
+
+/** Fetches each verified card's picture (signed URL, extension-only) and stores it as scene-NN-option-K. */
+async function savePictures(project: Project, sceneId: string, cardKeys: string[], cards: FlowResultCard[]): Promise<void> {
+  const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
+  try {
+    const mediaIds: string[] = [];
+    for (const [i, key] of cardKeys.entries()) {
+      const url = cards.find((c) => c.key === key)?.imageUrl;
+      if (!url) throw new Error('no picture address');
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`picture fetch ${res.status}`);
+      mediaIds.push(await getMediaStore().put(project.id, `scene-${nn}-option-${i + 1}`, await res.blob()));
+    }
+    await dispatch({ type: 'pictures', sceneId, mediaIds, cardKeys });
+  } catch {
+    await dispatch({ type: 'failed', sceneId, message: SAVE_FAILED_MESSAGE });
+  }
+}
+
 async function pump(): Promise<void> {
   if (pumping) return;
   pumping = true;
@@ -293,30 +544,8 @@ async function pump(): Promise<void> {
       } catch {
         return void (await pauseWith("VidFlow couldn't open its Flow window. Check Chrome, then press Resume."));
       }
-      try {
-        if (!(await ensureFlowProject(tabId, projectId))) return; // stopped meanwhile; scene stays pending
-        const at = await port.prepare(tabId, sceneId, buildImagePrompt(scene, projectStyle(project), project.character), {
-          aspect: project.aspect,
-          outputs: project.outputsPerPrompt,
-          verb: PUMP_VERB,
-        });
-        // Preparing can take ~40 s: if the owner paused (or the run ended) meanwhile, don't press; the scene stays pending.
-        if (!stillRunning(projectId)) return;
-        await port.press(tabId, at.x, at.y);
-        if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
-        if (!(await port.confirmStarted(tabId))) {
-          return void (await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE }));
-        }
-        await dispatch({ type: 'submitted', sceneId });
-      } catch (err) {
-        // The page needs the owner (wrong account, limit, policy dialog…): pause, and leave the scene queued.
-        if (err instanceof FlowBlockedError) return void (await dispatch(err.event));
-        await dispatch({
-          type: 'failed',
-          sceneId,
-          message: "VidFlow couldn't send this scene to Flow. Press Try again to send it again.",
-        });
-      }
+      const prompt = buildImagePrompt(scene, projectStyle(project), project.character);
+      if ((await withTab(() => submitScene(tabId, project, sceneId, prompt))) === 'stop') return;
       await sleep(paceMs());
     }
   } finally {

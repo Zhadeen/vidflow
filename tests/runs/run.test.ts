@@ -155,3 +155,34 @@ describe('limit helpers', () => {
     expect(normaliseEvent({ type: 'pause' }, now)).toEqual({ type: 'pause' });
   });
 });
+
+describe('result matching state', () => {
+  it('numbers submissions in order and keeps the submitted prompt', () => {
+    let s = apply(initRun(project(3)), { type: 'start' });
+    s = apply(s, { type: 'submitted', sceneId: 'scene-02', prompt: 'P2', at: 10 }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 20 });
+    expect(s.sceneStates['scene-02']!.submission).toEqual({ seq: 1, at: 10, prompt: 'P2' });
+    expect(s.sceneStates['scene-01']!.submission).toEqual({ seq: 2, at: 20, prompt: 'P1' });
+  });
+
+  it('records an unconfirmed start on the still-pending scene, and clears it once submitted', () => {
+    let s = apply(initRun(project(2)), { type: 'start' });
+    s = reduceRun(s, { type: 'unconfirmed', sceneId: 'scene-01', keysBefore: ['k1'], prompt: 'P1' });
+    expect(s.sceneStates['scene-01']).toMatchObject({ status: 'pending', unconfirmed: { keysBefore: ['k1'], prompt: 'P1' } });
+    s = reduceRun(s, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 1 });
+    expect(s.sceneStates['scene-01']!.unconfirmed).toBeUndefined();
+  });
+
+  it("keeps detail prompts and the scene's Flow card keys", () => {
+    let s = apply(initRun(project(1)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 1 });
+    s = reduceRun(s, { type: 'detail', cardKey: 'k1', prompt: 'P1' });
+    expect(s.detailPrompts).toEqual({ k1: 'P1' });
+    s = reduceRun(s, { type: 'pictures', sceneId: 'scene-01', mediaIds: ['m1'], cardKeys: ['k1'] });
+    expect(s.sceneStates['scene-01']).toMatchObject({ status: 'done', pictureIds: ['m1'], cardKeys: ['k1'] });
+  });
+
+  it('a requeued scene loses its old submission number', () => {
+    let s = apply(initRun(project(1)), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 1 });
+    s = reduceRun(s, { type: 'restore' });
+    expect(s.sceneStates['scene-01']!.submission).toBeUndefined();
+  });
+});
