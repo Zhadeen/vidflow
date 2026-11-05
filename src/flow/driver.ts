@@ -297,10 +297,14 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     newProjectButton() {
+      // Flow's icon ligature runs into the label ("addNew project"), so no word boundary before "new".
       const button = [...doc.querySelectorAll('button, [role="button"], a')].find((b) =>
-        /\bnew project\b/i.test(squash(b.textContent)),
+        /new\s*project\b/i.test(squash(b.textContent)),
       );
-      return button ? centre(button) : null;
+      if (!button) return null;
+      // The button sits below the fold on Flow's home page; bring it on screen before measuring.
+      button.scrollIntoView?.({ block: 'center' });
+      return centre(button);
     },
 
     setImageMode() {
