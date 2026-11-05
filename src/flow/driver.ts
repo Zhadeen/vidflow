@@ -373,6 +373,16 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     }
   }
 
+  /** Like until(), but null on a timeout; a notice or billing dialog still stops it at once (stopForDialog). */
+  async function untilWatching<T>(probe: () => T | null | false | undefined, timeoutMs: number): Promise<T | null> {
+    try {
+      return await until(() => (stopForDialog(), probe()), timeoutMs, 'timed out');
+    } catch (err) {
+      if (err instanceof FlowBlockedError) throw err;
+      return null;
+    }
+  }
+
   const overlayRoot = (): ParentNode => q(SEL.overlay) ?? doc;
   const overlayButton = (text: string) =>
     [...overlayRoot().querySelectorAll<HTMLButtonElement>('button')].find(
@@ -427,7 +437,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     await openPicker();
     // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
-    await until(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS, 'empty').catch(() => undefined);
+    await untilWatching(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS);
     // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file window: a
     // cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the page's own
     // events, so this works from the content script's isolated world. The input it clicked is the one Flow listens to;
@@ -462,11 +472,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     } finally {
       if (guarded) doc.removeEventListener('click', noFileWindow, true);
     }
-    try {
-      return await until(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS, 'no tile');
-    } catch {
-      return null; // the coordinator also recognises the tile by its file-name caption
-    }
+    // null when the tile doesn't show: the coordinator also recognises it by its file-name caption.
+    return untilWatching(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS);
   }
 
   async function attachReference(name: string): Promise<void> {

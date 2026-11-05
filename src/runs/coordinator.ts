@@ -475,6 +475,12 @@ function stillCollecting(projectId: string): boolean {
 
 export const ACCEPTED_NOTICE_TEXT = "Accepted Flow's notice";
 
+/**
+ * Consecutive Generate presses per scene that Flow answered with its notice. The first is accepted; a second in a row
+ * pauses (like pastNotice's one retry), so a notice that keeps coming back can't press Generate forever.
+ */
+const postPressNotices = new Map<string, number>();
+
 function logAcceptedNotice(projectId: string, sceneId: string | null): void {
   logActivity({ at: Date.now(), projectId, sceneId, text: ACCEPTED_NOTICE_TEXT }).catch((e) =>
     console.warn('[VidFlow] activity write failed', e),
@@ -615,6 +621,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
         return 'next';
       }
       if (found) {
+        postPressNotices.delete(sceneId); // Flow did start it after all
         await dispatch({ type: 'submitted', sceneId, prompt: unconfirmed.prompt, at: Date.now() });
         return 'next';
       }
@@ -644,15 +651,20 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
     const started = await port!.confirmStarted(tabId);
     if (started === 'notice') {
-      // Flow answered Generate with its usage notice. Accepted: the scene stays unconfirmed, so the next round looks
-      // for its tiles before pressing again (findUnconfirmedStart). Otherwise the pause names the notice.
-      if ((await getAcceptNotices()) && (await port!.acceptNotice(tabId).catch(() => null)) === true) {
+      // Flow answered Generate with its usage notice. Accepted (once in a row per scene): the scene stays unconfirmed,
+      // so the next round looks for its tiles before pressing again (findUnconfirmedStart). Otherwise the pause names
+      // the notice.
+      const rounds = (postPressNotices.get(sceneId) ?? 0) + 1;
+      postPressNotices.set(sceneId, rounds);
+      if (rounds === 1 && (await getAcceptNotices()) && (await port!.acceptNotice(tabId).catch(() => null)) === true) {
         logAcceptedNotice(projectId, sceneId);
         return 'next';
       }
+      postPressNotices.delete(sceneId); // after the owner's Resume, the next notice gets its one accept again
       await dispatch({ type: 'needsOwner', reason: 'policy-dialog', message: policyDialogMessage(PUMP_VERB) });
       return 'stop';
     }
+    postPressNotices.delete(sceneId); // started (or a different failure): the next notice is a new one
     if (!started) {
       await dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message: NOT_STARTED_MESSAGE });
       return 'stop';
@@ -1009,6 +1021,7 @@ async function startBlocker(projectId: string): Promise<string | null> {
 
 export async function startRun(projectId: string, retrySceneId?: string): Promise<void> {
   await ready;
+  postPressNotices.clear();
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
   await enqueue(async () => {

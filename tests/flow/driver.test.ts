@@ -656,6 +656,37 @@ describe('FlowDriver hero reference', () => {
     expect((err as FlowBlockedError).event).toEqual({ type: 'needsOwner', reason: 'policy-dialog', message: 'Flow is showing a message about its usage policy or billing. Read it in the Flow window, then press Resume.' });
   });
 
+  it('a notice while the asset list loads stops at once, before anything is uploaded', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker({ assetsLoadMs: 1_000 });
+    setTimeout(() => document.body.insertAdjacentHTML('beforeend', NOTICE_HTML), 20);
+    const started = Date.now();
+    const err = await createFlowDriver(document, { pollMs: 5, timeoutMs: 3_000 }).uploadReference(png()).catch((e: unknown) => e);
+    expect((err as FlowBlockedError).notice).toBe(true);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(picker.uploaded).toEqual([]);
+  });
+
+  it('a notice while waiting for the uploaded tile stops as a notice instead of answering no tile', async () => {
+    load('prompt-bar.html');
+    fakePicker();
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 3_000 });
+    const tiles = () => document.querySelectorAll('flow-grid-tile-container');
+    const observer = new MutationObserver(() => {
+      // As soon as the picker closes after the upload, hide the tile and show a notice.
+      if (!document.querySelector('[role="listbox"]') && !document.querySelector('.notice')) {
+        tiles().forEach((t) => t.remove());
+        document.body.insertAdjacentHTML('beforeend', NOTICE_HTML);
+      }
+    });
+    const upload = d.uploadReference(png()).catch((e: unknown) => e);
+    await tick(1);
+    observer.observe(document.body, { subtree: true, childList: true });
+    const err = await upload;
+    observer.disconnect();
+    expect((err as FlowBlockedError).notice).toBe(true);
+  });
+
   it('a usage notice blocks attaching the reference as a notice; a billing dialog never counts as one', async () => {
     load('prompt-bar.html');
     fakePicker();

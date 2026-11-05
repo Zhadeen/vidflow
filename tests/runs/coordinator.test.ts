@@ -1356,6 +1356,18 @@ describe("Flow's notices (review fixes)", () => {
     expect(activityOf(chromeMock, project.id).some((t) => t.includes("didn't start"))).toBe(false);
   });
 
+  it('a persistent notice after Generate is accepted once, then pauses; Generate pressed at most twice', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    const port = fakePort({ confirmStarted: vi.fn(async (): Promise<boolean | 'notice'> => 'notice') });
+    coordinator.setFlowPort(port);
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused');
+    expect(coordinator.getRunState()!.pauseReason).toBe(POLICY_MESSAGE);
+    expect(port.acceptNotice).toHaveBeenCalledTimes(1);
+    const generatePresses = vi.mocked(port.press).mock.calls.filter(([, x]) => x === 120);
+    expect(generatePresses).toHaveLength(2);
+  });
+
   it('a notice after Generate that cannot be accepted pauses with the usage-policy message', async () => {
     const { coordinator, project, fakePort } = await setup();
     const port = fakePort({ confirmStarted: vi.fn(async (): Promise<boolean | 'notice'> => 'notice'), acceptNotice: vi.fn(async () => false) });
