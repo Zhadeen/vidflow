@@ -328,12 +328,15 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   };
   const chips = () => doc.querySelectorAll(SEL.ingredientChip).length;
 
+  /** The open picker: its asset list, or (in a brand-new Flow project, which says "No assets found.") its Upload button. */
+  const pickerOpen = () => q(SEL.assetList) ?? overlayButton('Upload media');
+
   async function openPicker(): Promise<void> {
-    if (q(SEL.assetList)) return;
+    if (pickerOpen()) return;
     const trigger = q(SEL.ingredients);
     if (!trigger) throw blocked();
     trigger.click();
-    await untilOrBlocked(() => q(SEL.assetList), opts.timeoutMs ?? PICKER_TIMEOUT_MS);
+    await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS);
   }
 
   /** The tile Flow adds to the grid for an uploaded picture carries its file name as caption. */
@@ -345,13 +348,15 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     return null;
   }
 
-  /** Closes the picker (Escape, which Flow's overlay listens for on the document); carries on if it stays open. */
+  /** Closes the picker; carries on if it stays open. */
   async function closePicker(): Promise<void> {
-    if (!q(SEL.assetList)) return;
-    const target = q(SEL.assetList) ?? doc;
-    target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
-    await until(() => !q(SEL.assetList), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+    // Flow's overlay closes on an Escape that comes from inside it (live, 5 Nov 2026); one sent to the document does nothing.
+    const inside = pickerOpen();
+    if (!inside) return;
+    inside.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+    await until(() => !pickerOpen(), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
   }
+
 
   async function uploadReference(file: File): Promise<string | null> {
     const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;

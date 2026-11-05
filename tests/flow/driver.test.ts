@@ -457,6 +457,8 @@ function fakePicker(
     ignoresEscape?: boolean;
     /** Flow fills the asset list this long after the picker opens. */
     assetsLoadMs?: number;
+    /** A brand-new Flow project: the picker shows "No assets found." and has no asset list until something is uploaded. */
+    emptyProject?: boolean;
   } = {},
 ) {
   vi.stubGlobal('DataTransfer', FakeDataTransfer);
@@ -470,7 +472,14 @@ function fakePicker(
   const uploading = new Set<string>();
 
   function render() {
-    const list = overlay.querySelector('[role="listbox"]');
+    let list = overlay.querySelector('[role="listbox"]');
+    if (!list && opts.emptyProject && assets.length > 0 && overlay.querySelector('.upload-media')) {
+      overlay.querySelector('.no-assets')?.remove();
+      list = document.createElement('div');
+      list.setAttribute('role', 'listbox');
+      list.setAttribute('aria-label', 'Asset list');
+      overlay.firstElementChild!.prepend(list);
+    }
     if (!list) return;
     list.querySelectorAll('[data-uploaded]').forEach((o) => o.remove());
     for (const name of assets) {
@@ -485,14 +494,19 @@ function fakePicker(
     }
   }
 
+  // Live Flow (5 Nov 2026): Escape closes the picker only when it comes from inside the overlay, not from the document.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !opts.ignoresEscape) overlay.innerHTML = '';
+    if (e.key === 'Escape' && !opts.ignoresEscape && e.target instanceof Node && overlay.contains(e.target)) overlay.innerHTML = '';
   });
 
   function open() {
     overlay.innerHTML = fixture('ingredients-picker.html');
     selected = null;
-    if (opts.assetsLoadMs) {
+    if (opts.emptyProject && assets.length === 0) {
+      const list = overlay.querySelector('[role="listbox"]')!;
+      list.insertAdjacentHTML('afterend', '<div class="no-assets">No assets found.</div>');
+      list.remove();
+    } else if (opts.assetsLoadMs) {
       const list = overlay.querySelector('[role="listbox"]')!;
       const loaded = list.innerHTML;
       list.innerHTML = '';
@@ -541,7 +555,7 @@ function fakePicker(
     });
   }
 
-  $(SEL.ingredients).addEventListener('click', () => (overlay.querySelector('[role="listbox"]') ? (overlay.innerHTML = '') : open()));
+  $(SEL.ingredients).addEventListener('click', () => (overlay.querySelector('.upload-media') ? (overlay.innerHTML = '') : open()));
   return { uploaded, fileClicks, assets, chips: () => document.querySelectorAll(SEL.ingredientChip).length };
 }
 
@@ -549,6 +563,16 @@ describe('FlowDriver hero reference', () => {
   afterEach(() => vi.unstubAllGlobals());
   const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
   const png = () => new File([new Uint8Array([137, 80, 78, 71])], REFERENCE, { type: 'image/png' });
+
+  it('uploads into a brand-new Flow project whose picker says "No assets found."', async () => {
+    // Live Flow (5 Nov 2026): a fresh project's picker has no asset list at all until the first upload.
+    load('prompt-bar.html');
+    const picker = fakePicker({ emptyProject: true });
+    await expect(driver().uploadReference(png())).resolves.toBe('ref-media-1');
+    expect(picker.uploaded.map((f) => f.name)).toEqual([REFERENCE]);
+    expect(picker.fileClicks).toEqual([false]);
+    expect(document.querySelector('.cdk-overlay-container')!.innerHTML).toBe(''); // the picker was closed
+  });
 
   it('uploads the reference through the picker without opening the file window, and reads its tile media id', async () => {
     load('prompt-bar.html');
