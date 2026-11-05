@@ -2,3 +2,5 @@
 node_modules
 .wxt
 .superpowers/
+spikes/export/out.mp4
+spikes/export/node_modules
