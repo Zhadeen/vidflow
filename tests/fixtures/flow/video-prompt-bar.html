@@ -1,0 +1,56 @@
+<!--
+  Hand-built from spike S8 (docs/superpowers/spikes/s8-flow-clips.md, live 5 Nov 2026): the project page's prompt bar
+  after Video · Frames. Start and End are button.empty-chip with a swap button between them; the settings popover's
+  radios carry their labels in .toggle-text next to a mat-icon; the cost sits in a span inside .credit-cost-label.
+-->
+<header>
+  <button aria-label="Account details">PRO</button>
+  <button aria-label="Google Account: Owner  &#10;(owner@example.com), Google membership"></button>
+</header>
+<flow-base-prompt-box>
+  <div class="frame-slots">
+    <button type="button" class="empty-chip"><mat-icon aria-hidden="true">add</mat-icon><span>Start</span></button>
+    <button type="button" aria-label="Swap first and last frames"><mat-icon aria-hidden="true">swap_horiz</mat-icon></button>
+    <button type="button" class="empty-chip"><mat-icon aria-hidden="true">add</mat-icon><span>End</span></button>
+  </div>
+  <flow-rich-text-editor>
+    <span aria-hidden="true">What do you want to create?</span>
+    <div><div role="textbox" aria-multiline="true" aria-label="What do you want to create?" contenteditable="true" translate="no"><p><br></p></div></div>
+  </flow-rich-text-editor>
+  <button type="button" aria-haspopup="true" aria-label="Add ingredients to the prompt box">add</button>
+  <button type="button" class="agent-mode-chip" aria-pressed="false">Agent</button>
+  <button type="button" aria-label="Settings trigger">Video · 720p · 4s<br>crop_16_9<br>x2</button>
+  <button type="submit" aria-label="Start generation" disabled>arrow_forward</button>
+</flow-base-prompt-box>
+<div class="settings-popover">
+  <div role="radiogroup">
+    <button role="radio" aria-checked="false"><mat-icon aria-hidden="true">image</mat-icon><span class="toggle-text">Image</span></button>
+    <button role="radio" aria-checked="true"><mat-icon aria-hidden="true">videocam</mat-icon><span class="toggle-text">Video</span></button>
+  </div>
+  <div role="radiogroup">
+    <button role="radio" aria-checked="true"><span class="toggle-text">Ingredients</span></button>
+    <button role="radio" aria-checked="false"><span class="toggle-text">Frames</span></button>
+  </div>
+  <div role="radiogroup">
+    <button role="radio" aria-checked="true"><mat-icon aria-hidden="true">crop_16_9</mat-icon><span class="toggle-text">16:9</span></button>
+    <button role="radio" aria-checked="false"><mat-icon aria-hidden="true">crop_9_16</mat-icon><span class="toggle-text">9:16</span></button>
+  </div>
+  <div role="radiogroup">
+    <button role="radio" aria-checked="false"><span class="toggle-text">360p</span></button>
+    <button role="radio" aria-checked="true"><span class="toggle-text">720p</span></button>
+  </div>
+  <div role="radiogroup">
+    <button role="radio" aria-checked="true"><span class="toggle-text">4s</span></button>
+    <button role="radio" aria-checked="false"><span class="toggle-text">6s</span></button>
+    <button role="radio" aria-checked="false"><span class="toggle-text">8s</span></button>
+    <button role="radio" aria-checked="false"><span class="toggle-text">10s</span></button>
+  </div>
+  <div role="radiogroup">
+    <button role="radio" aria-checked="false"><span class="toggle-text">x1</span></button>
+    <button role="radio" aria-checked="true"><span class="toggle-text">x2</span></button>
+    <button role="radio" aria-checked="false"><span class="toggle-text">x3</span></button>
+    <button role="radio" aria-checked="false"><span class="toggle-text">x4</span></button>
+  </div>
+  <button>Omni 1.1 Flash</button>
+  <div class="credit-cost-label"><span>Generating will use 14 credits</span></div>
+</div>

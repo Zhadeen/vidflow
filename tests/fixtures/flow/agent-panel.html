@@ -1,0 +1,10 @@
+<!--
+  NOT captured live. Spikes S6/S7 recorded only that Agent mode (.agent-mode-chip, aria-pressed) opens a chat panel
+  beside the grid, that pictures are attached through the same "Add ingredients" picker (option → Add to prompt), and
+  that the panel must be closed afterwards. This fixture stands in for that panel using the selectors in
+  SEL.agentPanel / SEL.agentReply / SEL.agentPanelClose; confirm them in the Plan 3 live check (Task 7).
+-->
+<flow-agent-panel class="agent-panel" aria-label="Agent">
+  <header><span>Agent</span><button aria-label="Close agent panel"><mat-icon>close</mat-icon></button></header>
+  <div class="agent-messages"></div>
+</flow-agent-panel>

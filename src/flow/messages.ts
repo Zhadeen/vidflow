@@ -1,8 +1,9 @@
 import type { StepTarget } from '../runs/activity';
 import type { CheckRow } from '../runs/checks';
 import type { RunEvent, RunState } from '../runs/run';
+import type { ClipLength } from '../motion/timing';
 import type { AspectRatio } from '../store/projects';
-import type { FlowResultCard, StartVerb } from './driver';
+import type { ClipFile, CreditBalance, FlowResultCard, StartVerb, VideoDetailRead } from './driver';
 import type { PillView } from './pill';
 
 /** Messages between the background and the Flow helper (content script). */
@@ -23,10 +24,29 @@ export const FLOW_ACCEPT_NOTICE = 'flow/accept-notice';
 export const FLOW_CHECKS = 'flow/checks';
 export const FLOW_SHOW_ME = 'flow/show-me';
 export const FLOW_TEST_PROMPT = 'flow/test-prompt';
+// Plan 3: clips (spike S8) and Agent questions (spikes S6/S7).
+export const FLOW_PREPARE_CLIP = 'flow/prepare-clip';
+export const FLOW_UPLOAD_START_FRAME = 'flow/upload-start-frame';
+export const FLOW_GENERATE_COST = 'flow/generate-cost';
+export const FLOW_CREDIT_BALANCE = 'flow/credit-balance';
+export const FLOW_VIDEO_TILES_NOW = 'flow/video-tiles-now';
+export const FLOW_VIDEO_DETAIL = 'flow/video-detail';
+export const FLOW_CLIP_FILE = 'flow/clip-file';
+export const FLOW_AGENT_PREPARE = 'flow/agent-prepare';
+export const FLOW_AGENT_REPLY = 'flow/agent-reply';
+export const FLOW_AGENT_FINISH = 'flow/agent-finish';
 
 /** Said whenever VidFlow can't upload or attach the hero reference: a prompt that names it is never sent without it. */
 export const REFERENCE_ATTACH_MESSAGE =
   "VidFlow couldn't attach the hero reference in Flow. Check the Flow window, then press Resume.";
+
+/** Said whenever VidFlow can't upload or attach a clip's start picture: a clip is never made without it. */
+export const START_FRAME_MESSAGE =
+  "VidFlow couldn't attach the start picture in Flow. Check the Flow window, then press Resume.";
+
+/** Said when VidFlow can't put a question (with its pictures) to Flow's Agent. */
+export const AGENT_ASK_MESSAGE =
+  "VidFlow couldn't ask Flow's Agent about the pictures. Check the Flow window, then press Resume.";
 
 /** Said when a picture is left in Flow's prompt bar for a prompt that doesn't use one, and VidFlow can't take it out. */
 export const STRAY_INGREDIENT_MESSAGE =
@@ -179,6 +199,100 @@ export interface TestPromptResponse {
   message: string;
 }
 
+// ---- Clips (spike S8) -------------------------------------------------------------
+
+/** What a clip's Generate needs: Video · Frames · aspect · 720p · length · x1, and its start frame attached. */
+export interface ClipOptions {
+  aspect: AspectRatio;
+  length: ClipLength;
+  /** The start picture already uploaded to this Flow project, by its asset name (vidflow-sNN.png). */
+  startFrame: string;
+  verb?: StartVerb;
+}
+
+/** background → Flow tab: set Flow up for one clip and type its prompt; answered with a PrepareResponse. */
+export interface PrepareClipRequest extends ClipOptions {
+  type: typeof FLOW_PREPARE_CLIP;
+  prompt: string;
+}
+
+/** background → Flow tab: upload a clip's start picture through the Start slot's picker (bytes as base64). */
+export interface UploadStartFrameRequest {
+  type: typeof FLOW_UPLOAD_START_FRAME;
+  name: string;
+  mimeType: string;
+  data: string;
+}
+export type UploadStartFrameResponse =
+  | { kind: 'done' }
+  | { kind: 'blocked'; event: BlockingEvent; notice?: true }
+  | { kind: 'error'; message: string };
+
+/** background → Flow tab: "Generating will use N credits" from Flow's settings popover. */
+export interface GenerateCostRequest {
+  type: typeof FLOW_GENERATE_COST;
+}
+export interface GenerateCostResponse {
+  cost: number | null;
+}
+
+/** background → Flow tab (project grid page): open Account details, read the balance, close it again. */
+export interface CreditBalanceRequest {
+  type: typeof FLOW_CREDIT_BALANCE;
+}
+export type CreditBalanceResponse =
+  | { kind: 'done'; balance: CreditBalance | null }
+  | { kind: 'blocked'; event: BlockingEvent; notice?: true }
+  | { kind: 'error'; message: string };
+
+/** background → Flow tab: the grid's tiles including finished clips (which carry no media id). */
+export interface VideoTilesNowRequest {
+  type: typeof FLOW_VIDEO_TILES_NOW;
+}
+
+/** background → Flow tab, on a clip's page: its prompt and edit id. */
+export interface VideoDetailRequest {
+  type: typeof FLOW_VIDEO_DETAIL;
+}
+export type VideoDetailResponse = VideoDetailRead;
+
+/** background → Flow tab, on a clip's page: Download media → 720p Original size; the signed file URL Flow fetched. */
+export interface ClipFileRequest {
+  type: typeof FLOW_CLIP_FILE;
+  timeoutMs: number;
+}
+export interface ClipFileResponse {
+  file: ClipFile | null;
+}
+
+// ---- Agent questions (spikes S6/S7) ----------------------------------------------------
+
+/** background → Flow tab: Agent mode on, attach `names` in order, type the question; answered with where send is. */
+export interface AgentPrepareRequest {
+  type: typeof FLOW_AGENT_PREPARE;
+  names: string[];
+  question: string;
+}
+
+/** background → Flow tab, after pressing send: wait up to waitMs for the reply (asked again until the run's timeout). */
+export interface AgentReplyRequest {
+  type: typeof FLOW_AGENT_REPLY;
+  waitMs: number;
+}
+export type AgentReplyResponse =
+  | { kind: 'reply'; text: string }
+  | { kind: 'waiting' }
+  | { kind: 'blocked'; event: BlockingEvent; notice?: true }
+  | { kind: 'error'; message: string };
+
+/** background → Flow tab: close the Agent panel and turn Agent mode off (after every question, also on stop). */
+export interface AgentFinishRequest {
+  type: typeof FLOW_AGENT_FINISH;
+}
+export interface AgentFinishResponse {
+  done: boolean;
+}
+
 const CHUNK = 0x8000;
 
 /** Bytes → base64, a chunk at a time (spreading 10 MB into one String.fromCharCode call overflows the stack). */
@@ -206,7 +320,17 @@ export type ToFlowTab =
   | AcceptNoticeRequest
   | ChecksRequest
   | ShowMeRequest
-  | TestPromptRequest;
+  | TestPromptRequest
+  | PrepareClipRequest
+  | UploadStartFrameRequest
+  | GenerateCostRequest
+  | CreditBalanceRequest
+  | VideoTilesNowRequest
+  | VideoDetailRequest
+  | ClipFileRequest
+  | AgentPrepareRequest
+  | AgentReplyRequest
+  | AgentFinishRequest;
 
 export type BlockingEvent = Extract<RunEvent, { type: 'needsOwner' } | { type: 'limit' }>;
 

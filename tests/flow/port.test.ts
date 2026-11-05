@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
+import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_AGENT_FINISH, FLOW_AGENT_PREPARE, FLOW_AGENT_REPLY, FLOW_CLIP_FILE, FLOW_CREDIT_BALANCE, FLOW_GENERATE_COST, FLOW_PREPARE_CLIP, FLOW_UPLOAD_START_FRAME, FLOW_VIDEO_DETAIL, FLOW_VIDEO_TILES_NOW, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
 import { createFlowPort } from '../../src/flow/port';
 
 function setup(responses: unknown[], zoom = 1) {
@@ -166,5 +166,136 @@ describe('Flow port', () => {
     expect(await port.confirmStarted(7)).toBe('billing');
     expect(await port.acceptNotice(7)).toBe('gone');
     expect(await port.acceptNotice(7)).toBe(false);
+  });
+});
+
+describe('Flow port: clips and Agent questions', () => {
+  it('asks the Flow tab to set up a clip and returns where Generate is, without pressing', async () => {
+    const { send, press, port } = setup([{ kind: 'ready', x: 120, y: 620 }]);
+    const at = await port.prepareClip(7, 'The stickman waves', { aspect: '16:9', length: 6, startFrame: 'vidflow-s01.png', verb: 'Resume' });
+    expect(at).toEqual({ x: 120, y: 620 });
+    expect(send).toHaveBeenCalledWith(7, {
+      type: FLOW_PREPARE_CLIP,
+      prompt: 'The stickman waves',
+      aspect: '16:9',
+      length: 6,
+      startFrame: 'vidflow-s01.png',
+      verb: 'Resume',
+    });
+    expect(press).not.toHaveBeenCalled();
+  });
+
+  it("uploads the start frame's bytes; blocks and errors come back as such", async () => {
+    const event = { type: 'needsOwner', reason: 'page-not-recognised', message: 'Check Flow' } as const;
+    const { send, port } = setup([{ kind: 'done' }, { kind: 'blocked', event }, { kind: 'error', message: 'gone' }]);
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    await port.uploadStartFrame(7, 'vidflow-s01.png', new Blob([bytes], { type: 'image/png' }));
+    const [, message] = send.mock.calls[0]! as [number, { type: string; name: string; mimeType: string; data: string }];
+    expect(message).toMatchObject({ type: FLOW_UPLOAD_START_FRAME, name: 'vidflow-s01.png', mimeType: 'image/png' });
+    expect(decodeBytes(message.data)).toEqual(bytes);
+    await expect(port.uploadStartFrame(7, 'x.png', new Blob(['x']))).rejects.toBeInstanceOf(FlowBlockedError);
+    await expect(port.uploadStartFrame(7, 'x.png', new Blob(['x']))).rejects.toThrow('gone');
+  });
+
+  it('reads the Generate cost and the credit balance', async () => {
+    const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' } as const;
+    const { send, port } = setup([
+      { cost: 7 },
+      undefined,
+      { kind: 'done', balance: { credits: 1043, resets: '13 Nov at 13:50' } },
+      { kind: 'done', balance: null },
+      { kind: 'blocked', event },
+    ]);
+    expect(await port.generateCost(7)).toBe(7);
+    expect(await port.generateCost(7)).toBeNull();
+    expect(await port.creditBalance(7)).toEqual({ credits: 1043, resets: '13 Nov at 13:50' });
+    expect(await port.creditBalance(7)).toBeNull();
+    await expect(port.creditBalance(7)).rejects.toBeInstanceOf(FlowBlockedError);
+    expect(send.mock.calls.map(([, m]) => (m as { type: string }).type)).toEqual([
+      FLOW_GENERATE_COST,
+      FLOW_GENERATE_COST,
+      FLOW_CREDIT_BALANCE,
+      FLOW_CREDIT_BALANCE,
+      FLOW_CREDIT_BALANCE,
+    ]);
+  });
+
+  it("reads video tiles, a clip's page and its file URL", async () => {
+    const card = { key: 'video-1', caption: 'Stickman waving', imageUrl: 'u', progress: null, refusal: null, domIndex: 1, video: true };
+    const file = { url: 'https://flow-content.google/video/1fc?Expires=1', mediaId: '1fc' };
+    const { send, port } = setup([{ cards: [card] }, { prompt: 'p', editId: 'e1' }, undefined, { file }, { file: null }]);
+    expect(await port.videoTiles(7)).toEqual([card]);
+    expect(await port.readVideoDetail(7)).toEqual({ prompt: 'p', editId: 'e1' });
+    expect(await port.readVideoDetail(7)).toEqual({ prompt: null, editId: null });
+    expect(await port.clipFile(7, 15_000)).toEqual(file);
+    expect(await port.clipFile(7)).toBeNull();
+    expect(send.mock.calls.map(([, m]) => m)).toEqual([
+      { type: FLOW_VIDEO_TILES_NOW },
+      { type: FLOW_VIDEO_DETAIL },
+      { type: FLOW_VIDEO_DETAIL },
+      { type: FLOW_CLIP_FILE, timeoutMs: 15_000 },
+      { type: FLOW_CLIP_FILE, timeoutMs: 20_000 },
+    ]);
+  });
+
+  it('asks the Agent: prepares, presses send itself, polls for the reply, and always finishes', async () => {
+    const { send, press, port } = setup([
+      { kind: 'ready', x: 110, y: 610 },
+      { kind: 'waiting' },
+      { kind: 'reply', text: '2 — the shoulder bag' },
+      { done: true },
+    ]);
+    const reply = await port.askAgent(7, ['a.png', 'b.png'], 'Which one? 1 or 2', 90_000);
+    expect(reply).toBe('2 — the shoulder bag');
+    expect(press).toHaveBeenCalledWith(7, 110, 610);
+    const messages = send.mock.calls.map(([, m]) => m as { type: string; waitMs?: number });
+    expect(messages[0]).toEqual({ type: FLOW_AGENT_PREPARE, names: ['a.png', 'b.png'], question: 'Which one? 1 or 2' });
+    expect(messages[1]!.type).toBe(FLOW_AGENT_REPLY);
+    expect(messages[1]!.waitMs).toBeLessThanOrEqual(10_000);
+    expect(messages.at(-1)).toEqual({ type: FLOW_AGENT_FINISH });
+  });
+
+  it('gives null when the Agent does not answer in time, and still finishes', async () => {
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const { send, port } = setup([{ kind: 'ready', x: 1, y: 2 }, { kind: 'waiting' }, { kind: 'waiting' }, { done: true }]);
+    send.mockImplementation(async (_tab: number, message: unknown) => {
+      const m = message as { type: string; waitMs?: number };
+      if (m.type === FLOW_AGENT_PREPARE) return { kind: 'ready', x: 1, y: 2 };
+      if (m.type === FLOW_AGENT_REPLY) {
+        now += m.waitMs!;
+        return { kind: 'waiting' };
+      }
+      return { done: true };
+    });
+    expect(await port.askAgent(7, ['a.png', 'b.png'], 'q', 25_000)).toBeNull();
+    expect(send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
+    vi.restoreAllMocks();
+  });
+
+  it('finishes the Agent when pressing send or reading fails, and passes a block on', async () => {
+    const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' } as const;
+    const failing = setup([{ kind: 'ready', x: 1, y: 2 }, { done: true }]);
+    failing.press.mockRejectedValueOnce(new Error('debugger detached'));
+    await expect(failing.port.askAgent(7, ['a.png'], 'q', 1_000)).rejects.toThrow('debugger detached');
+    expect(failing.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
+    const blocked = setup([{ kind: 'ready', x: 1, y: 2 }, { kind: 'blocked', event, notice: true }, { done: true }]);
+    const err = await blocked.port.askAgent(7, ['a.png'], 'q', 1_000).catch((e: unknown) => e);
+    expect((err as FlowBlockedError).notice).toBe(true);
+    expect(blocked.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
+  });
+
+  it('a blocked prepare is passed on (the tab already finished the Agent)', async () => {
+    const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' } as const;
+    const { press, port } = setup([{ kind: 'blocked', event }, { done: true }]);
+    await expect(port.askAgent(7, ['a.png'], 'q', 1_000)).rejects.toBeInstanceOf(FlowBlockedError);
+    expect(press).not.toHaveBeenCalled();
+  });
+
+  it('finishAgent answers whether the panel is closed and Agent mode off; never throws', async () => {
+    const { port } = setup([{ done: true }, { done: false }, new Error('boom')]);
+    expect(await port.finishAgent(7)).toBe(true);
+    expect(await port.finishAgent(7)).toBe(false);
+    expect(await port.finishAgent(7)).toBe(false);
   });
 });

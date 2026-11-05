@@ -26,7 +26,29 @@ import {
   FLOW_TILE_POINT,
   FLOW_TILES_NOW,
   FLOW_UPLOAD_REFERENCE,
+  FLOW_AGENT_FINISH,
+  FLOW_AGENT_PREPARE,
+  FLOW_AGENT_REPLY,
+  FLOW_CLIP_FILE,
+  FLOW_CREDIT_BALANCE,
+  FLOW_GENERATE_COST,
+  FLOW_PREPARE_CLIP,
+  FLOW_UPLOAD_START_FRAME,
+  FLOW_VIDEO_DETAIL,
+  FLOW_VIDEO_TILES_NOW,
   FlowBlockedError,
+  type AgentFinishResponse,
+  type AgentPrepareRequest,
+  type AgentReplyRequest,
+  type AgentReplyResponse,
+  type ClipFileRequest,
+  type ClipFileResponse,
+  type CreditBalanceResponse,
+  type GenerateCostResponse,
+  type PrepareClipRequest,
+  type UploadStartFrameRequest,
+  type UploadStartFrameResponse,
+  type VideoDetailResponse,
   TEST_PROMPT_TEXT,
   decodeBytes,
   testPromptRefusal,
@@ -115,6 +137,86 @@ export default defineContentScript({
         return { kind: 'ready', ...at };
       } catch (err) {
         return failure(err);
+      }
+    }
+
+    /** The checks every prepare starts with: Flow drawn, account, dialogs, limit. A block to answer with, or null. */
+    async function startChecks(verb: PrepareRequest['verb']): Promise<PrepareResponse | null> {
+      await driver.waitUntilReady(READY_WAIT_MS);
+      const state = driver.read();
+      const check = checkCanStart(state, await getExpectedAccount(), verb ?? 'Start');
+      if (!check.ok) return blockedBy(check, state);
+      if (state.limitMessage) return { kind: 'blocked', event: { type: 'limit', message: state.limitMessage, resumeAt: null } };
+      return null;
+    }
+
+    /** One clip (spike S8): Video · Frames · aspect · 720p · length · x1, Agent off, start frame attached, prompt typed. */
+    async function prepareClip(req: PrepareClipRequest): Promise<PrepareResponse> {
+      try {
+        const stop = await startChecks(req.verb);
+        if (stop) return stop;
+        await driver.setVideoMode();
+        await driver.setFramesMode();
+        await driver.setAspect(req.aspect);
+        await driver.setResolution720();
+        await driver.setClipLength(req.length);
+        await driver.setOutputs(1);
+        await driver.turnOffAgentMode();
+        // Generate clears the start frame (spike S8), so it is attached again for every clip.
+        await driver.attachStartFrame(req.startFrame);
+        const at = await driver.prepareSubmit(req.prompt, { startFrame: true });
+        beforePress = driver.snapshot();
+        return { kind: 'ready', ...at };
+      } catch (err) {
+        return failure(err);
+      }
+    }
+
+    async function uploadStartFrame(req: UploadStartFrameRequest): Promise<UploadStartFrameResponse> {
+      try {
+        await driver.waitUntilReady(READY_WAIT_MS);
+        await driver.uploadStartFrame(new File([decodeBytes(req.data)], req.name, { type: req.mimeType }));
+        return { kind: 'done' };
+      } catch (err) {
+        return failure(err) as UploadStartFrameResponse;
+      }
+    }
+
+    async function creditBalance(): Promise<CreditBalanceResponse> {
+      try {
+        return { kind: 'done', balance: await driver.readCreditBalance() };
+      } catch (err) {
+        return failure(err) as CreditBalanceResponse;
+      }
+    }
+
+    async function videoDetail(): Promise<VideoDetailResponse> {
+      const deadline = Date.now() + DETAIL_WAIT_MS;
+      let read = driver.readVideoDetail();
+      while (read.prompt === null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+        read = driver.readVideoDetail();
+      }
+      return read;
+    }
+
+    /** Agent question (spikes S6/S7): attach the pictures in order and type; the background presses send. */
+    async function agentPrepare(req: AgentPrepareRequest): Promise<PrepareResponse> {
+      try {
+        const stop = await startChecks('Resume');
+        if (stop) return stop;
+        return { kind: 'ready', ...(await driver.prepareAgentQuestion(req.names, req.question)) };
+      } catch (err) {
+        return failure(err);
+      }
+    }
+
+    async function agentReply(req: AgentReplyRequest): Promise<AgentReplyResponse> {
+      try {
+        const text = await driver.readAgentReply(req.waitMs);
+        return text === null ? { kind: 'waiting' } : { kind: 'reply', text };
+      } catch (err) {
+        return failure(err) as AgentReplyResponse;
       }
     }
 
@@ -279,6 +381,18 @@ export default defineContentScript({
         [FLOW_CHECKS]: () => checks(message as ChecksRequest),
         [FLOW_SHOW_ME]: async () => showMe(),
         [FLOW_TEST_PROMPT]: () => testPrompt(message as TestPromptRequest),
+        [FLOW_PREPARE_CLIP]: () => prepareClip(message as PrepareClipRequest),
+        [FLOW_UPLOAD_START_FRAME]: () => uploadStartFrame(message as UploadStartFrameRequest),
+        [FLOW_GENERATE_COST]: async (): Promise<GenerateCostResponse> => ({ cost: await driver.readGenerateCost().catch(() => null) }),
+        [FLOW_CREDIT_BALANCE]: () => creditBalance(),
+        [FLOW_VIDEO_TILES_NOW]: async (): Promise<TilesNowResponse> => ({ cards: driver.videoResultCards() }),
+        [FLOW_VIDEO_DETAIL]: () => videoDetail(),
+        [FLOW_CLIP_FILE]: async (): Promise<ClipFileResponse> => ({
+          file: await driver.clipFileUrl((message as ClipFileRequest).timeoutMs).catch(() => null),
+        }),
+        [FLOW_AGENT_PREPARE]: () => agentPrepare(message as AgentPrepareRequest),
+        [FLOW_AGENT_REPLY]: () => agentReply(message as AgentReplyRequest),
+        [FLOW_AGENT_FINISH]: async (): Promise<AgentFinishResponse> => ({ done: await driver.finishAgent() }),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;

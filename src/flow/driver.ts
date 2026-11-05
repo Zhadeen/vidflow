@@ -1,8 +1,16 @@
+import type { ClipLength } from '../motion/timing';
 import type { AspectRatio } from '../store/projects';
-import { FlowBlockedError, REFERENCE_ATTACH_MESSAGE, STRAY_INGREDIENT_MESSAGE } from './messages';
+import {
+  AGENT_ASK_MESSAGE,
+  FlowBlockedError,
+  REFERENCE_ATTACH_MESSAGE,
+  START_FRAME_MESSAGE,
+  STRAY_INGREDIENT_MESSAGE,
+} from './messages';
 import {
   ASPECT_ICON,
   BILLING_PATTERN,
+  CLIP_URL_PREFIX,
   LIMIT_PATTERN,
   NOTICE_ACCEPT_PATTERN,
   REFUSAL_PATTERN,
@@ -28,6 +36,8 @@ export interface FlowResultCard {
   progress: number | null;
   refusal: string | null;
   domIndex: number;
+  /** A finished clip (spike S8): keyed by its grid position, as Flow gives video tiles no media id. */
+  video?: true;
 }
 
 /** What the page looked like just before Generate was pressed, to confirm the press started something. */
@@ -43,6 +53,33 @@ export type StartVerb = 'Start' | 'Resume' | 'Test';
 export interface DetailRead {
   mediaId: string | null;
   prompt: string | null;
+}
+
+/** On a clip's page (/project/<p>/edit/<editId>): its prompt, and the edit id from the URL (not the media id). */
+export interface VideoDetailRead {
+  prompt: string | null;
+  editId: string | null;
+}
+
+/** A finished clip's file: Flow's signed URL and the media id it names. */
+export interface ClipFile {
+  url: string;
+  mediaId: string;
+}
+
+export interface CreditBalance {
+  credits: number;
+  /** "13 Nov at 13:50", or null when the panel doesn't say. */
+  resets: string | null;
+}
+
+export interface SubmitCheck {
+  /** The hero reference: exactly one Ingredient chip must show. */
+  reference?: boolean;
+  /** This many Ingredient chips must show (Agent questions); wins over `reference`. */
+  ingredients?: number;
+  /** A clip: its start frame must sit in the Start slot. */
+  startFrame?: boolean;
 }
 
 export interface FlowDriver {
@@ -71,7 +108,7 @@ export interface FlowDriver {
    * Types the prompt, waits until Flow enables Generate (never enables it itself), returns its centre in viewport px.
    * With `reference`, throws FlowBlockedError instead of answering when the reference's chip isn't in the bar.
    */
-  prepareSubmit(prompt: string, opts?: { reference?: boolean }): Promise<{ x: number; y: number }>;
+  prepareSubmit(prompt: string, opts?: SubmitCheck): Promise<{ x: number; y: number }>;
   resultCards(): FlowResultCard[];
   snapshot(): FlowSnapshot;
   /** True once Flow cleared the prompt box or showed a new in-progress tile; false after timeoutMs. */
@@ -101,6 +138,44 @@ export interface FlowDriver {
   agentModeOn(): boolean;
   /** Empties the prompt box (Flow's Clear prompt button, else select-all and delete); true once it is empty. */
   clearPrompt(): Promise<boolean>;
+
+  // ---- Clips (spike S8) ----
+  setVideoMode(): Promise<void>;
+  setFramesMode(): Promise<void>;
+  setClipLength(s: ClipLength): Promise<void>;
+  setResolution720(): Promise<void>;
+  /**
+   * Uploads a clip's start picture through the Start slot's "Select a frame image" picker (never opening the file
+   * window), unless an asset with its name is already there; waits until it is ready, then closes the picker.
+   */
+  uploadStartFrame(file: File): Promise<void>;
+  /** Attaches the asset with this name to the Start slot (Generate clears it, so once per clip); End stays empty. */
+  attachStartFrame(name: string): Promise<void>;
+  /** True while the Start slot holds a picture and End is empty. */
+  hasStartFrame(): boolean;
+  /** "Generating will use N credits" from the settings popover (opened and closed again if needed); null if not shown. */
+  readGenerateCost(): Promise<number | null>;
+  /** Opens Account details (project grid page), reads the balance and reset date, and always closes it again. */
+  readCreditBalance(): Promise<CreditBalance | null>;
+  /** The grid's tiles in order: drawing clips, finished clips (video: true, no media id) and picture tiles. */
+  videoResultCards(): FlowResultCard[];
+  readVideoDetail(): VideoDetailRead;
+  /**
+   * On a clip's page: Download media → "720p Original size" (never another choice), then the newest signed
+   * flow-content.google/video/<id> URL Flow fetched since; null after timeoutMs.
+   */
+  clipFileUrl(timeoutMs: number): Promise<ClipFile | null>;
+
+  // ---- Agent questions (spikes S6/S7) ----
+  /**
+   * Turns Agent mode on, attaches the named assets in order, types the question and answers with where the send
+   * button is (the background presses it). On any failure the Agent panel is closed and Agent mode turned off first.
+   */
+  prepareAgentQuestion(names: string[], question: string): Promise<{ x: number; y: number }>;
+  /** The Agent's reply to the question just sent, once its text has settled; null after waitMs (asked again later). */
+  readAgentReply(waitMs: number): Promise<string | null>;
+  /** Closes the Agent panel and turns Agent mode off; never throws. True when both are done. */
+  finishAgent(): Promise<boolean>;
 }
 
 export interface FlowSettingsRead {
@@ -155,6 +230,10 @@ export interface DriverOptions {
   pollMs?: number;
   /** Overrides both waits below (tests). */
   timeoutMs?: number;
+  /** How long an Agent reply must stay unchanged before it counts as finished. */
+  settleMs?: number;
+  /** The page's performance timeline (tests). */
+  perf?: Pick<Performance, 'now' | 'getEntriesByType'>;
 }
 
 const SETTINGS_TIMEOUT_MS = 5_000;
@@ -166,6 +245,13 @@ const REFERENCE_TILE_TIMEOUT_MS = 10_000;
 const ASSETS_LOAD_WAIT_MS = 1_500;
 const CLOSE_WAIT_MS = 1_000;
 const AGENT_OFF_TRIES = 3;
+/** Agent replies stream in; one unchanged this long is taken as finished. */
+const AGENT_SETTLE_MS = 3_000;
+/** Placeholder text the Agent shows before its answer. */
+const AGENT_THINKING = /^(?:thinking|working|generating|analy[sz]ing)\b[^]{0,40}$/i;
+const CREDIT_BALANCE = /(\d[\d,]*)\s+Google\s+Flow\s+credits?/i;
+const CREDIT_RESETS = /^Resets\s+(?:on\s+)?(.+)$/i;
+const GENERATE_COST = /will\s+use\s+(\d[\d,]*)\s+credits?/i;
 const AGENT_MODE_MESSAGE =
   "Flow's Agent mode is on and VidFlow couldn't turn it off. Turn it off in the Flow window, then press Resume.";
 const PERCENT_ONLY = /^(\d{1,3})\s?%$/;
@@ -276,27 +362,49 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     // Live Flow puts every tile in one row div, each picture in its own flow-grid-tile-container.
     const live = [...doc.querySelectorAll(SEL.tile)];
     const tiles = live.length ? live : [...doc.querySelectorAll(SEL.tileList)].flatMap((list) => [...list.children]);
-    return tiles.map((tile, domIndex) => {
-      const img = tile.querySelector<HTMLImageElement>(SEL.tileImage);
-      const texts = textNodes(tile, true);
-      let progress: number | null = null;
-      let refusal: string | null = null;
-      const captionParts: string[] = [];
-      for (const t of texts) {
-        const pct = PERCENT_ONLY.exec(t);
-        if (pct && progress === null) progress = Number(pct[1]);
-        else if (!img && refusal === null && REFUSAL_PATTERN.test(t)) refusal = t;
-        else if (!pct) captionParts.push(t);
-      }
-      return {
-        key: img?.dataset.mediaId ?? `pending-${domIndex}`,
-        caption: captionParts.join(' '),
-        imageUrl: img ? img.src : null,
-        progress,
-        refusal: progress === null ? refusal : null,
-        domIndex,
-      };
-    });
+    return tiles.map((tile, domIndex) => readCard(tile, domIndex));
+  }
+
+  /** One grid tile as a card: caption (icon text left out), percentage, refusal, and its picture's media id. */
+  function readCard(tile: Element, domIndex: number, video = false): FlowResultCard {
+    const img = tile.querySelector<HTMLImageElement>(video ? 'img' : SEL.tileImage);
+    // A finished clip's caption sits beside its flow-video-tile, in the flow-tile-container around it.
+    const container = video ? tile.closest(SEL.videoTileContainer) : null;
+    const textRoot = container && container.querySelectorAll(SEL.videoTile).length === 1 ? container : tile;
+    let progress: number | null = null;
+    let refusal: string | null = null;
+    const captionParts: string[] = [];
+    for (const t of textNodes(textRoot, true)) {
+      const pct = PERCENT_ONLY.exec(t);
+      if (pct && progress === null) progress = Number(pct[1]);
+      else if (!img && refusal === null && REFUSAL_PATTERN.test(t)) refusal = t;
+      else if (!pct) captionParts.push(t);
+    }
+    return {
+      key: video ? `video-${domIndex}` : (img?.dataset.mediaId ?? `pending-${domIndex}`),
+      caption: captionParts.join(' '),
+      imageUrl: img ? img.src : null,
+      progress,
+      refusal: progress === null ? refusal : null,
+      domIndex,
+      ...(video ? { video: true as const } : {}),
+    };
+  }
+
+  function videoResultCards(): FlowResultCard[] {
+    // Spike S8: a drawing clip is a flow-grid-tile-container; a finished one a flow-video-tile (no media id).
+    const tiles = [...doc.querySelectorAll(`${SEL.videoTile}, ${SEL.tile}`)].filter(
+      (t) => !(t.matches(SEL.tile) && t.querySelector(SEL.videoTile)),
+    );
+    return tiles.map((tile, domIndex) => readCard(tile, domIndex, tile.matches(SEL.videoTile)));
+  }
+
+  function readVideoDetail(): VideoDetailRead {
+    const prompt = q('flow-expandable-prompt');
+    const parts = prompt ? [...prompt.querySelectorAll(SEL.detailPromptText)].map((p) => p.textContent ?? '') : [];
+    const text = squash(parts.join(''));
+    const editId = /\/edit\/([^/?#]+)/.exec(doc.location?.pathname ?? '')?.[1] ?? null;
+    return { prompt: text || null, editId: editId ? decodeURIComponent(editId) : null };
   }
 
   function readDetailPrompt(): DetailRead {
@@ -333,7 +441,9 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   }
 
   // ---- Flow's notices -------------------------------------------------------
-  const shownDialogs = () => [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].filter(isShown);
+  // Flow's own Account details panel (opened by readCreditBalance) is neither a notice nor billing, whatever it says.
+  const shownDialogs = () =>
+    [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].filter((d) => isShown(d) && !d.querySelector(SEL.closeAccountPanel));
   const isBilling = (dialog: Element) => BILLING_PATTERN.test(squash(dialog.textContent));
   /** A usage-policy / rights notice; billing wording anywhere in it makes it a billing dialog instead. */
   const isUsageNotice = (dialog: Element) => !isBilling(dialog) && USAGE_NOTICE_PATTERN.test(squash(dialog.textContent));
@@ -413,10 +523,12 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   /** The asset with this name in the open picker (text "<name> Image", or "Uploading <name>" while uploading). */
   // Read as separate text parts: textContent glues "Uploading" onto the name.
   const optionParts = (option: Element) => textNodes(option, true);
-  const findAsset = (name: string) =>
-    [...(q(SEL.assetList)?.querySelectorAll<HTMLElement>(SEL.assetOption) ?? [])].find((o) =>
-      optionParts(o).some((t) => t.includes(name)),
-    ) ?? null;
+  /** The open picker's assets: the ingredients picker's Asset list, else (the frame picker) any option in the overlay. */
+  const assetOptions = () => {
+    const root = q(SEL.assetList) ?? q(SEL.overlay);
+    return root ? [...root.querySelectorAll<HTMLElement>(SEL.assetOption)] : [];
+  };
+  const findAsset = (name: string) => assetOptions().find((o) => optionParts(o).some((t) => t.includes(name))) ?? null;
   const isUploading = (option: Element) => optionParts(option).some((t) => /^Uploading\b/i.test(t));
   const readyAsset = (name: string) => {
     const option = findAsset(name);
@@ -427,12 +539,12 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   /** The open picker: its asset list, or (in a brand-new Flow project, which says "No assets found.") its Upload button. */
   const pickerOpen = () => q(SEL.assetList) ?? overlayButton('Upload media');
 
-  async function openPicker(): Promise<void> {
+  async function openPicker(message?: string): Promise<void> {
     if (pickerOpen()) return;
     const trigger = q(SEL.ingredients);
-    if (!trigger) throw blocked();
+    if (!trigger) throw blocked(message);
     trigger.click();
-    await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS);
+    await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS, message);
   }
 
   /** The tile Flow adds to the grid for an uploaded picture carries its file name as caption. */
@@ -454,12 +566,16 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   }
 
 
-  async function uploadReference(file: File): Promise<string | null> {
-    stopForDialog();
+  /**
+   * Uploads `file` through a picker that `open` opens (the ingredients picker, or the Start slot's frame picker),
+   * unless an asset with its name is there already; waits until it is ready, then closes the picker. Timeouts pause
+   * with `message`.
+   */
+  async function uploadThroughPicker(file: File, open: () => Promise<void>, message?: string): Promise<void> {
     const pickerWait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
-    await openPicker();
+    await open();
     // Flow fills the list a moment after the picker opens: an empty list doesn't yet mean "not uploaded".
-    await untilWatching(() => !!q(SEL.assetList)?.querySelector(SEL.assetOption), ASSETS_LOAD_WAIT_MS);
+    await untilWatching(() => assetOptions().length > 0, ASSETS_LOAD_WAIT_MS);
     // Flow answers "Upload media" by clicking a file input in <body>. That click must never open the Mac file window: a
     // cancelled click doesn't (and a click without a user gesture can't anyway). Capture listeners see the page's own
     // events, so this works from the content script's isolated world. The input it clicked is the one Flow listens to;
@@ -475,7 +591,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     try {
       if (!findAsset(file.name)) {
         const upload = overlayButton('Upload media');
-        if (!upload) throw blocked();
+        if (!upload) throw blocked(message);
         const before = new Set(doc.querySelectorAll(SEL.fileInput));
         doc.addEventListener('click', noFileWindow, true);
         guarded = true;
@@ -483,17 +599,23 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
         const input = await untilOrBlocked(
           () => clicked ?? [...doc.querySelectorAll<HTMLInputElement>(SEL.fileInput)].filter((i) => !before.has(i)).pop(),
           pickerWait,
+          message,
         );
         const transfer = new DataTransfer();
         transfer.items.add(file);
         input.files = transfer.files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
       }
-      await untilOrBlocked(() => readyAsset(file.name), opts.timeoutMs ?? UPLOAD_TIMEOUT_MS);
+      await untilOrBlocked(() => readyAsset(file.name), opts.timeoutMs ?? UPLOAD_TIMEOUT_MS, message);
       await closePicker();
     } finally {
       if (guarded) doc.removeEventListener('click', noFileWindow, true);
     }
+  }
+
+  async function uploadReference(file: File): Promise<string | null> {
+    stopForDialog();
+    await uploadThroughPicker(file, () => openPicker());
     // null when the tile doesn't show: the coordinator also recognises it by its file-name caption.
     return untilWatching(() => referenceTileKey(file.name), opts.timeoutMs ?? REFERENCE_TILE_TIMEOUT_MS);
   }
@@ -514,6 +636,250 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const add = await untilOrBlocked(() => overlayButton('Add to prompt'), wait);
     add.click();
     await untilOrBlocked(() => chips() === 1, wait);
+  }
+
+  // ---- Clip start frame (spike S8) ---------------------------------------------
+  const frameSlot = (label: 'Start' | 'End') =>
+    [...doc.querySelectorAll<HTMLElement>(SEL.emptyChip)].find((b) => textNodes(b, true).includes(label)) ?? null;
+
+  /** A picture chip in the Start position (before the swap button) while End is still an empty chip. */
+  function hasStartFrame(): boolean {
+    const end = frameSlot('End');
+    if (!end) return false;
+    const swap = q(SEL.swapFrames);
+    return [...doc.querySelectorAll(SEL.startFrameChip)].some((chip) => {
+      const before = swap ?? end;
+      return !!(chip.compareDocumentPosition(before) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+  }
+
+  /** Start must be an empty slot to open its picker: a frame left from an earlier try goes first (Clear prompt). */
+  async function emptyStartSlot(): Promise<HTMLElement> {
+    const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
+    const start = frameSlot('Start');
+    if (start) return start;
+    if (!q(SEL.startFrameChip)) throw blocked(START_FRAME_MESSAGE); // no Start slot: Flow isn't in Video · Frames
+    const clear = q(SEL.clearPrompt);
+    if (!clear) throw blocked(START_FRAME_MESSAGE);
+    clear.click();
+    return untilOrBlocked(() => frameSlot('Start'), wait, START_FRAME_MESSAGE);
+  }
+
+  async function openFramePicker(): Promise<void> {
+    if (pickerOpen()) return;
+    (await emptyStartSlot()).click();
+    await untilOrBlocked(pickerOpen, opts.timeoutMs ?? PICKER_TIMEOUT_MS, START_FRAME_MESSAGE);
+  }
+
+  async function uploadStartFrame(file: File): Promise<void> {
+    stopForDialog();
+    await uploadThroughPicker(file, openFramePicker, START_FRAME_MESSAGE);
+  }
+
+  async function attachStartFrame(name: string): Promise<void> {
+    stopForDialog();
+    const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
+    await openFramePicker();
+    const option = await untilOrBlocked(() => readyAsset(name), wait, START_FRAME_MESSAGE);
+    // Spike S8: this picker has no "Add to prompt": picking the asset attaches it and closes the overlay.
+    option.click();
+    await untilOrBlocked(hasStartFrame, wait, START_FRAME_MESSAGE);
+    await closePicker();
+  }
+
+  // ---- Cost and credits (spike S8) -----------------------------------------------
+  const costLabel = () => q(SEL.creditCost);
+  const parseCount = (s: string) => Number(s.replace(/,/g, ''));
+
+  async function readGenerateCost(): Promise<number | null> {
+    const wait = opts.timeoutMs ?? SETTINGS_TIMEOUT_MS;
+    let opened = false;
+    if (!costLabel()) {
+      const trigger = q(SEL.settingsTrigger);
+      if (!trigger) return null;
+      trigger.click();
+      opened = true;
+      await until(costLabel, wait, 'no cost').catch(() => null);
+    }
+    const m = GENERATE_COST.exec(squash(costLabel()?.textContent));
+    // Leave the popover as it was: close it only when this opened it (and it is still open).
+    if (opened && (costLabel() || q(SEL.radioGroup))) q(SEL.settingsTrigger)?.click();
+    return m ? parseCount(m[1]!) : null;
+  }
+
+  const accountPanel = () =>
+    [...doc.querySelectorAll<HTMLElement>(SEL.dialog)].find((d) => d.querySelector(SEL.closeAccountPanel)) ?? null;
+
+  async function closeAccountPanel(): Promise<void> {
+    // Escape doesn't close it (spike S8): only its own close button does.
+    accountPanel()?.querySelector<HTMLElement>(SEL.closeAccountPanel)?.click();
+    await until(() => !accountPanel(), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+  }
+
+  async function readCreditBalance(): Promise<CreditBalance | null> {
+    stopForDialog();
+    const button = q(SEL.accountDetails);
+    if (!button) return null;
+    try {
+      button.click();
+      const read = (): CreditBalance | null => {
+        const panel = accountPanel();
+        if (!panel) return null;
+        let credits: number | null = null;
+        let resets: string | null = null;
+        for (const el of panel.querySelectorAll<HTMLElement>('*')) {
+          if (el.children.length > 0 && el.querySelector('*:not(mat-icon)')) continue; // leaf texts only
+          const text = squash(textNodes(el, true).join(' '));
+          const c = CREDIT_BALANCE.exec(text);
+          if (c && credits === null) credits = parseCount(c[1]!);
+          const r = CREDIT_RESETS.exec(text);
+          if (r && resets === null) resets = r[1]!.trim();
+        }
+        return credits === null ? null : { credits, resets };
+      };
+      return await until(read, opts.timeoutMs ?? SETTINGS_TIMEOUT_MS, 'no balance').catch(() => null);
+    } finally {
+      await closeAccountPanel();
+    }
+  }
+
+  // ---- Clip file (spike S8) -------------------------------------------------------
+  async function clipFileUrl(timeoutMs: number): Promise<ClipFile | null> {
+    const perf = opts.perf ?? doc.defaultView?.performance ?? performance;
+    const button = q(SEL.downloadMedia);
+    if (!button) return null;
+    // Entries from a PerformanceObserver arrive even when the page's resource-timing buffer is full.
+    const observed: PerformanceEntry[] = [];
+    const Observer = opts.perf ? undefined : doc.defaultView?.PerformanceObserver;
+    let observer: PerformanceObserver | null = null;
+    try {
+      if (Observer) {
+        observer = new Observer((list) => observed.push(...list.getEntries()));
+        observer.observe({ type: 'resource' });
+      }
+    } catch {
+      observer = null;
+    }
+    const since = perf.now();
+    try {
+      button.click();
+      const item = await until(
+        () =>
+          [...doc.querySelectorAll<HTMLElement>(SEL.menuItem)].find((i) => {
+            const text = squash(textNodes(i, true).join(' '));
+            return /\b720p\b/.test(text) && /original size/i.test(text);
+          }),
+        opts.timeoutMs ?? PICKER_TIMEOUT_MS,
+        'no 720p',
+      ).catch(() => null);
+      if (!item) {
+        // Close the menu without choosing anything else.
+        const menu = doc.querySelector(SEL.menuItem);
+        menu?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        return null;
+      }
+      item.click();
+      const newest = () => {
+        const all = [...observed, ...perf.getEntriesByType('resource')].filter(
+          (e) => e.name.startsWith(CLIP_URL_PREFIX) && e.startTime >= since,
+        );
+        all.sort((a, b) => b.startTime - a.startTime);
+        return all[0] ?? null;
+      };
+      const entry = await until(newest, timeoutMs, 'no clip').catch(() => null);
+      if (!entry) return null;
+      const id = new URL(entry.name).pathname.slice('/video/'.length).split('/')[0] ?? '';
+      return id ? { url: entry.name, mediaId: decodeURIComponent(id) } : null;
+    } finally {
+      observer?.disconnect();
+    }
+  }
+
+  // ---- Agent questions (spikes S6/S7) ----------------------------------------------
+  /** The question waiting for its reply: replies already in the panel before it, and the settle state. */
+  let asked: { baseline: number; question: string; last: string; since: number } | null = null;
+  const agentReplies = () => {
+    const panel = q(SEL.agentPanel);
+    return panel ? [...panel.querySelectorAll(SEL.agentReply)] : [];
+  };
+
+  async function turnOnAgentMode(): Promise<void> {
+    const chip = q(SEL.agentModeChip);
+    if (!chip) throw blocked(AGENT_ASK_MESSAGE);
+    if (chip.getAttribute('aria-pressed') === 'true') return;
+    chip.click();
+    await untilOrBlocked(() => !!q(SEL.agentModeOn), opts.timeoutMs ?? SETTINGS_TIMEOUT_MS, AGENT_ASK_MESSAGE);
+  }
+
+  async function finishAgent(): Promise<boolean> {
+    asked = null;
+    const panelGone = async () => {
+      const close = q(SEL.agentPanel)?.querySelector<HTMLElement>(SEL.agentPanelClose);
+      close?.click();
+      await until(() => !q(SEL.agentPanel), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
+    };
+    try {
+      await panelGone();
+      await turnOffAgentMode().catch(() => undefined);
+      if (q(SEL.agentPanel)) await panelGone(); // turning Agent off may have reopened or kept it
+    } catch {
+      // Never throws: the background asks again when the run stops.
+    }
+    return !q(SEL.agentPanel) && !q(SEL.agentModeOn);
+  }
+
+  async function prepareAgentQuestion(names: string[], question: string): Promise<{ x: number; y: number }> {
+    const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
+    try {
+      stopForDialog();
+      await turnOnAgentMode();
+      if (chips() > 0) {
+        // Pictures left from an earlier question: start from an empty bar so the order is known.
+        const clear = q(SEL.clearPrompt);
+        if (!clear) throw blocked(AGENT_ASK_MESSAGE);
+        clear.click();
+        await untilOrBlocked(() => chips() === 0, wait, AGENT_ASK_MESSAGE);
+      }
+      // Spike S6: option → Add to prompt, one at a time; an attached asset leaves the list.
+      for (const [i, name] of names.entries()) {
+        await openPicker(AGENT_ASK_MESSAGE);
+        const option = await untilOrBlocked(() => readyAsset(name), wait, AGENT_ASK_MESSAGE);
+        option.click();
+        const add = await untilOrBlocked(() => overlayButton('Add to prompt'), wait, AGENT_ASK_MESSAGE);
+        add.click();
+        await untilOrBlocked(() => chips() === i + 1, wait, AGENT_ASK_MESSAGE);
+      }
+      const baseline = agentReplies().length;
+      const at = await prepareSubmit(question, { ingredients: names.length });
+      asked = { baseline, question: squash(question), last: '', since: 0 };
+      return at;
+    } catch (err) {
+      await finishAgent();
+      if (err instanceof FlowBlockedError) throw err;
+      throw blocked(AGENT_ASK_MESSAGE);
+    }
+  }
+
+  async function readAgentReply(waitMs: number): Promise<string | null> {
+    const settle = opts.settleMs ?? AGENT_SETTLE_MS;
+    const probe = (): string | null => {
+      const ask = asked;
+      if (!ask) return null;
+      const el = agentReplies().slice(ask.baseline).pop();
+      const text = el ? squash(textNodes(el, true).join(' ')) : '';
+      if (!text || text === ask.question || AGENT_THINKING.test(text)) {
+        ask.last = '';
+        return null;
+      }
+      if (text !== ask.last) {
+        ask.last = text;
+        ask.since = Date.now();
+        return null;
+      }
+      return Date.now() - ask.since >= settle ? text : null;
+    };
+    if (!asked) return null;
+    return untilWatching(probe, waitMs);
   }
 
   async function turnOffAgentMode(): Promise<void> {
@@ -658,11 +1024,46 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     turnOffAgentMode,
 
     async prepareSubmit(prompt, submitOpts = {}) {
+      return prepareSubmit(prompt, submitOpts);
+    },
+
+    setVideoMode() {
+      return chooseSetting('Video', () => findRadio('Video')?.getAttribute('aria-checked') === 'true');
+    },
+
+    setFramesMode() {
+      return chooseSetting('Frames', () => findRadio('Frames')?.getAttribute('aria-checked') === 'true');
+    },
+
+    setClipLength(seconds) {
+      return chooseSetting(`${seconds}s`, () => new RegExp(`(?:^|\\s)${seconds}s(?:\\s|$)`).test(triggerText()));
+    },
+
+    setResolution720() {
+      return chooseSetting('720p', () => /(?:^|\s)720p(?:\s|$)/.test(triggerText()));
+    },
+
+    uploadStartFrame,
+    attachStartFrame,
+    hasStartFrame,
+    readGenerateCost,
+    readCreditBalance,
+    videoResultCards,
+    readVideoDetail,
+    clipFileUrl,
+    prepareAgentQuestion,
+    readAgentReply,
+    finishAgent,
+  };
+
+  async function prepareSubmit(prompt: string, submitOpts: SubmitCheck = {}): Promise<{ x: number; y: number }> {
+    {
+      const expected = submitOpts.ingredients ?? (submitOpts.reference ? 1 : 0);
       const box = q(SEL.promptBox);
       if (!box) throw new Error("VidFlow can't find Flow's prompt box.");
       // A prompt must never carry an Ingredient it doesn't mention: one left in the bar goes first (Clear prompt also
       // empties the text, so this comes before typing). If it can't go, the run pauses.
-      if (!submitOpts.reference && chips() > 0) {
+      if (expected === 0 && chips() > 0) {
         const clear = q(SEL.clearPrompt);
         if (!clear) throw blocked(STRAY_INGREDIENT_MESSAGE);
         clear.click();
@@ -687,8 +1088,10 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       const at = centre(button);
       if (!at) throw new Error("Flow's Generate button isn't visible.");
       // Never answer ready for a prompt that names the reference picture while its chip isn't there.
-      if (submitOpts.reference && chips() !== 1) throw blocked();
+      if (expected > 0 && chips() !== expected) throw blocked(submitOpts.ingredients !== undefined ? AGENT_ASK_MESSAGE : undefined);
+      // Nor for a clip whose start frame isn't in the Start slot.
+      if (submitOpts.startFrame && !hasStartFrame()) throw blocked(START_FRAME_MESSAGE);
       return at;
-    },
-  };
+    }
+  }
 }

@@ -989,3 +989,632 @@ describe('FlowDriver checks (read only)', () => {
     expect(clear).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---- Plan 3: clips (spike S8) and Agent questions (spikes S6/S7) ----------------------------------------------
+
+/** Stand-in for Flow's video settings radios (live .toggle-text markup): a click checks it and updates the trigger. */
+function fakeVideoRadios() {
+  const icons: Record<string, string> = { '16:9': 'crop_16_9', '9:16': 'crop_9_16' };
+  const clicked: string[] = [];
+  document.querySelectorAll<HTMLElement>('[role="radio"]').forEach((radio) =>
+    radio.addEventListener('click', () => {
+      const label = radio.querySelector('.toggle-text')!.textContent!.trim();
+      clicked.push(label);
+      radio.parentElement!.querySelectorAll('[role="radio"]').forEach((r) => r.setAttribute('aria-checked', 'false'));
+      radio.setAttribute('aria-checked', 'true');
+      const trigger = $(SEL.settingsTrigger);
+      if (icons[label]) trigger.innerHTML = trigger.innerHTML.replace(/crop_(16_9|9_16)/, icons[label]);
+      if (/^x\d$/.test(label)) trigger.innerHTML = trigger.innerHTML.replace(/x\d/, label);
+      if (/^\d+s$/.test(label)) trigger.innerHTML = trigger.innerHTML.replace(/\b\d+s\b/, label);
+      if (/^\d+p$/.test(label)) trigger.innerHTML = trigger.innerHTML.replace(/\b\d+p\b/, label);
+    }),
+  );
+  return clicked;
+}
+
+const START_FRAME = 'vidflow-s01.png';
+const START_MESSAGE = "VidFlow couldn't attach the start picture in Flow. Check the Flow window, then press Resume.";
+const startChip = () => document.querySelector(SEL.startFrameChip);
+const emptyChip = (label: string) =>
+  [...document.querySelectorAll('button.empty-chip')].find((b) => b.textContent!.includes(label)) ?? null;
+
+/**
+ * Stand-in for Flow's "Select a frame image" picker (spike S8): the Start empty-chip opens it; Upload media works as in
+ * S7; clicking an asset attaches it to Start at once (no "Add to prompt") and closes the overlay.
+ */
+function fakeFramePicker(opts: { emptyProject?: boolean; attaches?: boolean; neverFinishes?: boolean } = {}) {
+  vi.stubGlobal('DataTransfer', FakeDataTransfer);
+  const overlay = document.createElement('div');
+  overlay.className = 'cdk-overlay-container';
+  document.body.append(overlay);
+  const uploaded: File[] = [];
+  const fileClicks: boolean[] = [];
+  const assets: string[] = [];
+  const uploading = new Set<string>();
+  const startClicks = vi.fn();
+
+  function render() {
+    const list = overlay.querySelector('.frame-assets');
+    if (!list) return;
+    list.querySelectorAll('[data-uploaded]').forEach((o) => o.remove());
+    for (const name of assets) {
+      const o = document.createElement('button');
+      o.setAttribute('role', 'option');
+      o.dataset.uploaded = '';
+      o.innerHTML = uploading.has(name) ? `<span>Uploading</span><span>${name}</span>` : `<mat-icon>image</mat-icon><span>${name}</span>`;
+      o.addEventListener('click', () => {
+        overlay.innerHTML = '';
+        if (opts.attaches === false) return;
+        emptyChip('Start')!.outerHTML =
+          '<button class="chip-container" aria-label="Image ingredient"><img class="chip-image cropped" alt="Ingredient image"></button>';
+      });
+      list.prepend(o);
+    }
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && e.target instanceof Node && overlay.contains(e.target)) overlay.innerHTML = '';
+  });
+  function open() {
+    overlay.innerHTML = fixture('frame-picker.html');
+    if (opts.emptyProject && assets.length === 0) {
+      overlay.querySelector('.frame-assets')!.innerHTML = '<div class="no-assets">No assets found.</div>';
+    }
+    render();
+    overlay.querySelector('.upload-media')!.addEventListener('click', () => {
+      let input = document.querySelector<HTMLInputElement>('body > input[type="file"]');
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'file';
+        let files: FileList | null = null;
+        Object.defineProperty(input, 'files', { get: () => files, set: (v: FileList) => void (files = v) });
+        input.addEventListener('click', (e) => fileClicks.push(!e.defaultPrevented));
+        input.addEventListener('change', () => {
+          const file = (input!.files as unknown as File[])[0]!;
+          uploaded.push(file);
+          assets.push(file.name);
+          uploading.add(file.name);
+          overlay.querySelector('.no-assets')?.remove();
+          render();
+          if (opts.neverFinishes) return;
+          setTimeout(() => {
+            uploading.delete(file.name);
+            render();
+          }, 10);
+        });
+        document.body.append(input);
+      }
+      input.click();
+    });
+  }
+  emptyChip('Start')!.addEventListener('click', () => {
+    startClicks();
+    open();
+  });
+  return { uploaded, fileClicks, assets, startClicks };
+}
+
+describe('FlowDriver video settings (spike S8)', () => {
+  const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 200 });
+
+  it('each setter clicks the right radio', async () => {
+    load('video-prompt-bar.html');
+    $('[role="radio"]').setAttribute('aria-checked', 'true'); // Image on, Video off
+    [...document.querySelectorAll('[role="radio"]')][1]!.setAttribute('aria-checked', 'false');
+    $(SEL.settingsTrigger).innerHTML = 'Video · 360p · 4s<br>crop_16_9<br>x2';
+    const radios = [...document.querySelectorAll('[role="radio"]')];
+    radios.find((r) => r.textContent === '360p')!.setAttribute('aria-checked', 'true');
+    radios.find((r) => r.textContent === '720p')!.setAttribute('aria-checked', 'false');
+    const clicked = fakeVideoRadios();
+    const d = driver();
+    await d.setVideoMode();
+    await d.setFramesMode();
+    await d.setResolution720();
+    await d.setClipLength(8);
+    await d.setAspect('9:16');
+    await d.setOutputs(1);
+    expect(clicked).toEqual(['Video', 'Frames', '720p', '8s', '9:16', 'x1']);
+    expect($(SEL.settingsTrigger).textContent).toContain('8s');
+    expect($(SEL.settingsTrigger).textContent).toContain('720p');
+  });
+
+  it('leaves a setting that is already right alone', async () => {
+    load('video-prompt-bar.html');
+    const clicked = fakeVideoRadios();
+    const d = driver();
+    await d.setVideoMode();
+    await d.setResolution720();
+    await d.setClipLength(4);
+    expect(clicked).toEqual([]);
+  });
+
+  it('sets 10 s without mistaking it for another length', async () => {
+    load('video-prompt-bar.html');
+    const clicked = fakeVideoRadios();
+    await driver().setClipLength(10);
+    expect(clicked).toEqual(['10s']);
+    await driver().setClipLength(6);
+    expect(clicked).toEqual(['10s', '6s']);
+  });
+
+  it('fails when a length does not take', async () => {
+    load('video-prompt-bar.html'); // no fake radios
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).setClipLength(6)).rejects.toThrow(/6s/);
+  });
+});
+
+describe('FlowDriver Generate cost and credit balance (spike S8)', () => {
+  it('reads "Generating will use N credits" from the open popover and leaves it open', async () => {
+    load('video-prompt-bar.html');
+    const trigger = vi.fn();
+    $(SEL.settingsTrigger).addEventListener('click', trigger);
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 100 }).readGenerateCost()).resolves.toBe(14);
+    expect(trigger).not.toHaveBeenCalled();
+  });
+
+  it('opens a closed popover to read the cost, then closes it again', async () => {
+    load('video-prompt-bar.html');
+    const popover = $('.settings-popover');
+    popover.remove();
+    $(SEL.settingsTrigger).addEventListener('click', () => {
+      if (!document.body.contains(popover)) document.body.append(popover);
+      else popover.remove();
+    });
+    popover.querySelector('.credit-cost-label span')!.textContent = 'Generating will use 7 credits';
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 100 }).readGenerateCost()).resolves.toBe(7);
+    expect(document.body.contains(popover)).toBe(false);
+  });
+
+  it('gives null when no cost shows', async () => {
+    load('prompt-bar.html'); // the picture popover's note has no .credit-cost-label
+    $('.settings-popover').remove();
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).readGenerateCost()).resolves.toBeNull();
+  });
+
+  /** Account details opens the panel; only its Close account panel button closes it (Escape doesn't). */
+  function fakeAccountPanel(text?: { credits?: string; resets?: string }) {
+    const close = vi.fn();
+    $('[aria-label="Account details"]').addEventListener('click', () => {
+      document.body.insertAdjacentHTML('beforeend', fixture('account-panel.html'));
+      const panel = document.querySelector('.account-panel')!;
+      if (text?.credits !== undefined) panel.querySelector('.credits-link span')!.textContent = text.credits;
+      if (text?.resets !== undefined) panel.querySelectorAll(':scope > span')[0]!.textContent = text.resets;
+      panel.querySelector('[aria-label="Close account panel"]')!.addEventListener('click', () => {
+        close();
+        panel.closest('.cdk-overlay-container')!.remove();
+      });
+    });
+    return close;
+  }
+
+  it('reads "1,043 Google Flow credits · Resets on 13 Nov at 13:50", then closes the panel', async () => {
+    load('prompt-bar.html');
+    const close = fakeAccountPanel();
+    const balance = await createFlowDriver(document, { pollMs: 5, timeoutMs: 100 }).readCreditBalance();
+    expect(balance).toEqual({ credits: 1043, resets: '13 Nov at 13:50' });
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('.account-panel')).toBeNull();
+  });
+
+  it('closes the panel also when it cannot read a balance', async () => {
+    load('prompt-bar.html');
+    const close = fakeAccountPanel({ credits: 'Credits unavailable', resets: '' });
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).readCreditBalance()).resolves.toBeNull();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads a balance without a reset date', async () => {
+    load('prompt-bar.html');
+    fakeAccountPanel({ resets: '' });
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).readCreditBalance()).resolves.toEqual({ credits: 1043, resets: null });
+  });
+
+  it('gives null off the project grid page (no Account details button)', async () => {
+    document.body.innerHTML = fixture('video-detail.html');
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).readCreditBalance()).resolves.toBeNull();
+  });
+
+  it('the open account panel is not a billing dialog', () => {
+    load('prompt-bar.html', 'account-panel.html');
+    expect(createFlowDriver().read()).toMatchObject({ billingDialog: false, noticeDialog: false });
+  });
+
+  it('a billing dialog blocks reading the balance and is never clicked', async () => {
+    load('prompt-bar.html', 'billing-dialog.html');
+    const account = vi.fn();
+    $('[aria-label="Account details"]').addEventListener('click', account);
+    const pressed = vi.fn();
+    document.querySelectorAll('.cdk-overlay-container button').forEach((b) => b.addEventListener('click', pressed));
+    const err = await createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).readCreditBalance().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect(account).not.toHaveBeenCalled();
+    expect(pressed).not.toHaveBeenCalled();
+  });
+});
+
+describe('FlowDriver start frame (spike S8)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
+  const png = () => new File([new Uint8Array([137, 80, 78, 71])], START_FRAME, { type: 'image/png' });
+
+  it('uploads the start frame through the Start picker without opening the file window, then closes it', async () => {
+    load('video-prompt-bar.html');
+    const picker = fakeFramePicker();
+    await driver().uploadStartFrame(png());
+    expect(picker.uploaded.map((f) => f.name)).toEqual([START_FRAME]);
+    expect(picker.fileClicks).toEqual([false]);
+    expect(document.querySelector('.cdk-overlay-container')!.innerHTML).toBe('');
+    expect(startChip()).toBeNull(); // uploading attaches nothing
+    // The guard is gone afterwards: the page's own file inputs work again.
+    document.querySelector<HTMLInputElement>('body > input[type="file"]')!.click();
+    expect(picker.fileClicks).toEqual([false, true]);
+  });
+
+  it('uploads into a brand-new project whose picker says "No assets found."', async () => {
+    load('video-prompt-bar.html');
+    const picker = fakeFramePicker({ emptyProject: true });
+    await driver().uploadStartFrame(png());
+    expect(picker.uploaded).toHaveLength(1);
+  });
+
+  it("doesn't upload twice when the frame is already in the project", async () => {
+    load('video-prompt-bar.html');
+    const picker = fakeFramePicker();
+    await driver().uploadStartFrame(png());
+    await driver().uploadStartFrame(png());
+    expect(picker.uploaded).toHaveLength(1);
+  });
+
+  it('pauses with the start-frame message when the upload never finishes', async () => {
+    load('video-prompt-bar.html');
+    fakeFramePicker({ neverFinishes: true });
+    const err = await driver().uploadStartFrame(png()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(START_MESSAGE);
+  });
+
+  it('attaches by name: the Start slot holds the picture and End stays empty', async () => {
+    load('video-prompt-bar.html');
+    const picker = fakeFramePicker();
+    const d = driver();
+    await d.uploadStartFrame(png());
+    await d.attachStartFrame(START_FRAME);
+    expect(startChip()).not.toBeNull();
+    expect(emptyChip('End')).not.toBeNull();
+    expect(d.hasStartFrame()).toBe(true);
+    expect(picker.uploaded).toHaveLength(1);
+    expect(document.querySelector('[role="option"]')).toBeNull(); // the overlay closed
+  });
+
+  it('clears a start frame left from an earlier try before attaching', async () => {
+    load('video-prompt-bar.html');
+    fakeFramePicker();
+    const d = driver();
+    await d.uploadStartFrame(png());
+    await d.attachStartFrame(START_FRAME);
+    $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button aria-label="Clear prompt">close</button>');
+    const cleared = vi.fn(() => {
+      startChip()!.outerHTML = '<button type="button" class="empty-chip"><span>Start</span></button>';
+      fakeStartAgain();
+    });
+    const fakeStartAgain = () => {
+      emptyChip('Start')!.addEventListener('click', () => {
+        document.querySelector('.cdk-overlay-container')!.innerHTML = fixture('frame-picker.html');
+        const o = document.querySelector<HTMLElement>('.frame-assets [role="option"]')!;
+        o.innerHTML = `<mat-icon>image</mat-icon><span>${START_FRAME}</span>`;
+        o.addEventListener('click', () => {
+          document.querySelector('.cdk-overlay-container')!.innerHTML = '';
+          emptyChip('Start')!.outerHTML = '<button class="chip-container" aria-label="Image ingredient"></button>';
+        });
+      });
+    };
+    $(SEL.clearPrompt).addEventListener('click', cleared);
+    await d.attachStartFrame(START_FRAME);
+    expect(cleared).toHaveBeenCalledTimes(1);
+    expect(document.querySelectorAll(SEL.startFrameChip)).toHaveLength(1);
+  });
+
+  it('pauses when picking the frame leaves Start empty', async () => {
+    load('video-prompt-bar.html');
+    fakeFramePicker({ attaches: false });
+    const d = driver();
+    await d.uploadStartFrame(png());
+    const err = await d.attachStartFrame(START_FRAME).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(START_MESSAGE);
+  });
+
+  it('pauses when the page has no Start slot (not in Frames mode)', async () => {
+    load('prompt-bar.html');
+    const err = await driver().attachStartFrame(START_FRAME).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(START_MESSAGE);
+  });
+
+  it('never answers ready for a clip prompt without its start frame', async () => {
+    load('video-prompt-bar.html');
+    fakeEditor();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    const err = await driver().prepareSubmit('The stickman waves', { startFrame: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(START_MESSAGE);
+    emptyChip('Start')!.outerHTML = '<button class="chip-container" aria-label="Image ingredient"></button>';
+    await expect(driver().prepareSubmit('The stickman waves', { startFrame: true })).resolves.toEqual({ x: 5, y: 5 });
+  });
+
+  it('a billing dialog blocks attaching and is never clicked', async () => {
+    load('video-prompt-bar.html');
+    const picker = fakeFramePicker();
+    document.body.insertAdjacentHTML('beforeend', fixture('billing-dialog.html'));
+    const pressed = vi.fn();
+    document.querySelectorAll('mat-dialog-container button').forEach((b) => b.addEventListener('click', pressed));
+    const err = await driver().attachStartFrame(START_FRAME).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as FlowBlockedError).notice).toBe(false);
+    expect(picker.startClicks).not.toHaveBeenCalled();
+    expect(pressed).not.toHaveBeenCalled();
+  });
+});
+
+describe('FlowDriver video tiles and clip detail (spike S8)', () => {
+  it('lists drawing, finished and uploaded tiles in grid order, without media ids on videos', () => {
+    load('video-tiles.html');
+    expect(createFlowDriver().videoResultCards()).toEqual([
+      { key: 'pending-0', caption: 'The stickman waves hello', imageUrl: null, progress: 42, refusal: null, domIndex: 0 },
+      {
+        key: 'video-1',
+        caption: 'Stickman with red cap waving',
+        imageUrl: 'https://flow.google.com/asb/AbC123token',
+        progress: null,
+        refusal: null,
+        domIndex: 1,
+        video: true,
+      },
+      {
+        key: 'frame-media-1',
+        caption: 'vidflow-s01.png',
+        imageUrl: 'https://flow-content.google/image/frame-media-1',
+        progress: null,
+        refusal: null,
+        domIndex: 2,
+      },
+    ]);
+  });
+
+  it('reports a refused clip', () => {
+    document.body.innerHTML =
+      '<flow-grid-tile-container><div>The stickman waves</div><div>This prompt might violate our policies.</div></flow-grid-tile-container>';
+    expect(createFlowDriver().videoResultCards()[0]).toMatchObject({ refusal: 'This prompt might violate our policies.', progress: null });
+  });
+
+  it("reads the clip's prompt and edit id from its page", () => {
+    load('video-detail.html');
+    history.pushState({}, '', '/u/0/project/p-123/edit/edit-456');
+    expect(createFlowDriver().readVideoDetail()).toEqual({
+      prompt: 'The stickman waves hello. Keep the exact same drawing style and characters as the start frame.',
+      editId: 'edit-456',
+    });
+    history.pushState({}, '', '/u/0/project/p-123');
+    expect(createFlowDriver().readVideoDetail().editId).toBeNull();
+  });
+
+  /** Download media opens the menu; "720p Original size" makes Flow fetch the signed file URL (a resource entry). */
+  function fakeDownload(opts: { fetches?: boolean } = {}) {
+    let now = 1_000;
+    const entries: Array<{ name: string; startTime: number }> = [
+      { name: 'https://flow-content.google/video/old-clip?Expires=1&Signature=x', startTime: 10 },
+    ];
+    const chosen: string[] = [];
+    $('[aria-label="Download media"]').addEventListener('click', () => {
+      document.body.insertAdjacentHTML('beforeend', fixture('download-menu.html'));
+      document.querySelectorAll<HTMLElement>('[role="menuitem"]').forEach((item) =>
+        item.addEventListener('click', () => {
+          chosen.push(item.textContent!.replace(/\s+/g, ' ').trim());
+          document.querySelector('[role="menu"]')!.parentElement!.remove();
+          if (opts.fetches === false) return;
+          setTimeout(() => {
+            entries.push({ name: 'https://flow.google.com/asb/preview=mm,22,15', startTime: now + 5 });
+            entries.push({ name: 'https://flow-content.google/video/1fc37838-aa?Expires=9&KeyName=k&Signature=s', startTime: now + 10 });
+          }, 10);
+        }),
+      );
+    });
+    const perf = { now: () => now, getEntriesByType: (t: string) => (t === 'resource' ? [...entries] : []) };
+    return { perf, chosen, tick: () => (now += 1) };
+  }
+
+  it("presses Download media, chooses 720p Original size and returns the clip's signed URL and media id", async () => {
+    load('video-detail.html');
+    const dl = fakeDownload();
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 200, perf: dl.perf as never });
+    await expect(d.clipFileUrl(300)).resolves.toEqual({
+      url: 'https://flow-content.google/video/1fc37838-aa?Expires=9&KeyName=k&Signature=s',
+      mediaId: '1fc37838-aa',
+    });
+    expect(dl.chosen).toEqual(['movie720pOriginal size']); // never GIF, 1080p or 4K
+  });
+
+  it('never returns an older clip URL; null after the timeout', async () => {
+    load('video-detail.html');
+    const dl = fakeDownload({ fetches: false });
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 100, perf: dl.perf as never });
+    await expect(d.clipFileUrl(60)).resolves.toBeNull();
+  });
+
+  it('gives null without a Download media button or a 720p choice', async () => {
+    document.body.innerHTML = '<div></div>';
+    await expect(createFlowDriver(document, { pollMs: 5, timeoutMs: 50 }).clipFileUrl(50)).resolves.toBeNull();
+    load('video-detail.html');
+    $('[aria-label="Download media"]').addEventListener('click', () =>
+      document.body.insertAdjacentHTML('beforeend', '<div role="menu"><button role="menuitem">1080p Upscaled</button></div>'),
+    );
+    const upscaled = vi.fn();
+    const d = createFlowDriver(document, { pollMs: 5, timeoutMs: 50 });
+    const pending = d.clipFileUrl(50);
+    await tick(1);
+    document.querySelector('[role="menuitem"]')!.addEventListener('click', upscaled);
+    await expect(pending).resolves.toBeNull();
+    expect(upscaled).not.toHaveBeenCalled();
+  });
+});
+
+describe('FlowDriver Agent questions (spikes S6/S7)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const QUESTION = 'Image 1 is the first attachment, image 2 the second. Which shows the shoulder bag? Answer 1 or 2.';
+
+  /**
+   * Agent mode as S6/S7 describe it: the chip toggles aria-pressed; pictures are attached with the S7 picker (an
+   * attached asset leaves the list); pressing send (the background's trusted press, simulated by `send()`) opens the
+   * Agent panel with the question and, later, the reply.
+   */
+  function fakeAgent(names: string[]) {
+    vi.stubGlobal('DataTransfer', FakeDataTransfer);
+    const overlay = document.createElement('div');
+    overlay.className = 'cdk-overlay-container';
+    document.body.append(overlay);
+    const attached: string[] = [];
+    const chip = $('.agent-mode-chip');
+    const chipClicks = vi.fn(() => {
+      chip.setAttribute('aria-pressed', chip.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    });
+    chip.addEventListener('click', chipClicks);
+    $(SEL.ingredients).addEventListener('click', () => {
+      overlay.innerHTML = fixture('ingredients-picker.html');
+      const list = overlay.querySelector('[role="listbox"]')!;
+      let selected: string | null = null;
+      for (const name of names.filter((n) => !attached.includes(n))) {
+        const o = document.createElement('button');
+        o.setAttribute('role', 'option');
+        o.innerHTML = `<span>${name}</span><span>Image</span>`;
+        o.addEventListener('click', () => (selected = name));
+        list.prepend(o);
+      }
+      overlay.querySelector('.add-to-prompt')!.addEventListener('click', () => {
+        if (!selected) return;
+        attached.push(selected);
+        overlay.innerHTML = '';
+        $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Ingredient"></button>');
+      });
+    });
+    const closes = vi.fn();
+    function send(reply: string | null, extra = '') {
+      if (!document.querySelector(SEL.agentPanel)) {
+        document.body.insertAdjacentHTML('beforeend', fixture('agent-panel.html'));
+        $(SEL.agentPanelClose).addEventListener('click', () => {
+          closes();
+          document.querySelector(SEL.agentPanel)!.remove();
+        });
+      }
+      const messages = $('.agent-messages');
+      messages.insertAdjacentHTML('beforeend', `<div class="agent-message user-message">${QUESTION}</div>`);
+      if (reply === null) return;
+      messages.insertAdjacentHTML('beforeend', '<div class="agent-message model-message">Thinking…</div>');
+      setTimeout(() => {
+        messages.lastElementChild!.innerHTML = `<p>${reply}</p>${extra}`;
+      }, 20);
+    }
+    return { attached, chipClicks, chip, send, closes };
+  }
+
+  const ready = () => {
+    fakeEditor();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 100, top: 600, width: 20, height: 20 }) as DOMRect;
+  };
+  const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 300, settleMs: 30 });
+
+  it('turns Agent mode on, attaches the pictures in order, types the question and answers with where send is', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['vidflow-s01-a.png', 'vidflow-s01-b.png']);
+    const d = driver();
+    const at = await d.prepareAgentQuestion(['vidflow-s01-b.png', 'vidflow-s01-a.png'], QUESTION);
+    expect(at).toEqual({ x: 110, y: 610 });
+    expect(agent.chip.getAttribute('aria-pressed')).toBe('true');
+    expect(agent.attached).toEqual(['vidflow-s01-b.png', 'vidflow-s01-a.png']);
+    expect(document.querySelectorAll(SEL.ingredientChip)).toHaveLength(2);
+    expect($(SEL.promptBox).textContent).toBe(QUESTION);
+  });
+
+  it('returns the reply text once it has settled, and the background then finishes: panel closed, Agent off', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send('2 — she wears a shoulder bag across her body');
+    await expect(d.readAgentReply(1_000)).resolves.toBe('2 — she wears a shoulder bag across her body');
+    await expect(d.finishAgent()).resolves.toBe(true);
+    expect(agent.closes).toHaveBeenCalledTimes(1);
+    expect(agent.chip.getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector(SEL.agentPanel)).toBeNull();
+  });
+
+  it('never takes an earlier reply or its own question for the answer', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png', 'c.png', 'd.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send('1 — the first one');
+    await expect(d.readAgentReply(1_000)).resolves.toBe('1 — the first one');
+    // A second question in the same chat: the first reply is already there.
+    document.querySelectorAll(SEL.ingredientChip).forEach((c) => c.remove());
+    $(SEL.promptBox).innerHTML = '<p><br></p>';
+    await d.prepareAgentQuestion(['c.png', 'd.png'], QUESTION);
+    agent.send(null); // only the question shows so far
+    await expect(d.readAgentReply(80)).resolves.toBeNull();
+  });
+
+  it('gives null on a timeout (the background still finishes)', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send(null);
+    await expect(d.readAgentReply(60)).resolves.toBeNull();
+    await d.finishAgent();
+    expect(agent.chip.getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector(SEL.agentPanel)).toBeNull();
+  });
+
+  it('gives null without a question asked first (e.g. after the page reloaded)', async () => {
+    load('prompt-bar.html');
+    await expect(driver().readAgentReply(50)).resolves.toBeNull();
+  });
+
+  it('turns Agent mode off again when preparing fails', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png']); // b.png isn't in the project
+    const err = await driver().prepareAgentQuestion(['a.png', 'b.png'], QUESTION).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect(agent.chip.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('a billing dialog blocks the question, is never clicked, and Agent mode stays off', async () => {
+    load('prompt-bar.html', 'billing-dialog.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const pressed = vi.fn();
+    document.querySelectorAll('mat-dialog-container button').forEach((b) => b.addEventListener('click', pressed));
+    const err = await driver().prepareAgentQuestion(['a.png', 'b.png'], QUESTION).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as FlowBlockedError).notice).toBe(false);
+    expect(pressed).not.toHaveBeenCalled();
+    expect(agent.chip.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('a usage notice while waiting for the reply stops as a notice', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send(null);
+    document.body.insertAdjacentHTML('beforeend', fixture('usage-notice.html'));
+    const err = await d.readAgentReply(500).catch((e: unknown) => e);
+    expect((err as FlowBlockedError).notice).toBe(true);
+  });
+});

@@ -1,0 +1,13 @@
+<!--
+  Hand-built from spike S8: Flow's Account details panel (opened by [aria-label="Account details"] on the project grid
+  page). Its "Upgrade your plan" link must not make it count as a billing dialog. It closes only with [aria-label="Close account panel"]; Escape doesn't close it.
+-->
+<div class="cdk-overlay-container">
+  <div role="dialog" aria-modal="true" class="account-panel">
+    <button aria-label="Close account panel"><mat-icon>close</mat-icon></button>
+    <div class="account-email">owner@example.com</div>
+    <a class="credits-link"><mat-icon>toll</mat-icon><span>1,043 Google Flow credits</span></a>
+    <span>Resets on 13 Nov at 13:50</span>
+    <a>Upgrade your plan</a>
+  </div>
+</div>

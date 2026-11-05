@@ -26,9 +26,36 @@ export const SEL = {
   clearPrompt: 'button[aria-label="Clear prompt"]',
   /** Flow's Agent chip while Agent mode is on: prompts then go to the Agent instead of making pictures. */
   agentModeOn: '.agent-mode-chip[aria-pressed="true"]',
+  /** Spike S8, Video · Frames: the Start / End slots are empty chips until a frame is attached to them. */
+  emptyChip: 'button.empty-chip',
+  swapFrames: '[aria-label="Swap first and last frames"]',
+  /** A frame attached to Start (or End): an image chip, unlike the hero reference's plain "Ingredient" chip. */
+  startFrameChip: 'button.chip-container[aria-label="Image ingredient"]',
+  /** In the settings popover: "Generating will use N credits". */
+  creditCost: '.credit-cost-label',
+  /** Spike S8: the Account details panel (project grid page only); only its close button closes it. */
+  accountDetails: '[aria-label="Account details"]',
+  closeAccountPanel: '[aria-label="Close account panel"]',
+  /** A finished clip's grid tile (no data-media-id), inside its flow-tile-container with the caption. */
+  videoTile: 'flow-video-tile',
+  videoTileContainer: 'flow-tile-container',
+  /** On a clip's page: opens a menu of role="menuitem" download choices. */
+  downloadMedia: '[aria-label="Download media"]',
+  menuItem: '[role="menuitem"]',
+  agentModeChip: '.agent-mode-chip',
+  /**
+   * Flow's Agent chat panel, its replies and its close button. NOT captured live (spikes S6/S7 recorded only that the
+   * panel opens beside the grid and must be closed): confirm these in the Plan 3 live check.
+   */
+  agentPanel: 'flow-agent-panel, .agent-panel, [role="complementary"][aria-label="Agent"]',
+  agentReply: '.model-message, [data-author="model"], [data-role="model"], .agent-response',
+  agentPanelClose: '[aria-label="Close agent panel"], [aria-label="Close Agent"], [aria-label="Close"]',
   dialog: '[role="dialog"], [role="alertdialog"], dialog[open], mat-dialog-container',
   notice: '[role="alert"], [role="status"], [aria-live], mat-snack-bar-container, .mat-mdc-snack-bar-container',
 } as const;
+
+/** Spike S8: the signed URL Flow fetches a clip's file from ("720p Original size"); the path segment is the media id. */
+export const CLIP_URL_PREFIX = 'https://flow-content.google/video/';
 
 /** Trigger-text icon Flow shows for each aspect ratio. */
 export const ASPECT_ICON = { '16:9': 'crop_16_9', '9:16': 'crop_9_16', '1:1': 'crop_square' } as const;

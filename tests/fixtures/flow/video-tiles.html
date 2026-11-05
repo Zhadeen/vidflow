@@ -1,0 +1,17 @@
+<!--
+  Hand-built from spike S8: the project grid with clips. While a clip is drawing its tile is a flow-grid-tile-container
+  with the prompt as caption and a percentage; once done it is a flow-video-tile inside flow-tile-container, captioned
+  with an AI title and with NO data-media-id (the poster is a flow.google.com/asb/<token> URL). The uploaded start frame
+  is an ordinary picture tile captioned with its file name. Newest first.
+-->
+<div class="grid">
+  <flow-grid-tile-container><div class="progress">42%</div><div class="caption">The stickman waves hello</div></flow-grid-tile-container>
+  <flow-tile-container>
+    <flow-video-tile>
+      <img src="https://flow.google.com/asb/AbC123token" alt="Video thumbnail">
+      <mat-icon>play_circle</mat-icon>
+    </flow-video-tile>
+    <div class="caption">Stickman with red cap waving</div>
+  </flow-tile-container>
+  <flow-grid-tile-container><img data-media-id="frame-media-1" src="https://flow-content.google/image/frame-media-1"><div class="caption">vidflow-s01.png</div></flow-grid-tile-container>
+</div>

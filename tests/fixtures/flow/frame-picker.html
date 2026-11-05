@@ -1,0 +1,17 @@
+<!--
+  Hand-built from spike S8: the "Select a frame image" overlay Flow opens in .cdk-overlay-container when the Start
+  empty-chip is clicked. Filters (Images, Uploads), Upload media, a search box, and the project's assets as
+  role="option" (text "image <name>", the first word a mat-icon ligature). Picking an option attaches it at once:
+  there is no "Add to prompt" here. (A brand-new project shows "No assets found." and no options.)
+-->
+<div class="cdk-overlay-pane">
+  <div class="frame-picker">
+    <h2>Select a frame image</h2>
+    <div class="asset-filters"><button type="button">Images</button><button type="button">Uploads</button></div>
+    <button type="button" class="upload-media"><mat-icon>upload</mat-icon><span>Upload media</span></button>
+    <input type="search" placeholder="Search">
+    <div class="frame-assets">
+      <button type="button" role="option" aria-selected="false"><mat-icon>image</mat-icon><span>Stickman waving</span></button>
+    </div>
+  </div>
+</div>

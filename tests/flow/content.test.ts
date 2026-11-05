@@ -162,3 +162,41 @@ describe("Flow helper: a usage notice while VidFlow waits for tiles", () => {
     expect(sentTypes()).not.toContain('flow/notice');
   });
 });
+
+describe('Flow helper: clips and Agent questions (Plan 3)', () => {
+  it('answers with the video tiles, the Generate cost and an empty clip page read', async () => {
+    await boot({ fixture: 'video-prompt-bar.html' });
+    document.body.insertAdjacentHTML('beforeend', readFileSync(resolve(__dirname, '../fixtures/flow/video-tiles.html'), 'utf8'));
+    const tiles = (await ask({ type: 'flow/video-tiles-now' })) as { cards: Array<{ key: string; video?: true }> };
+    expect(tiles.cards.map((c) => c.key)).toEqual(['pending-0', 'video-1', 'frame-media-1']);
+    expect(await ask({ type: 'flow/generate-cost' })).toEqual({ cost: 14 });
+  });
+
+  it('a billing dialog blocks preparing a clip, and nothing in it is pressed', async () => {
+    await boot({ fixture: 'video-prompt-bar.html' });
+    document.body.insertAdjacentHTML('beforeend', readFileSync(resolve(__dirname, '../fixtures/flow/billing-dialog.html'), 'utf8'));
+    const pressed = vi.fn();
+    document.querySelectorAll('mat-dialog-container button').forEach((b) => b.addEventListener('click', pressed));
+    const reply = (await ask({
+      type: 'flow/prepare-clip',
+      prompt: 'The stickman waves',
+      aspect: '16:9',
+      length: 4,
+      startFrame: 'vidflow-s01.png',
+    })) as { kind: string; notice?: true };
+    expect(reply.kind).toBe('blocked');
+    expect(reply.notice).toBeUndefined();
+    expect(pressed).not.toHaveBeenCalled();
+  });
+
+  it('finishing the Agent turns its mode off; a reply asked for without a question waits', async () => {
+    await boot();
+    const chip = document.querySelector<HTMLElement>('.agent-mode-chip')!;
+    chip.setAttribute('aria-pressed', 'true');
+    chip.addEventListener('click', () => chip.setAttribute('aria-pressed', 'false'));
+    expect(await ask({ type: 'flow/agent-finish' })).toEqual({ done: true });
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+    expect(await ask({ type: 'flow/agent-reply', waitMs: 10 })).toEqual({ kind: 'waiting' });
+    expect(SEL.agentModeOn).toBe('.agent-mode-chip[aria-pressed="true"]');
+  });
+});

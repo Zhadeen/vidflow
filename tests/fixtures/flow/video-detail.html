@@ -1,0 +1,17 @@
+<!--
+  Hand-built from spike S8: a clip's page /u/0/project/<project>/edit/<editId> — a video editor (canvas player,
+  timeline), the prompt in flow-expandable-prompt div.prompt-text span.text-part, and toolbar buttons incl.
+  [aria-label="Download media"], which opens a role="menu" of role="menuitem" choices.
+-->
+<div class="video-editor">
+  <header>
+    <button aria-label="Back"><mat-icon>arrow_back</mat-icon></button>
+    <button aria-label="Download media"><mat-icon>download</mat-icon></button>
+  </header>
+  <canvas class="player"></canvas>
+  <div class="timeline"><span>00:04:00</span></div>
+  <flow-expandable-prompt>
+    <div class="prompt-text"><span class="text-part">The stickman waves hello. Keep the exact same drawing style
+      and characters as the start frame.</span></div>
+  </flow-expandable-prompt>
+</div>
