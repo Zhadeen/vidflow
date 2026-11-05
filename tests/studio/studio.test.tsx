@@ -7,6 +7,8 @@ import { initRun, reduceRun, type RunState } from '../../src/runs/run';
 import type { Scene } from '../../src/scenes/types';
 import { memoryMediaStore } from '../../src/store/media';
 import type { Project, SceneState } from '../../src/store/projects';
+import { useState } from 'react';
+import { applyPatch } from '../../src/studio/projectEdits';
 import { ProjectsHome } from '../../src/studio/ProjectsHome';
 import { ProjectScreen } from '../../src/studio/ProjectScreen';
 import type { RunClient } from '../../src/studio/runClient';
@@ -60,7 +62,7 @@ function runningState(p: Project, done: number): RunState {
 
 function fakeClient(over: Partial<RunClient> = {}): RunClient {
   const ok = async (): Promise<RunReply> => ({ ok: true, state: null });
-  return { get: ok, start: vi.fn(ok), pause: vi.fn(ok), resume: vi.fn(ok), retry: vi.fn(ok), subscribe: () => () => undefined, ...over };
+  return { get: ok, start: vi.fn(ok), pause: vi.fn(ok), resume: vi.fn(ok), retry: vi.fn(ok), stop: vi.fn(ok), forget: vi.fn(ok), subscribe: () => () => undefined, ...over };
 }
 
 function renderProject(p: Project, run: RunState | null, step: 'script' | 'pictures', client = fakeClient()) {
@@ -76,6 +78,32 @@ function renderProject(p: Project, run: RunState | null, step: 'script' | 'pictu
     />,
   );
 }
+
+/** ProjectScreen with a parent that keeps the project's edits, as the App does. */
+function Harness({ start, run, client, onPatch }: { start: Project; run: RunState | null; client: RunClient; onPatch?: (p: unknown) => void }) {
+  const [p, setP] = useState(start);
+  return (
+    <ProjectScreen
+      project={p}
+      run={run}
+      client={client}
+      media={memoryMediaStore()}
+      initialStep="script"
+      onChange={(patch) => {
+        onPatch?.(patch);
+        setP((cur) => applyPatch(cur, patch));
+      }}
+      onHome={() => undefined}
+    />
+  );
+}
+
+const REPLY_3 = [
+  'Slide,Timecode,Sentence,Concept,Text Overlay,Image Prompt,Motion Prompt',
+  '"Slide 01","00:00 - 00:04","One.","a","A","The hero waves.","Waves."',
+  '"Slide 02","00:04 - 00:08","Two.","b","B","The hero sits.","Sits."',
+  '"Slide 03","00:08 - 00:12","Three.","c","C","","Stands."',
+].join('\n');
 
 const primaries = (root: HTMLElement) => root.querySelectorAll('[data-variant="primary"]');
 
@@ -118,17 +146,73 @@ describe('studio', () => {
   });
 
   it('shows parse issues in plain words', () => {
-    renderProject(project(0), null, 'script');
-    const file = [
-      'Slide,Timecode,Sentence,Concept,Text Overlay,Image Prompt,Motion Prompt',
-      '"Slide 01","00:00 - 00:04","One.","a","A","The hero waves.","Waves."',
-      '"Slide 02","00:04 - 00:08","Two.","b","B","The hero sits.","Sits."',
-      '"Slide 03","00:08 - 00:12","Three.","c","C","","Stands."',
-    ].join('\n');
-    fireEvent.change(screen.getByLabelText(/claude's reply/i), { target: { value: file } });
+    render(<Harness start={project(0)} run={null} client={fakeClient()} />);
+    fireEvent.change(screen.getByLabelText(/claude's reply/i), { target: { value: REPLY_3 } });
     expect(screen.getByText('Scene 3 has no image prompt.')).toBeTruthy();
+    const use = screen.getByRole('button', { name: 'Use these scenes' }) as HTMLButtonElement;
+    expect(use.getAttribute('data-variant')).toBe('primary');
+    expect(use.disabled).toBe(false);
+    fireEvent.click(use);
     const next = screen.getByRole('button', { name: /continue to pictures/i }) as HTMLButtonElement;
     expect(next.disabled).toBe(false);
+  });
+
+  it('a pasted reply replaces scenes only on Use these scenes, and asks first when there are pictures', () => {
+    const p = project(60);
+    const run = runningState(p, 60);
+    const patches: unknown[] = [];
+    const { container } = render(<Harness start={{ ...p, sceneStates: run.sceneStates }} run={null} client={fakeClient()} onPatch={(x) => patches.push(x)} />);
+    fireEvent.change(screen.getByLabelText(/claude's reply/i), { target: { value: REPLY_3 } });
+    expect(patches.some((x) => 'scenes' in (x as object))).toBe(false);
+    expect(primaries(container)).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Use these scenes' }));
+    expect(screen.getByText('This replaces 60 scenes and their pictures. Continue?')).toBeTruthy();
+    expect(patches.some((x) => 'scenes' in (x as object))).toBe(false);
+    expect(primaries(container)).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, replace them' }));
+    expect(patches.filter((x) => 'scenes' in (x as object))).toHaveLength(1);
+  });
+
+  it('after a finished run, a new scene file starts fresh: new count, no old pictures, no Try again', async () => {
+    const p = project(60);
+    let run = runningState(p, 59);
+    run = reduceRun(reduceRun(run, { type: 'submitted', sceneId: 'scene-60' }), { type: 'refused', sceneId: 'scene-60', message: 'No.' });
+    expect(run.status).toBe('finished');
+    const client = fakeClient();
+    render(<Harness start={{ ...p, sceneStates: run.sceneStates }} run={run} client={client} />);
+    fireEvent.change(screen.getByLabelText(/claude's reply/i), { target: { value: REPLY_3 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use these scenes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, replace them' }));
+    await waitFor(() => expect(client.forget).toHaveBeenCalledWith('p1'));
+    fireEvent.click(screen.getByRole('button', { name: /continue to pictures/i }));
+    expect(screen.getByRole('button', { name: 'Start making pictures' }).getAttribute('data-variant')).toBe('primary');
+    expect(screen.getByText(/3 scenes · 6 pictures/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.queryAllByRole('button', { name: /: Ready$/ })).toHaveLength(0);
+    expect(within(screen.getByRole('navigation', { name: /steps/i })).getByText('Pictures 0/3')).toBeTruthy();
+  });
+
+  it('a paused run can be stopped from the studio', async () => {
+    const p = project(4);
+    const run = reduceRun(reduceRun(initRun(p), { type: 'start' }), { type: 'pause' });
+    const client = fakeClient();
+    renderProject(p, run, 'pictures', client);
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop.getAttribute('data-variant')).toBe('secondary');
+    fireEvent.click(stop);
+    await waitFor(() => expect(client.stop).toHaveBeenCalled());
+  });
+
+  it('Continue to Motion stays coral and says Motion is coming next when pressed', () => {
+    const p = project(60);
+    renderProject(p, runningState(p, 38), 'pictures');
+    const next = screen.getByRole('button', { name: /continue to motion/i }) as HTMLButtonElement;
+    expect(next.getAttribute('data-variant')).toBe('primary');
+    expect(next.disabled).toBe(false);
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryByText(/Motion is coming next in VidFlow/)).toBeNull();
+    fireEvent.click(next);
+    expect(screen.getByText('Motion is coming next in VidFlow. Your pictures are saved in this project.')).toBeTruthy();
   });
 
   it('Pictures step shows live progress', () => {

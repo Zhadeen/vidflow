@@ -6,6 +6,8 @@ import {
   RUN_RETRY,
   RUN_START,
   RUN_STATE,
+  RUN_STOP,
+  RUN_FORGET,
   type RunReply,
   type RunStateMessage,
   type StudioRequest,
@@ -19,6 +21,10 @@ export interface RunClient {
   pause(): Promise<RunReply>;
   resume(): Promise<RunReply>;
   retry(projectId: string, sceneId: string): Promise<RunReply>;
+  /** Ends a paused run; pictures stay. */
+  stop(): Promise<RunReply>;
+  /** This project's scenes were replaced: forget a finished run for it. */
+  forget(projectId: string): Promise<RunReply>;
   /** Called on every change of the run; returns an unsubscribe. */
   subscribe(listener: (state: RunState) => void): () => void;
 }
@@ -41,6 +47,8 @@ export function chromeRunClient(): RunClient {
     pause: () => send({ type: RUN_PAUSE }),
     resume: () => send({ type: RUN_RESUME }),
     retry: (projectId, sceneId) => send({ type: RUN_RETRY, projectId, sceneId }),
+    stop: () => send({ type: RUN_STOP }),
+    forget: (projectId) => send({ type: RUN_FORGET, projectId }),
     subscribe(listener) {
       const onMessage = (message: RunStateMessage, sender: chrome.runtime.MessageSender) => {
         if (sender.id === chrome.runtime.id && message?.type === RUN_STATE) listener(message.state);

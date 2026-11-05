@@ -168,7 +168,8 @@ button.vf-step:active {
 .vf-choice:focus-within,
 .vf-seg-option:focus-within,
 .vf-input:focus-visible,
-.vf-drop:focus-within {
+.vf-drop:focus-within,
+.vf-file-label:focus-within {
   outline: none;
   box-shadow: var(--vf-focus);
 }
@@ -198,6 +199,11 @@ button.vf-step:active {
 
 .vf-btn[data-variant='primary']:active:not(:disabled) {
   background: var(--vf-coral-pressed);
+}
+
+/* Not available yet but kept coral (owner, 5 Nov): pointer stays normal; hover and press stay the subtle usual ones. */
+.vf-btn[data-variant='primary'][aria-disabled='true'] {
+  cursor: default;
 }
 
 /* Disabled primary leaves coral (a faded coral reads as a new colour): navy pill, muted cream text. */
@@ -457,6 +463,7 @@ textarea.vf-input {
 }
 
 .vf-file-label {
+  border-radius: 4px;
   color: var(--vf-cream);
   text-decoration: underline;
   text-underline-offset: 3px;

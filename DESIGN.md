@@ -80,7 +80,7 @@ navy text (`.vf-option[data-best='true']`, Plan 2).
 | Variant | Look | Rule |
 |---|---|---|
 | `primary` (`data-variant="primary"`) | Coral fill, navy bold text, full width, 52px tall, 12px radius | Exactly one per screen |
-| `secondary` | Transparent, 1.5px cream outline, cream text | Everything else (Pause, Copy Claude Prompt, Open, Try again) |
+| `secondary` | Transparent, 1.5px cream outline, cream text | Everything else (Pause, Stop, Copy Claude Prompt, Open, Try again, Keep the old scenes) |
 
 The five states, for every interactive element:
 
@@ -90,6 +90,9 @@ The five states, for every interactive element:
 - **Pressed:** 1px down; primary → `--vf-coral-pressed`; secondary → `--vf-navy-pill` fill.
 - **Disabled:** primary → navy-pill fill with muted text (a faded coral reads as a new colour, so coral is not dimmed);
   secondary → strong-line outline with muted text; `not-allowed` cursor; a hint nearby says why.
+- **Not available yet:** "Continue to Motion →" stays bright coral (owner, 5 Nov 2026) with `aria-disabled="true"`
+  (still focusable); pressing it shows "Motion is coming next in VidFlow. Your pictures are saved in this project."
+  in a live line instead of moving on. Hover and press stay the usual subtle ones; the pointer stays normal.
 - **Loading:** spinner in the current text colour before the label, label kept, `aria-busy`, repeat presses blocked.
 
 ## Motion
@@ -102,8 +105,9 @@ Short colour transitions (160ms, ease-out). A scene Flow is working on breathes 
 - Plain, short sentences. Say what happens and what to do next.
 - Every error says what went wrong and the next step ("Flow is signed in to …. Switch Flow to …, then press Resume.").
 - Messages from the background (Flow's refusal reasons, pause reasons, account checks) are shown word for word.
-- Buttons name their action: "New project", "Copy Claude Prompt", "Continue to Pictures →", "Start making pictures",
-  "Pause", "Resume", "Try again".
+- Buttons name their action: "New project", "Copy Claude Prompt", "Use these scenes", "Continue to Pictures →",
+  "Start making pictures", "Pause", "Resume", "Stop", "Try again".
+- Anything that throws work away asks first, in numbers ("This replaces 60 scenes and their pictures. Continue?").
 - Before a picture run, say: how many pictures, that pictures cost 0 Flow credits, that a separate Flow window opens,
   that Chrome shows a "VidFlow started debugging this browser" bar while it runs, and that he can leave the tab.
 - No jargon (no "run", "queue", "CSV" in owner-facing text where a plain word works).

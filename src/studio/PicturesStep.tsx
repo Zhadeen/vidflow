@@ -18,7 +18,7 @@ interface Props {
   onRunState(state: RunState | null): void;
 }
 
-type Busy = null | 'start' | 'pause' | 'resume' | `retry:${string}`;
+type Busy = null | 'start' | 'pause' | 'resume' | 'stop' | `retry:${string}`;
 
 const MOTION_NEXT = 'Motion is coming next in VidFlow. Your pictures are saved in this project.';
 
@@ -26,6 +26,7 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [motionNote, setMotionNote] = useState(false);
 
   const phase = runPhase(project, run);
   const states = sceneStatesFor(project, run);
@@ -65,6 +66,7 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
   const start = () => act('start', () => client.start(project.id));
   const pause = () => act('pause', () => client.pause());
   const resume = () => act('resume', () => client.resume());
+  const stop = () => act('stop', () => client.stop());
   const retry = (sceneId: string) => act(`retry:${sceneId}`, () => client.retry(project.id, sceneId));
 
   const showBeforeStart = phase === 'idle' && picked === null && remaining > 0;
@@ -152,7 +154,7 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
 
       <div className="vf-actions">
         {phase === 'paused' ? (
-          <Button variant="primary" onClick={() => void resume()} loading={busy === 'resume'}>
+          <Button variant="primary" onClick={() => void resume()} loading={busy === 'resume'} disabled={busy === 'stop'}>
             Resume
           </Button>
         ) : phase === 'idle' && remaining > 0 ? (
@@ -160,7 +162,8 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
             Start making pictures
           </Button>
         ) : (
-          <Button variant="primary" disabled aria-describedby="vf-motion-next">
+          // Motion isn't built yet: the owner kept this coral (approved look); pressing it says so instead of moving on.
+          <Button variant="primary" aria-disabled="true" aria-describedby="vf-motion-next" onClick={() => setMotionNote(true)}>
             Continue to Motion →
           </Button>
         )}
@@ -169,12 +172,18 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
             Pause
           </Button>
         )}
+        {phase === 'paused' && (
+          <Button onClick={() => void stop()} loading={busy === 'stop'} disabled={busy === 'resume'}>
+            Stop
+          </Button>
+        )}
       </div>
-      {phase !== 'paused' && !(phase === 'idle' && remaining > 0) && (
-        <p className="vf-hint" id="vf-motion-next">
-          {MOTION_NEXT}
-        </p>
+      {phase === 'paused' && (
+        <p className="vf-hint">Stop ends this run and keeps every picture. Start carries on later from the first scene without one.</p>
       )}
+      <p className="vf-hint" id="vf-motion-next" aria-live="polite">
+        {motionNote ? MOTION_NEXT : ''}
+      </p>
     </div>
   );
 }

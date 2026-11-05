@@ -16,12 +16,25 @@ interface Props {
   initialStep?: 'script' | 'pictures';
   onChange(patch: ProjectPatch): void;
   onHome(): void;
+  /** The run as the background reported it after a request from this screen. */
+  onRunState?(state: RunState | null): void;
 }
 
-export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome }: Props) {
+export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome, onRunState }: Props) {
   const [step, setStep] = useState<'script' | 'pictures'>(initialStep ?? (project.scenes.length > 0 ? 'pictures' : 'script'));
   const [run, setRun] = useState(runProp);
   useEffect(() => setRun(runProp), [runProp]);
+
+  const reportRun = (state: RunState | null) => {
+    setRun(state);
+    onRunState?.(state);
+  };
+
+  function change(patch: ProjectPatch) {
+    onChange(patch);
+    // New scenes: a finished run for the old ones must not come back (the background forgets it).
+    if (patch.scenes) void client.forget(project.id).then((reply) => reply.ok && reportRun(reply.state));
+  }
 
   const phase = runPhase(project, run);
   const progress = pictureProgress(project, run);
@@ -59,11 +72,11 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
           project={project}
           locked={live}
           hasPictures={progress.done > 0}
-          onChange={onChange}
+          onChange={change}
           onContinue={() => setStep('pictures')}
         />
       ) : (
-        <PicturesStep project={project} run={run} client={client} media={media} onRunState={setRun} />
+        <PicturesStep project={project} run={run} client={client} media={media} onRunState={reportRun} />
       )}
     </div>
   );

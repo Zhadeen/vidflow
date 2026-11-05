@@ -8,11 +8,13 @@ export function runFor(project: Project, run: RunState | null): RunState | null 
 
 /**
  * Each scene's state as the studio should show it. A live (running/paused) run is fresher than the saved project;
- * otherwise the saved project is the truth (the coordinator saves it before it announces a change).
+ * otherwise the saved project is the truth (the coordinator saves it before it announces a change, and a new scene
+ * file resets it).
  */
 export function sceneStatesFor(project: Project, run: RunState | null): Record<string, SceneState> {
   const mine = runFor(project, run);
-  const live = mine && mine.status !== 'idle' ? mine.sceneStates : {};
+  // Only a running or paused run is fresher than the project; a finished or stopped one may describe old scenes.
+  const live = mine && (mine.status === 'running' || mine.status === 'paused') ? mine.sceneStates : {};
   const out: Record<string, SceneState> = {};
   for (const scene of project.scenes) {
     out[scene.id] = live[scene.id] ?? project.sceneStates[scene.id] ?? { sceneId: scene.id, status: 'pending', pictureIds: [] };

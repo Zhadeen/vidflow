@@ -13,6 +13,8 @@ export type RunEvent =
   | { type: 'detail'; cardKey: string; prompt: string }
   | { type: 'refused'; sceneId: string; message: string }
   | { type: 'failed'; sceneId: string; message: string }
+  /** The owner stopped the run: nothing more is sent; scenes in Flow go back to waiting; pictures stay. */
+  | { type: 'stop' }
   /** The owner pressed Try again on a refused or failed scene: it goes back in the queue. */
   | { type: 'retry'; sceneId: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
@@ -139,6 +141,8 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
         setScene(state, event.sceneId, { status: event.type === 'refused' ? 'refused' : 'failed', message: event.message }),
       );
     }
+    case 'stop':
+      return { ...clearPause(requeueSubmitted(state)), status: 'idle' };
     case 'retry': {
       const current = state.sceneStates[event.sceneId];
       if (!current || (current.status !== 'refused' && current.status !== 'failed')) return state;

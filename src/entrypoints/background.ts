@@ -10,6 +10,8 @@ import {
   RUN_RETRY,
   RUN_START,
   RUN_STATE,
+  RUN_STOP,
+  RUN_FORGET,
   type RunReply,
   type RunStateMessage,
   type StudioRequest,
@@ -17,7 +19,8 @@ import {
 } from '../flow/messages';
 import { createFlowPort } from '../flow/port';
 import {
-  BUSY_MESSAGE,
+  RunBlockedError,
+  discardFinishedRun,
   getRunState,
   handleFlowEvent,
   onRunState,
@@ -30,6 +33,7 @@ import {
   retryScene,
   setFlowPort,
   startRun,
+  stopRun,
 } from '../runs/coordinator';
 
 /** Runs a studio request and answers with the run as it is afterwards, or the plain reason it was refused. */
@@ -48,17 +52,23 @@ async function answerStudio(message: StudioRequest): Promise<RunReply> {
       case RUN_RETRY:
         await retryScene(message.projectId, message.sceneId);
         break;
+      case RUN_STOP:
+        await stopRun();
+        break;
+      case RUN_FORGET:
+        await discardFinishedRun(message.projectId);
+        break;
       case RUN_GET:
         break;
     }
     return { ok: true, state: getRunState() };
   } catch (e) {
     const text = e instanceof Error ? e.message : String(e);
-    return { ok: false, reason: text === BUSY_MESSAGE ? 'busy' : 'error', message: text };
+    return { ok: false, reason: e instanceof RunBlockedError ? 'busy' : 'error', message: text };
   }
 }
 
-const STUDIO_TYPES = new Set<string>([RUN_GET, RUN_START, RUN_PAUSE, RUN_RESUME, RUN_RETRY]);
+const STUDIO_TYPES = new Set<string>([RUN_GET, RUN_START, RUN_PAUSE, RUN_RESUME, RUN_RETRY, RUN_STOP, RUN_FORGET]);
 
 export default defineBackground(() => {
   registerCoordinator();

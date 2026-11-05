@@ -3,7 +3,7 @@ import type { CharacterSpec } from '../prompts/build';
 import { buildClaudePrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { parseSceneFile } from '../scenes/parse';
-import type { ParseIssue } from '../scenes/types';
+import type { ParseIssue, Scene } from '../scenes/types';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from './Button';
 
@@ -42,18 +42,34 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
   const [copy, setCopy] = useState<CopyState>({ kind: 'idle' });
   const [over, setOver] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  /** Scenes read from the reply but not used yet (they replace the project's only on "Use these scenes"). */
+  const [pending, setPending] = useState<Scene[] | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   function readReply(text: string) {
     setReply(text);
+    setConfirming(false);
     if (!text.trim()) {
       setIssues([]);
       setReadCount(null);
+      setPending(null);
       return;
     }
     const { scenes, issues: found } = parseSceneFile(text);
     setIssues(found);
     setReadCount(scenes.length);
-    if (scenes.length > 0) onChange({ scenes });
+    setPending(scenes.length > 0 ? scenes : null);
+  }
+
+  function useScenes() {
+    if (!pending) return;
+    if (hasPictures && project.scenes.length > 0 && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    onChange({ scenes: pending });
+    setPending(null);
+    setConfirming(false);
   }
 
   async function copyPrompt() {
@@ -86,8 +102,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
     onChange({ character: description.trim() ? { description, hasReferenceImage: false } satisfies CharacterSpec : null });
 
   const sceneCount = project.scenes.length;
-  // The reply just read counts even before the saved project catches up.
-  const canContinue = sceneCount > 0 || (readCount ?? 0) > 0;
+  const listed = pending ?? project.scenes;
 
   return (
     <div className="vf-stack">
@@ -177,7 +192,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
             )}
             {hasPictures && !locked && (
               <p className="vf-hint" style={{ marginTop: 'var(--vf-space-3)', marginBottom: 0 }}>
-                This video already has pictures. A new reply replaces the scenes, and their pictures are made again.
+                This video already has pictures. Using a new reply replaces the scenes, and their pictures are made again.
               </p>
             )}
             {readCount !== null && (
@@ -185,7 +200,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
                 <p className="vf-status">
                   {readCount === 0
                     ? "VidFlow found no scenes in this reply. Check you pasted Claude's whole reply."
-                    : `VidFlow read ${readCount} ${readCount === 1 ? 'scene' : 'scenes'}.`}
+                    : `VidFlow read ${readCount} ${readCount === 1 ? 'scene' : 'scenes'}${pending ? '. Press Use these scenes to use them' : ' and is using them'}.`}
                   {issues.length > 0 && readCount > 0 && ' Some need a look, but you can carry on:'}
                 </p>
                 {issues.length > 0 && (
@@ -199,13 +214,14 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
             )}
           </section>
 
-          {sceneCount > 0 && (
+          {listed.length > 0 && (
             <section className="vf-panel" aria-labelledby={`${ids}-scenes`}>
               <h2 className="vf-h2" id={`${ids}-scenes`}>
-                {sceneCount} {sceneCount === 1 ? 'scene' : 'scenes'}
+                {listed.length} {listed.length === 1 ? 'scene' : 'scenes'}
+                {pending ? ' in this reply (not used yet)' : ''}
               </h2>
               <ol className="vf-scene-list">
-                {project.scenes.map((scene, i) => (
+                {listed.map((scene, i) => (
                   <li key={scene.id}>
                     <span className="vf-num">{String(i + 1).padStart(2, '0')}</span>
                     <span>{scene.sentence || scene.imagePrompt || 'No words or picture prompt.'}</span>
@@ -310,12 +326,30 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue 
         </section>
       </div>
 
+      {confirming && (
+        <p className="vf-notice" role="alert">
+          This replaces {sceneCount} scenes and their pictures. Continue?
+        </p>
+      )}
       <div className="vf-actions">
-        <Button variant="primary" onClick={onContinue} disabled={!canContinue}>
-          Continue to Pictures →
-        </Button>
+        {confirming ? (
+          <>
+            <Button variant="primary" onClick={useScenes}>
+              Yes, replace them
+            </Button>
+            <Button onClick={() => setConfirming(false)}>Keep the old scenes</Button>
+          </>
+        ) : pending ? (
+          <Button variant="primary" onClick={useScenes} disabled={locked}>
+            Use these scenes
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={onContinue} disabled={sceneCount === 0}>
+            Continue to Pictures →
+          </Button>
+        )}
       </div>
-      {!canContinue && <p className="vf-hint">Paste Claude's reply to continue.</p>}
+      {!pending && sceneCount === 0 && <p className="vf-hint">Paste Claude's reply to continue.</p>}
     </div>
   );
 }

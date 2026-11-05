@@ -257,6 +257,72 @@ describe('studio controls', () => {
   });
 });
 
+describe('studio controls: fix round', () => {
+  /** A paused run on project A (scene still to make), plus project B. */
+  async function pausedA() {
+    const ctx = await setup();
+    const store = await import('../../src/store/projects');
+    const b = await store.createProject('Project B');
+    b.scenes = ctx.project.scenes;
+    await store.saveProject(b);
+    ctx.coordinator.setFlowPort(ctx.fakePort({ confirmStarted: vi.fn(() => new Promise<boolean>(() => undefined)) }));
+    await ctx.coordinator.startRun(ctx.project.id);
+    await ctx.coordinator.pauseRun();
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused');
+    return { ...ctx, b, store };
+  }
+
+  it("refuses to start another project while one is paused with pictures still to make, leaving it untouched", async () => {
+    const { coordinator, b } = await pausedA();
+    const before = structuredClone(coordinator.getRunState());
+    await expect(coordinator.startRun(b.id)).rejects.toThrow(
+      '\u201cDemo\u201d is paused with pictures still to make. Resume it or stop it first, then start this one.',
+    );
+    await expect(coordinator.retryScene(b.id, 's1')).rejects.toThrow('is paused with pictures still to make');
+    expect(coordinator.getRunState()).toEqual(before);
+  });
+
+  it('Stop ends a paused run without deleting pictures, so another project can start', async () => {
+    const { coordinator, chromeMock, b, project, store } = await pausedA();
+    await coordinator.stopRun();
+    const stopped = coordinator.getRunState()!;
+    expect(stopped.status).toBe('idle');
+    expect(stopped.inFlight).toEqual([]);
+    expect(chromeMock.alarms.clear).toHaveBeenCalled();
+    expect((await store.getProject(project.id))!.sceneStates.s1?.status).toBe('pending');
+    await coordinator.startRun(b.id);
+    expect(coordinator.getRunState()?.projectId).toBe(b.id);
+  });
+
+  it('starting the project that is already running changes nothing', async () => {
+    const { coordinator, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort({ confirmStarted: vi.fn(async () => true) }));
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    const before = structuredClone(coordinator.getRunState());
+    await coordinator.startRun(project.id);
+    expect(coordinator.getRunState()).toEqual(before);
+  });
+
+  it("discards a finished run when its project's scenes are replaced", async () => {
+    const { coordinator, chromeMock, project, fakePort } = await setup();
+    coordinator.setFlowPort(fakePort());
+    await coordinator.startRun(project.id);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'submitted');
+    await coordinator.handleFlowEvent({ type: 'refused', sceneId: 's1', message: 'No.' });
+    await waitFor(() => coordinator.getRunState()?.status === 'finished');
+    await coordinator.discardFinishedRun(project.id);
+    expect(coordinator.getRunState()).toBeNull();
+    expect(chromeMock.storage.local.data['vidflow.run']).toBeUndefined();
+  });
+
+  it('keeps a live run when asked to discard it', async () => {
+    const { coordinator } = await pausedA();
+    await coordinator.discardFinishedRun(coordinator.getRunState()!.projectId);
+    expect(coordinator.getRunState()?.status).toBe('paused');
+  });
+});
+
 describe('matching results to scenes', () => {
   /** Starts a run of one scene and waits until Flow has it; returns the exact prompt VidFlow typed. */
   async function submitted(outputs: 1 | 2 | 4, over: Partial<FlowPort> = {}) {

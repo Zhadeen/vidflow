@@ -120,6 +120,9 @@ export const RUN_START = 'run/start';
 export const RUN_PAUSE = 'run/pause';
 export const RUN_RESUME = 'run/resume';
 export const RUN_RETRY = 'run/retry';
+export const RUN_STOP = 'run/stop';
+/** The project's scenes were replaced: the background forgets a finished run for it. */
+export const RUN_FORGET = 'run/forget';
 export const RUN_STATE = 'run/state';
 
 /** studio → background. Each is answered with a RunReply. */
@@ -128,6 +131,8 @@ export type StudioRequest =
   | { type: typeof RUN_START; projectId: string }
   | { type: typeof RUN_PAUSE }
   | { type: typeof RUN_RESUME }
+  | { type: typeof RUN_STOP }
+  | { type: typeof RUN_FORGET; projectId: string }
   | { type: typeof RUN_RETRY; projectId: string; sceneId: string };
 
 /** The run as it is now, or why the request was refused (message is shown to the owner word for word). */

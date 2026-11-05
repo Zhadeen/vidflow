@@ -68,6 +68,14 @@ const NO_PROJECT_MESSAGE = "VidFlow pressed New project but Flow didn't open one
 
 export const BUSY_MESSAGE = 'Another project is making pictures right now. Pause it or wait for it to finish, then try again.';
 
+/** A run can't start because another project's run is going or waiting; the message says which and what to do. */
+export class RunBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunBlockedError';
+  }
+}
+
 type RunStateListener = (state: RunState) => void;
 const listeners = new Set<RunStateListener>();
 
@@ -626,17 +634,46 @@ async function pump(): Promise<void> {
 
 // ---- Public API ----------------------------------------------------------
 
+/** Why a run for `projectId` can't start now (another project's run is running, or paused with work left), or null. */
+async function startBlocker(projectId: string): Promise<string | null> {
+  if (!state || state.projectId === projectId) return null;
+  if (state.status === 'running') return BUSY_MESSAGE;
+  const unfinished = Object.values(state.sceneStates).some((s) => s.status === 'pending' || s.status === 'submitted');
+  if (state.status === 'paused' && unfinished) {
+    const name = (await getProject(state.projectId))?.name ?? 'Another video';
+    return `\u201c${name}\u201d is paused with pictures still to make. Resume it or stop it first, then start this one.`;
+  }
+  return null;
+}
+
 export async function startRun(projectId: string, retrySceneId?: string): Promise<void> {
   await ready;
   const project = await getProject(projectId);
   if (!project) throw new Error('That project is no longer in VidFlow.');
   await enqueue(async () => {
-    if (state && state.projectId !== projectId && state.status === 'running') throw new Error(BUSY_MESSAGE);
+    const blocked = await startBlocker(projectId);
+    if (blocked) throw new RunBlockedError(blocked);
+    // Already making this project's pictures: nothing to do (a fresh start would re-send scenes in Flow).
+    if (state?.projectId === projectId && state.status === 'running') return;
     let next = initRun(project);
     if (retrySceneId) next = reduceRun(next, { type: 'retry', sceneId: retrySceneId });
     await commit(reduceRun(next, { type: 'start' }));
   });
   void pump();
+}
+
+/** Stop: the run ends (idle) without deleting any pictures; Start carries on later from the first unfinished scene. */
+export const stopRun = () => dispatch({ type: 'stop' });
+
+/** The project's scenes were replaced: a finished (or stopped) run for it no longer describes them, so forget it. */
+export async function discardFinishedRun(projectId: string): Promise<void> {
+  await ready;
+  await enqueue(async () => {
+    if (!state || state.projectId !== projectId) return;
+    if (state.status === 'running' || state.status === 'paused') return;
+    state = null;
+    await chrome.storage.local.remove(RUN_KEY);
+  });
 }
 
 /** Try again on one refused or failed scene: re-queue it in this project's run, or start a run for it. */
