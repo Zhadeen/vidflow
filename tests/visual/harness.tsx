@@ -57,6 +57,29 @@ function runWith(done: number, extra: (s: RunState) => RunState = (s) => s): Run
   return extra(s);
 }
 
+// Fixture activity so the Pictures step's Activity list has something to show (no extension APIs here).
+const T = Date.now();
+(globalThis as { chrome?: unknown }).chrome = {
+  storage: {
+    local: {
+      get: async (key: string) =>
+        key === 'vidflow.activity'
+          ? {
+              [key]: [
+                { at: T - 90000, projectId: 'p1', sceneId: null, text: 'Opened a new Flow project' },
+                { at: T - 80000, projectId: 'p1', sceneId: id(1), text: 'Sent to Flow' },
+                { at: T - 40000, projectId: 'p1', sceneId: id(1), text: '✓ Saved 2 pictures' },
+                { at: T - 20000, projectId: 'p1', sceneId: id(2), text: 'Typing the prompt' },
+                { at: T - 5000, projectId: 'p1', sceneId: id(2), text: 'Pressing Generate' },
+              ],
+            }
+          : {},
+      set: async () => undefined,
+    },
+    onChanged: { addListener: () => undefined, removeListener: () => undefined },
+  },
+};
+
 const images: Record<string, Promise<Blob>> = {};
 const media: MediaStore = {
   put: async () => '',

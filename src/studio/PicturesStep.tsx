@@ -3,6 +3,7 @@ import type { RunReply } from '../flow/messages';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
 import type { Project, SceneState } from '../store/projects';
+import { ActivityList } from './ActivityList';
 import { Button } from './Button';
 import { ownerPauseReason, pictureProgress, runPhase, sceneNumber, sceneStatesFor } from './progress';
 import type { RunClient } from './runClient';
@@ -108,6 +109,8 @@ export function PicturesStep({ project, run, client, media, onRunState }: Props)
       </div>
 
       <Timeline scenes={project.scenes} states={states} selected={showBeforeStart ? null : shownId} onSelect={setPicked} />
+
+      <ActivityList projectId={project.id} project={project} />
 
       {pauseReason && (
         <p className="vf-notice" role="alert">
