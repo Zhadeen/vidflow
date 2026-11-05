@@ -4,6 +4,7 @@ export type RunEvent =
   | { type: 'start' }
   | { type: 'pause' }
   | { type: 'resume' }
+  | { type: 'restore' } // after a real browser restart: pages are gone, so submitted scenes go back in the queue
   | { type: 'submitted'; sceneId: string }
   | { type: 'pictures'; sceneId: string; mediaIds: string[] }
   | { type: 'refused'; sceneId: string; message: string }
@@ -14,6 +15,8 @@ export type RunEvent =
       reason: 'policy-dialog' | 'signed-out' | 'wrong-account' | 'page-not-recognised';
       message: string;
     };
+
+export const USER_PAUSE_REASON = 'Paused by you';
 
 export interface RunState {
   projectId: string;
@@ -72,10 +75,14 @@ function clearPause(state: RunState): RunState {
 export function reduceRun(state: RunState, event: RunEvent): RunState {
   switch (event.type) {
     case 'start':
-    case 'resume':
       return settle({ ...clearPause(requeueSubmitted(state)), status: 'running' });
+    case 'resume':
+      if (state.status === 'running') return state;
+      return settle({ ...clearPause(state), status: 'running' });
+    case 'restore':
+      return requeueSubmitted(state);
     case 'pause':
-      return { ...state, status: 'paused', pauseReason: 'Paused by you', resumeAt: null };
+      return { ...state, status: 'paused', pauseReason: USER_PAUSE_REASON, resumeAt: null };
     case 'submitted': {
       const current = state.sceneStates[event.sceneId];
       if (!current || current.status !== 'pending') return state;
@@ -119,4 +126,22 @@ export function runSummary(state: RunState): { done: number; refused: string[]; 
     failed: all.filter((s) => s.status === 'failed').map((s) => s.sceneId),
     pending: all.filter((s) => s.status === 'pending' || s.status === 'submitted').length,
   };
+}
+
+/** The next 00:00 local time strictly after `now`. */
+export function nextLocalMidnight(now: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0, 0).getTime();
+}
+
+function clock(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Fill in what Flow could not tell us: a missing reset time becomes local midnight, and the message says when we carry on. */
+export function normaliseEvent(event: RunEvent, now: number): RunEvent {
+  if (event.type !== 'limit') return event;
+  const resumeAt = event.resumeAt ?? nextLocalMidnight(now);
+  return { type: 'limit', resumeAt, message: `Flow's daily limit was reached. VidFlow will carry on at ${clock(resumeAt)}.` };
 }

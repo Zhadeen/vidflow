@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initRun, nextSceneToSubmit, reduceRun, runSummary, type RunEvent, type RunState } from '../../src/runs/run';
+import { initRun, nextLocalMidnight, nextSceneToSubmit, normaliseEvent, reduceRun, runSummary, type RunEvent, type RunState } from '../../src/runs/run';
 import type { Project, SceneState } from '../../src/store/projects';
 import type { Scene } from '../../src/scenes/types';
 
@@ -82,10 +82,11 @@ describe('run state machine', () => {
     };
     stale.sceneStates['scene-06'] = states['scene-06'];
     const restored = JSON.parse(JSON.stringify(stale)) as RunState;
-    const s = reduceRun(restored, { type: 'resume' });
+    const restoredRun = reduceRun(restored, { type: 'restore' });
+    expect(restoredRun.inFlight).toEqual([]);
+    expect(restoredRun.sceneStates['scene-06'].status).toBe('pending');
+    const s = reduceRun(restoredRun, { type: 'resume' });
     expect(s.status).toBe('running');
-    expect(s.inFlight).toEqual([]);
-    expect(s.sceneStates['scene-06'].status).toBe('pending');
     expect(nextSceneToSubmit(s, order, 3)).toBe('scene-06');
     // a late pictures event for the stale scene is ignored
     const late = reduceRun(s, { type: 'pictures', sceneId: 'scene-06', mediaIds: ['z'] });
@@ -104,5 +105,53 @@ describe('run state machine', () => {
     s = reduceRun(s, { type: 'failed', sceneId: 'scene-03', message: 'timed out' });
     expect(s.status).toBe('finished');
     expect(runSummary(s)).toEqual({ done: 1, refused: ['scene-02'], failed: ['scene-03'], pending: 0 });
+  });
+
+  it('resume while running does not requeue in-flight scenes', () => {
+    const order = ids(5);
+    const running = fill(apply(initRun(project(5)), { type: 'start' }), order, 3);
+    const s = reduceRun(running, { type: 'resume' });
+    expect(s).toEqual(running);
+    expect(s.inFlight).toEqual(['scene-01', 'scene-02', 'scene-03']);
+  });
+
+  it('resume after a user pause keeps in-flight scenes in flight', () => {
+    const order = ids(5);
+    let s = fill(apply(initRun(project(5)), { type: 'start' }), order, 3);
+    s = apply(s, { type: 'pause' });
+    expect(s.status).toBe('paused');
+    s = reduceRun(s, { type: 'resume' });
+    expect(s.status).toBe('running');
+    expect(s.inFlight).toEqual(['scene-01', 'scene-02', 'scene-03']);
+    expect(s.sceneStates['scene-02'].status).toBe('submitted');
+    expect(s.pauseReason).toBeUndefined();
+  });
+
+  it('restore resets submitted scenes but keeps the status', () => {
+    const order = ids(4);
+    const s = reduceRun(apply(fill(apply(initRun(project(4)), { type: 'start' }), order, 2), { type: 'pause' }), { type: 'restore' });
+    expect(s.status).toBe('paused');
+    expect(s.inFlight).toEqual([]);
+    expect(runSummary(s).pending).toBe(4);
+  });
+});
+
+describe('limit helpers', () => {
+  it('nextLocalMidnight is the next 00:00 local time', () => {
+    const now = new Date(2026, 10, 5, 15, 30, 0).getTime();
+    const m = new Date(nextLocalMidnight(now));
+    expect([m.getFullYear(), m.getMonth(), m.getDate(), m.getHours(), m.getMinutes()]).toEqual([2026, 10, 6, 0, 0]);
+    const atMidnight = new Date(2026, 10, 5, 0, 0, 0).getTime();
+    expect(new Date(nextLocalMidnight(atMidnight)).getDate()).toBe(6);
+  });
+
+  it('a limit without resumeAt falls back to midnight and says when', () => {
+    const now = new Date(2026, 10, 5, 15, 30, 0).getTime();
+    const e = normaliseEvent({ type: 'limit', message: 'x', resumeAt: null }, now);
+    expect(e).toEqual({ type: 'limit', message: "Flow's daily limit was reached. VidFlow will carry on at 00:00.", resumeAt: nextLocalMidnight(now) });
+    const t = new Date(2026, 10, 5, 18, 5, 0).getTime();
+    const e2 = normaliseEvent({ type: 'limit', message: 'x', resumeAt: t }, now);
+    expect(e2).toMatchObject({ resumeAt: t, message: "Flow's daily limit was reached. VidFlow will carry on at 18:05." });
+    expect(normaliseEvent({ type: 'pause' }, now)).toEqual({ type: 'pause' });
   });
 });
