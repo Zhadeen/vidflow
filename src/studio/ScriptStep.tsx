@@ -1,6 +1,7 @@
 import { useId, useState, type DragEvent } from 'react';
 import type { CharacterSpec } from '../prompts/build';
-import { buildClaudePrompt } from '../prompts/claude';
+import { buildClaudePrompt, buildRapidBeatPrompt } from '../prompts/claude';
+import { RESEARCH_PROMPTS, buildResearchPrompt, type ResearchPromptId } from '../prompts/research';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { isHeroSheetRun } from '../runs/run';
 import type { AspectRatio, Project } from '../store/projects';
@@ -40,6 +41,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
   const ids = useId();
   const [script, setScript] = useState(project.script ?? '');
   const [copy, setCopy] = useState<CopyState>({ kind: 'idle' });
+  const [researchCopy, setResearchCopy] = useState<{ id: ResearchPromptId; ok: boolean } | null>(null);
   const [over, setOver] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   /** The pasted reply: its scenes replace the project's only on "Use these scenes". */
@@ -48,12 +50,21 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
   const issues = draft.preview?.issues ?? [];
   const readCount = draft.preview ? draft.preview.scenes.length : null;
 
-  async function copyPrompt() {
+  async function copyPrompt(build: (script: string) => string = buildClaudePrompt) {
     try {
-      await navigator.clipboard.writeText(buildClaudePrompt(script));
+      await navigator.clipboard.writeText(build(script));
       setCopy({ kind: 'copied' });
     } catch {
       setCopy({ kind: 'failed' });
+    }
+  }
+
+  async function copyResearch(id: ResearchPromptId) {
+    try {
+      await navigator.clipboard.writeText(buildResearchPrompt(id, script));
+      setResearchCopy({ id, ok: true });
+    } catch {
+      setResearchCopy({ id, ok: false });
     }
   }
 
@@ -99,6 +110,31 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
     <div className="vf-stack">
       <div className="vf-script-grid">
         <div className="vf-stack">
+          <section className="vf-panel" aria-labelledby={`${ids}-research`}>
+            <h2 className="vf-h2" id={`${ids}-research`}>
+              Research prompts <span className="vf-choice-sub">(optional)</span>
+            </h2>
+            <p className="vf-hint">
+              Remaking a video that already works? Run these in Gemini or claude.ai, in order, to make an original script. Fill in the [brackets].
+            </p>
+            <ul className="vf-stack" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              {RESEARCH_PROMPTS.map((p) => (
+                <li key={p.id} className="vf-row">
+                  <Button small onClick={() => void copyResearch(p.id)}>
+                    {p.label}
+                  </Button>
+                  <p className="vf-hint" style={{ margin: 0 }} aria-live="polite">
+                    {researchCopy?.id === p.id
+                      ? researchCopy.ok
+                        ? 'Copied. Paste it into Gemini or claude.ai.'
+                        : "Chrome didn't let VidFlow copy. Click anywhere on this page and try again."
+                      : p.hint}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+
           <section className="vf-panel">
             <h2 className="vf-h2" id={`${ids}-script`}>
               Your script
@@ -123,6 +159,9 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
               <Button onClick={() => void copyPrompt()} disabled={!script.trim()}>
                 Copy Claude Prompt
               </Button>
+              <Button onClick={() => void copyPrompt(buildRapidBeatPrompt)} disabled={!script.trim()}>
+                Copy rapid-beat prompt
+              </Button>
               <p className="vf-hint" style={{ margin: 0 }} aria-live="polite">
                 {copy.kind === 'copied'
                   ? "Copied. Now paste it into claude.ai, then paste Claude's reply in the box below."
@@ -130,7 +169,7 @@ export function ScriptStep({ project, locked, hasPictures, onChange, onContinue,
                     ? "Chrome didn't let VidFlow copy. Click anywhere on this page, then press Copy Claude Prompt again."
                     : !script.trim()
                       ? 'Paste your script first.'
-                      : 'Copies the instructions and your script, ready for claude.ai.'}
+                      : 'Copies the instructions and your script, ready for claude.ai. Rapid-beat makes a new picture about every 6 words.'}
               </p>
             </div>
           </section>

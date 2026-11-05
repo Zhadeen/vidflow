@@ -289,3 +289,15 @@ describe('studio', () => {
     expect(within(steps).getByText(/coming next/i)).toBeTruthy();
   });
 });
+
+describe('research prompts panel', () => {
+  it('copies a research prompt and says so, without adding a second primary button', async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const { container } = renderProject({ ...project(0), script: 'My script.' }, null, 'script');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy: titles and description' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Video Script Summary:\nMy script.')));
+    expect(await screen.findByText(/paste it into gemini or claude\.ai/i)).toBeTruthy();
+    expect(primaries(container)).toHaveLength(1);
+  });
+});
