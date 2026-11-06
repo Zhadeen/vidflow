@@ -52,3 +52,9 @@ After **Video**: groups are Mode **Frames** / Ingredients (default Ingredients) 
 
 - Flow can show a "What's new" announcement over the page (5 Nov: "Introducing Omni 1.2!", buttons "View all changelogs" and **"Get started"**). It isn't a policy or billing notice. VidFlow should close it ("Get started") and carry on, logging "Closed Flow's announcement".
 - Omni 1.2 ("rolling out over the next few weeks") promises video lengths up to 15 s with an exact number of seconds. On 5 Nov the settings still showed Omni 1.1 Flash with 4/6/8/10 s. When the length control changes, Plan 3's clip-length rule must be revisited (an exact length would let a clip match its slide without trimming).
+
+## Clip page: media rail vs start frame (checked live, 6 Nov 2026)
+
+- A clip's page has Flow's **media rail**: `div.virtual-scroll-items` > `flow-navigation-rail-thumbnail` > `button.thumbnail-button`, one per project item. In the test project it listed 2 items: the clip, and the upload `vidflow-s01.png` shown by its name. In a real Motion run the rail lists every `vidflow-sNN.png` upload, so a name found on the page says **nothing** about which picture this clip was made from.
+- The clip's own start frame is `div.ingredients-list` > `flow-image-ingredient-chip` > `button.chip-container[aria-label="Ingredient"]` with `img[alt="Ingredient image"]`. It shows **no name**.
+- So VidFlow identifies a clip by submission order + its page prompt (+ its file's media id), as for pictures. Slides sharing one motion prompt are told apart by order (`src/flow/match.ts`). The page is never searched for a start-frame name.

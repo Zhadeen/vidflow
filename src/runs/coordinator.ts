@@ -874,10 +874,9 @@ async function prepareClipFor(
   return { at, cost };
 }
 
-/** What a clip's page showed: its prompt, the start frame's name (null when the page doesn't show it), its file. */
+/** What a clip's page showed: its prompt and (when asked for) its file. */
 interface ClipPage {
   prompt: string;
-  frame: string | null;
   file: ClipFile | null;
 }
 
@@ -890,14 +889,15 @@ const readClipPage =
   async (): Promise<ClipPage | null> => {
     const m = motionPort();
     if (!m) return null;
-    const { prompt, startFrame } = await m.readVideoDetail(tabId);
+    // The page shows no start-frame name (its rail lists every upload by name): the prompt is all it says.
+    const { prompt } = await m.readVideoDetail(tabId);
     if (!prompt) return null;
     let file: ClipFile | null = null;
     if (wantFile(prompt)) {
       flowDownloads?.expect();
       file = await m.clipFile(tabId);
     }
-    return { prompt, frame: startFrame ?? null, file };
+    return { prompt, file };
   };
 
 /** In-flight slides of this run whose prompt the page's prompt is. */
@@ -905,15 +905,15 @@ const slidesWithPrompt = (run: RunState, prompt: string) =>
   run.inFlight.filter((id) => run.sceneStates[id]?.status === 'submitted' && verifyMatch(run.sceneStates[id]?.submission?.prompt ?? '', prompt));
 
 /**
- * The slide a clip page belongs to: one in Flow with that prompt and, when the page names it, that start frame
- * (vidflow-sNN.png), so slides sharing a motion prompt never swap clips. 'other' when the frame names none of them;
- * null when it can't be told (several share the prompt and the page shows no frame name).
+ * The slide a clip page belongs to: the slide the matcher placed it for when that slide has the page's prompt (slides
+ * sharing a prompt are told apart by submission order, as pictures are: src/flow/match.ts); otherwise the earliest
+ * submitted slide with that prompt. 'other' when no slide waiting for a clip has it.
  */
-function ownerOf(project: Project, run: RunState, page: ClipPage): string | 'other' | null {
+function ownerOf(run: RunState, page: ClipPage, placedFor: string): string | 'other' {
   const slides = slidesWithPrompt(run, page.prompt);
-  if (slides.length === 0) return 'other';
-  if (page.frame) return slides.find((id) => startFrameName(project, id) === page.frame) ?? 'other';
-  return slides.length === 1 ? slides[0]! : null;
+  if (slides.includes(placedFor)) return placedFor;
+  const seq = (id: string) => run.sceneStates[id]?.submission?.seq ?? 0;
+  return [...slides].sort((a, b) => seq(a) - seq(b))[0] ?? 'other';
 }
 
 /**
@@ -938,18 +938,17 @@ async function collectClip(tabId: number, project: Project, run: RunState, scene
   };
   if (page === null) return strike(CLIP_UNCONFIRMED);
   const sig = clipSigs.get(key) ?? '';
-  const owner = ownerOf(project, state, page);
-  if (owner === null) return strike(CLIP_UNCONFIRMED);
+  const owner = ownerOf(state, page, sceneId);
   if (owner === 'other') {
-    // Not a clip of any slide waiting for one (another slide's frame, or a prompt none has): matching moves past it.
-    clipKnown.set(key, { sig, prompt: slidesWithPrompt(state, page.prompt).length > 0 ? '' : page.prompt });
+    // Not a clip of any slide waiting for one: its prompt goes to matching, which moves past it.
+    clipKnown.set(key, { sig, prompt: page.prompt });
     return 'changed';
   }
   if (!page.file) return strike(CLIP_FILE);
   unreadCount.delete(key);
   const again = async (): Promise<ClipFile | null> => {
     const fresh = await visitTile(tabId, run.projectId, key, readClipPage(tabId, () => true));
-    if (!fresh || fresh === SKIPPED || !state || ownerOf(project, state, fresh) !== owner) return null;
+    if (!fresh || fresh === SKIPPED || !state || ownerOf(state, fresh, owner) !== owner) return null;
     return fresh.file;
   };
   await saveClip(project, owner, key, sig, page.file, again);
@@ -1053,7 +1052,7 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
     const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
     if (unconfirmed) {
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
-      const found = await findUnconfirmedStart(tabId, project, unconfirmed, sceneId);
+      const found = await findUnconfirmedStart(tabId, project, unconfirmed);
       if (found === null) return 'stop';
       if (found === 'wait') {
         // Look again after the pace pause, without pressing; but a tile that never finishes can't stall the run.
@@ -1174,10 +1173,8 @@ async function findUnconfirmedStart(
   tabId: number,
   project: Project,
   u: NonNullable<SceneState['unconfirmed']>,
-  sceneId: string,
 ): Promise<boolean | 'wait' | null> {
   if (!state) return null;
-  const clips = isClipRun(state);
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
   const all = (await runTiles(tabId)).filter((c) => !claimed.has(c.key) && notReference(state!)(c));
@@ -1211,9 +1208,6 @@ async function findUnconfirmedStart(
       if (detail === null) return null;
       if (detail === 'unread') return stillRunning(project.id) ? 'wait' : null;
       ok = verifyMatch(u.prompt, detail);
-      // A clip page that names its start frame must name this slide's (another slide may share the prompt).
-      const frame = clips ? lastClipFrame.get(card.key) : null;
-      if (ok && frame) ok = frame === startFrameName(project, sceneId);
     } else if (card.refusal !== null) {
       ok = verifyMatch(u.prompt, card.caption); // a refused tile keeps its prompt as caption: Flow did take it
     } else {
@@ -1262,15 +1256,10 @@ async function detailOf(
   return read;
 }
 
-/** The start frame a clip page named when it was last read by readClipPromptFor (findUnconfirmedStart checks it). */
-const lastClipFrame = new Map<string, string | null>();
-
-/** A clip tile's page prompt (no file taken); its frame goes in lastClipFrame. */
+/** A clip tile's page prompt (no file taken). */
 async function readClipPromptFor(tabId: number, projectId: string, key: string): Promise<string | null | typeof SKIPPED> {
   const page = await visitTile(tabId, projectId, key, readClipPage(tabId, () => false));
-  if (page === SKIPPED || page === null) return page;
-  lastClipFrame.set(key, page.frame);
-  return page.prompt;
+  return page === SKIPPED || page === null ? page : page.prompt;
 }
 
 /** readDetailFor didn't try (paused, tab off the project): unlike an unreadable detail, it doesn't count. */
@@ -1841,7 +1830,6 @@ async function startClipRunNow(projectId: string, limit: number): Promise<void> 
     const ids = scenesToClip(fresh, fresh.sceneStates);
     if (ids.length === 0) throw new Error(NOTHING_TO_CLIP_MESSAGE);
     forgetClipTiles();
-    lastClipFrame.clear();
     await commit(reduceRun(initClipRun(fresh, ids, limit), { type: 'start' }));
   });
   void pump();

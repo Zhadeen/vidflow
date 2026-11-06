@@ -74,7 +74,7 @@ type Tile =
       refused?: string;
       detailPrompt?: string;
       showsFrame?: boolean;
-      /** The start frame attached when it was made (its page shows the name). */
+      /** The start frame attached when it was made (its page never shows the name: spike S8, 6 Nov). */
       frame?: string;
       /** Flow left it out of the grid for a moment. */
       hidden?: boolean;
@@ -161,7 +161,9 @@ function flowWorld() {
     readVideoDetail: vi.fn(async () => ({
       prompt: opened ? (opened.detailPrompt ?? opened.prompt) : null,
       editId: opened ? `e-${opened.mediaId}` : null,
-      startFrame: opened?.frame ?? null,
+      // Flow's media rail lists the project's uploads by name on every clip page: a name there says nothing about
+      // which clip this is. A port that passed one on must not change matching.
+      startFrame: 'vidflow-s02.png' as string | null,
     })),
     clipFile: vi.fn(async () => (opened ? { url: `https://flow-content.google/video/${opened.mediaId}?Expires=1`, mediaId: opened.mediaId } : null)),
     prepareAgentQuestion: vi.fn(async () => ({ x: 9, y: 9 })),
@@ -630,23 +632,21 @@ describe('Motion run (clips)', () => {
     expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
   });
 
-  it('slides with the same motion prompt never swap clips: the start frame on the clip page decides', async () => {
-    const { coordinator, project, port, world, store } = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+  it('slides with the same motion prompt each get the clip from their own press, by order', async () => {
+    const { coordinator, project, port, world, store } = await setup({
+      picks: ['s1', 's2', 's3'],
+      scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same'), scene(3, 6, 9, 'Same')],
+    });
     stubFetch();
     coordinator.setFlowPort(port);
     await coordinator.startClipRun(project.id, 100);
-    await waitFor(() => world.generates === 2, 'two clips pressed');
-    // Flow lists the second slide's clip in the first one's place.
-    const a = world.tiles.indexOf(world.clip(1));
-    const b = world.tiles.indexOf(world.clip(2));
-    [world.tiles[a], world.tiles[b]] = [world.tiles[b]!, world.tiles[a]!];
+    await waitFor(() => world.generates === 3, 'three clips pressed');
     world.finish();
     await coordinator.handleTiles([]);
     await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
     await coordinator.settledForTests();
     const saved = (await store.getProject(project.id))!;
-    expect(saved.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
-    expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+    expect(['s1', 's2', 's3'].map((id) => saved.sceneStates[id]!.clip?.flowMediaId)).toEqual(['m1', 'm2', 'm3']);
   });
 
   it('Stop arriving right before the press: nothing is pressed and nothing is spent', async () => {

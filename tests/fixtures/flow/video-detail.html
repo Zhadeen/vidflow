@@ -8,8 +8,16 @@
     <button aria-label="Back"><mat-icon>arrow_back</mat-icon></button>
     <button aria-label="Download media"><mat-icon>download</mat-icon></button>
   </header>
-  <!-- The start frame the clip was made from, shown by its asset name (markup guessed: not recorded live). -->
-  <button class="frame-chip"><img alt="" src="data:," /><span>vidflow-s01.png</span></button>
+  <!-- Recorded live 6 Nov: Flow's media rail lists the project's items (the clip and the uploads, by name). -->
+  <div class="virtual-scroll-items">
+    <flow-navigation-rail-thumbnail><button class="thumbnail-button"><img alt="" src="data:," /><span>Stickman waving</span></button></flow-navigation-rail-thumbnail>
+    <flow-navigation-rail-thumbnail><button class="thumbnail-button"><img alt="" src="data:," /><span>vidflow-s01.png</span></button></flow-navigation-rail-thumbnail>
+    <flow-navigation-rail-thumbnail><button class="thumbnail-button"><img alt="" src="data:," /><span>vidflow-s02.png</span></button></flow-navigation-rail-thumbnail>
+  </div>
+  <!-- The clip's own start frame: an ingredient chip with no name. -->
+  <div class="ingredients-list">
+    <flow-image-ingredient-chip><button class="chip-container" aria-label="Ingredient"><img alt="Ingredient image" src="data:," /></button></flow-image-ingredient-chip>
+  </div>
   <canvas class="player"></canvas>
   <div class="timeline"><span>00:04:00</span></div>
   <flow-expandable-prompt>

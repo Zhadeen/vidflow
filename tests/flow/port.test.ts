@@ -225,7 +225,8 @@ describe('Flow port: clips and Agent questions', () => {
     const file = { url: 'https://flow-content.google/video/1fc?Expires=1', mediaId: '1fc' };
     const { send, port } = setup([{ cards: [card] }, { prompt: 'p', editId: 'e1', startFrame: 'vidflow-s01.png' }, undefined, { file }, { file: null }]);
     expect(await port.videoTiles(7)).toEqual([card]);
-    expect(await port.readVideoDetail(7)).toEqual({ prompt: 'p', editId: 'e1', startFrame: 'vidflow-s01.png' });
+    // A name from the tab is never passed on: the page's vidflow-sNN.png names are its media rail, not the frame.
+    expect(await port.readVideoDetail(7)).toEqual({ prompt: 'p', editId: 'e1', startFrame: null });
     expect(await port.readVideoDetail(7)).toEqual({ prompt: null, editId: null, startFrame: null });
     expect(await port.clipFile(7, 15_000)).toEqual(file);
     expect(await port.clipFile(7)).toBeNull();
