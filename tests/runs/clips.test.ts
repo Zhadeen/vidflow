@@ -99,7 +99,12 @@ function flowWorld() {
     generates: 0,
     /** Set to refuse the next Generate (the tile keeps the prompt as caption). */
     refuseNext: null as string | null,
+    /** Set when Flow answers the next Generate with its usage notice instead of starting (no tile). */
+    noticeNext: false,
+    /** Each grid read: Flow's poster addresses carry a changing =… size suffix; the path stays the same. */
+    reads: 0,
     cards(): FlowResultCard[] {
+      world.reads++;
       return visible().map((t, domIndex): FlowResultCard => {
         if (t.kind === 'upload') {
           return { key: t.id, caption: t.name, imageUrl: `https://flow-content.google/image/${t.id}`, progress: null, refusal: null, domIndex };
@@ -110,7 +115,7 @@ function flowWorld() {
           return { key: `frame-${t.mediaId}`, caption: t.prompt, imageUrl: `https://flow-content.google/image/f-${t.mediaId}`, progress: null, refusal: null, domIndex };
         }
         if (!t.done) return { key: `pending-${domIndex}`, caption: t.prompt, imageUrl: null, progress: 40, refusal: null, domIndex };
-        return { key: `video-${domIndex}`, caption: 'Stickman waving', imageUrl: `https://flow.google.com/asb/tok-${t.mediaId}`, progress: null, refusal: null, domIndex, video: true };
+        return { key: `video-${domIndex}`, caption: 'Stickman waving', imageUrl: `https://flow.google.com/asb/tok-${t.mediaId}=s${world.reads % 3}`, progress: null, refusal: null, domIndex, video: true };
       });
     },
     finish() {
@@ -129,6 +134,10 @@ function flowWorld() {
       if (x === TILE_X) currentTab().url = `${PROJECT_URL}/edit/e-${opened?.mediaId ?? 'x'}`;
       if (x === GENERATE.x) {
         world.generates++;
+        if (world.noticeNext) {
+          world.noticeNext = false;
+          return; // Flow showed its usage notice: nothing started
+        }
         made++;
         tiles.push({ kind: 'clip', prompt: typed, frame, mediaId: `m${made}`, done: false, ...(world.refuseNext ? { refused: world.refuseNext } : {}) });
         world.refuseNext = null;
@@ -477,6 +486,9 @@ describe('Motion run (clips)', () => {
     const saved = (await store.getProject(project.id))!;
     expect(saved.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
     expect(saved.sceneStates.s2!.clip).toBeUndefined();
+    // The tile is recorded as s1's and passed over: s2 isn't failed for it.
+    expect(coordinator.getRunState()!.sceneStates.s2!.status).toBe('submitted');
+    expect(Object.values(coordinator.getRunState()!.clipClaims ?? {}).every((id) => id === 's1')).toBe(true);
   });
 
   it("cancels and erases Flow's own browser download of the clip", async () => {
@@ -716,6 +728,146 @@ describe('Motion run (clips)', () => {
     await coordinator.settledForTests();
     expect(port.clipFile).toHaveBeenCalledTimes(2);
     expect((await store.getProject(project.id))!.sceneStates.s1!.clipNote).toBe("Couldn't save this clip. Making it again costs 7 credits.");
+  });
+
+  /** A browser restart: the old worker stops, a fresh one loads the saved run (no session marker). */
+  async function restart(ctx: Awaited<ReturnType<typeof setup>>) {
+    const saved = structuredClone(ctx.chromeMock.storage.local.data);
+    await ctx.coordinator.stopRun(); // keeps the old worker from acting (the saved copy is from before)
+    vi.resetModules();
+    const chrome2 = mockChrome();
+    Object.assign(chrome2.storage.local.data, saved);
+    const store2 = await import('../../src/store/projects');
+    store2.setMediaStore(ctx.media);
+    const c2 = await import('../../src/runs/coordinator');
+    c2.setTimingsForTests(FAST);
+    live.push(c2);
+    c2.registerCoordinator();
+    return { c2, store2, chrome2 };
+  }
+
+  it('repro 1: a clip that finished while the next slide (same prompt) was set up, then a restart: 2 Generates, both saved right', async () => {
+    const ctx = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+    stubFetch();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const typing = ctx.port.prepareClip.getMockImplementation()!;
+    ctx.port.prepareClip.mockImplementation(async (tabId, prompt, options) => {
+      const at = await typing(tabId, prompt, options);
+      if (options.startFrame === 'vidflow-s02.png') await held; // slide 2 is being set up
+      return at;
+    });
+    ctx.coordinator.setFlowPort(ctx.port);
+    await ctx.coordinator.startClipRun(ctx.project.id, 100);
+    await waitFor(() => ctx.port.prepareClip.mock.calls.length === 2, 'slide 2 being set up');
+    ctx.world.finish(); // slide 1's clip finishes meanwhile
+    const { c2, store2 } = await restart(ctx);
+    release(); // the old worker stopped: it presses nothing
+    ctx.port.prepareClip.mockImplementation(typing);
+    c2.setFlowPort(ctx.port);
+    await waitFor(() => ctx.world.generates === 2, 'slide 2 pressed');
+    ctx.world.finish();
+    await c2.handleTiles([]);
+    await waitFor(() => c2.getRunState()?.status === 'finished', 'the run finished');
+    await c2.settledForTests();
+    expect(ctx.world.generates).toBe(2);
+    expect(c2.getRunState()!.spent).toBe(14);
+    const project = (await store2.getProject(ctx.project.id))!;
+    expect(project.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+    expect(project.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
+  it("repro 2: same prompt, s1 saved, its tile gone for a report, then s2's clip comes: s2 gets its own, nothing fails", async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+    stubFetch();
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 2, 'two clips pressed');
+    world.clip(1).done = true;
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'done', 's1 saved');
+    world.clip(1).hidden = true;
+    await coordinator.handleTiles([]);
+    await new Promise((r) => setTimeout(r, 50)); // a few polls without it
+    world.clip(2).done = true;
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    world.clip(1).hidden = false;
+    await coordinator.settledForTests();
+    const run = coordinator.getRunState()!;
+    expect(Object.values(run.sceneStates).map((s) => s.status)).toEqual(['done', 'done']);
+    const saved = (await store.getProject(project.id))!;
+    expect(saved.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+    expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
+  it('a finished clip tile is opened at most once for its prompt (kept by its poster)', async () => {
+    const { coordinator, project, port, world } = await setup({ picks: ['s1', 's2'] });
+    stubFetch();
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 2, 'two clips pressed');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    await coordinator.settledForTests();
+    const keys = Object.keys(coordinator.getRunState()!.detailPrompts ?? {});
+    expect(keys.every((k) => k.startsWith('poster:'))).toBe(true);
+    expect(keys).toHaveLength(2);
+    expect(port.readVideoDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('a finished clip being checked is not failed by its 10-minute deadline', async () => {
+    const { coordinator, project, port, world, chromeMock, store } = await setup({ picks: ['s1'] });
+    stubFetch();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const read = port.readVideoDetail.getMockImplementation()!;
+    port.readVideoDetail.mockImplementation(async () => {
+      await held;
+      return read();
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 1, 'pressed');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => port.readVideoDetail.mock.calls.length > 0, 'checking the clip');
+    chromeMock.alarms.create.mockClear();
+    listenerOf<(a: { name: string }) => void>(chromeMock.alarms.onAlarm)({ name: 'vidflow-deadline:s1' });
+    await waitFor(() => chromeMock.alarms.create.mock.calls.some(([n]) => n === 'vidflow-deadline:s1'), 'the deadline put off');
+    expect(coordinator.getRunState()!.sceneStates.s1!.status).toBe('submitted');
+    release();
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    expect((await store.getProject(project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+  });
+
+  it('a throw after a press that reached Flow pauses, never fails the slide', async () => {
+    const { coordinator, project, port, world } = await setup({ picks: ['s1'] });
+    port.confirmStarted.mockRejectedValue(new Error('No tab with id: 7'));
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused');
+    expect(world.generates).toBe(1);
+    const s1 = coordinator.getRunState()!.sceneStates.s1!;
+    expect(s1.status).toBe('pending');
+    expect(s1.unconfirmed).toBeDefined();
+  });
+
+  it("a press Flow answered with its usage notice isn't paid for twice when pressed again", async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1'] });
+    stubFetch();
+    world.noticeNext = true;
+    port.confirmStarted.mockResolvedValueOnce('notice');
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 2, 'pressed again after the notice');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    expect(port.acceptNotice).toHaveBeenCalled();
+    expect(coordinator.getRunState()!.spent).toBe(7);
+    expect((await store.getProject(project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
   });
 
   it("logs Flow's announcement and a panel left open in the run's activity", async () => {

@@ -15,7 +15,7 @@ export type RunEvent =
    * Generate is about to be pressed (recorded first, so a worker suspended mid-press looks before pressing again), or
    * was pressed but Flow's start wasn't seen. The scene stays pending until `submitted`; `at` starts its wait limit.
    */
-  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string; at?: number; credits?: number }
+  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string; at?: number; credits?: number; othersBefore?: number }
   /** The full prompt read from a Flow card's detail view. */
   | { type: 'detail'; cardKey: string; prompt: string }
   | { type: 'refused'; sceneId: string; message: string }
@@ -33,6 +33,12 @@ export type RunEvent =
   | { type: 'choose'; sceneId: string; pictureId: string }
   /** A clip run saved a slide's clip (from the result tile `cardKey`). */
   | { type: 'clip'; sceneId: string; clip: ClipRecord; cardKey: string }
+  /** A clip run's finished tile (poster key) belongs to this slide: never matched to another (lasting, saved). */
+  | { type: 'clipClaim'; key: string; sceneId: string }
+  /** A clip run matched this finished tile to the slide and is checking it (its deadline waits). */
+  | { type: 'clipMatched'; sceneId: string; key: string }
+  /** A clip press Flow answered with its usage notice: its credits are counted already, not again for the next press. */
+  | { type: 'paid'; sceneId: string; credits: number }
   /** A clip run pressed Generate for a clip costing this many credits (counted whatever Flow does with it). */
   | { type: 'spent'; credits: number }
   /** A clip run read Flow's credit balance (once, before its first clip). */
@@ -97,6 +103,9 @@ export interface RunState {
   limit?: number;
   spent?: number;
   balance?: number;
+  /** A clip run's finished tiles (poster keys) and Flow clips (media ids) that belong to a slide: never matched again. */
+  clipClaims?: Record<string, string>;
+  flowMediaIds?: Record<string, string>;
   /**
    * A hero-sheet run's outputs and shape, fixed when it starts: Flow was asked for these, so matching counts them,
    * whatever the project's settings say later.
@@ -207,7 +216,15 @@ function requeueSubmitted(state: RunState, keepPressed = false): RunState {
       const { submission, ...rest } = s;
       const unconfirmed =
         keepPressed && submission
-          ? { unconfirmed: { keysBefore: submission.keysBefore ?? [], prompt: submission.prompt, at: Date.now(), seq: submission.seq } }
+          ? {
+              unconfirmed: {
+                keysBefore: submission.keysBefore ?? [],
+                prompt: submission.prompt,
+                at: Date.now(),
+                seq: submission.seq,
+                ...(submission.othersBefore !== undefined ? { othersBefore: submission.othersBefore } : {}),
+              },
+            }
           : {};
       sceneStates[id] = { ...rest, status: 'pending', ...unconfirmed };
     }
@@ -262,7 +279,9 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
         seq,
         at: event.at ?? Date.now(),
         prompt: event.prompt ?? '',
-        ...(state.kind === 'clips' && seen ? { keysBefore: seen.keysBefore } : {}),
+        ...(state.kind === 'clips' && seen
+          ? { keysBefore: seen.keysBefore, ...(seen.othersBefore !== undefined ? { othersBefore: seen.othersBefore } : {}) }
+          : {}),
       };
       return {
         ...state,
@@ -274,7 +293,12 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'unconfirmed': {
       const current = state.sceneStates[event.sceneId];
       if (!current || current.status !== 'pending') return state;
-      const unconfirmed = { keysBefore: event.keysBefore, prompt: event.prompt, at: event.at ?? Date.now() };
+      const unconfirmed = {
+        keysBefore: event.keysBefore,
+        prompt: event.prompt,
+        at: event.at ?? Date.now(),
+        ...(event.othersBefore !== undefined ? { othersBefore: event.othersBefore } : {}),
+      };
       return {
         ...state,
         // A clip's credits are counted with the record of its press, in one step (rolled back if it isn't pressed).
@@ -340,9 +364,29 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       if (!current || !current.pictureIds.includes(event.pictureId)) return state;
       return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, chosenPictureId: event.pictureId, choiceSource: 'owner' } } };
     }
-    case 'clip':
+    case 'clip': {
       if (!state.inFlight.includes(event.sceneId)) return state; // stale (skipped or stopped meanwhile)
-      return settle(setScene(state, event.sceneId, { status: 'done', clip: event.clip, message: undefined, cardKeys: [event.cardKey] }));
+      const claimed = {
+        ...state,
+        clipClaims: { ...state.clipClaims, [event.cardKey]: event.sceneId },
+        ...(event.clip.flowMediaId ? { flowMediaIds: { ...state.flowMediaIds, [event.clip.flowMediaId]: event.sceneId } } : {}),
+      };
+      return settle(setScene(claimed, event.sceneId, { status: 'done', clip: event.clip, message: undefined, cardKeys: [event.cardKey] }));
+    }
+    case 'clipClaim':
+      return { ...state, clipClaims: { ...state.clipClaims, [event.key]: event.sceneId } };
+    case 'clipMatched': {
+      const current = state.sceneStates[event.sceneId];
+      if (current?.status !== 'submitted' || !current.submission) return state;
+      const submission = { ...current.submission, clipKey: event.key };
+      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, submission } } };
+    }
+    case 'paid': {
+      const current = state.sceneStates[event.sceneId];
+      if (!current?.unconfirmed) return state;
+      const unconfirmed = { ...current.unconfirmed, paid: event.credits };
+      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, unconfirmed } } };
+    }
     case 'spent':
       return { ...state, spent: (state.spent ?? 0) + event.credits };
     case 'balance':

@@ -21,8 +21,11 @@ export interface SceneState {
   clip?: ClipRecord;
   clipNote?: string;
   /** While generating: the order and exact prompt this scene went to Flow with (result matching). */
-  /** keysBefore (clip runs): the finished tiles before the press, so a restart looks for this clip before pressing. */
-  submission?: { seq: number; at: number; prompt: string; keysBefore?: string[] };
+  /**
+   * Clip runs: keysBefore / othersBefore, the finished tiles (poster keys) and how many other (drawing or refused) tiles
+   * there were at the press, so a restart looks for this clip before pressing; clipKey, the finished tile matched to it.
+   */
+  submission?: { seq: number; at: number; prompt: string; keysBefore?: string[]; othersBefore?: number; clipKey?: string };
   /**
    * Whether these pictures were made with the hero reference attached in Flow (the Queue's "hero ✓"). Absent for
    * pictures saved before VidFlow recorded it: no mark rather than a guess.
@@ -34,7 +37,17 @@ export interface SceneState {
    * Generate was (about to be) pressed but Flow's start wasn't seen: the finished tiles before the press, to look for
    * it on Resume, and when that was (missing in runs saved before it was recorded).
    */
-  unconfirmed?: { keysBefore: string[]; prompt: string; at?: number; seq?: number };
+  unconfirmed?: {
+    keysBefore: string[];
+    prompt: string;
+    at?: number;
+    /** Clip runs: the first submission's place in the order (after a restart). */
+    seq?: number;
+    /** Clip runs: how many drawing or refused tiles were in the grid at the press (they are older than it). */
+    othersBefore?: number;
+    /** Clip runs: credits already counted for a press Flow answered with its usage notice (not counted again). */
+    paid?: number;
+  };
 }
 /** The hero's model sheet (made in Flow): kept apart from the scenes, so it is never a scene in the grid or export. */
 export interface HeroSheet {
