@@ -18,11 +18,14 @@ export function mp4Duration(data: Uint8Array | ArrayBuffer): number | null {
   if (version === 1) {
     if (at + 32 > mvhd.end) return null;
     timescale = view.getUint32(at + 20);
-    duration = Number(view.getBigUint64(at + 24));
+    const long = view.getBigUint64(at + 24);
+    if (long === 0xffffffffffffffffn) return null; // all ones: the duration is unknown
+    duration = Number(long);
   } else {
     if (at + 20 > mvhd.end) return null;
     timescale = view.getUint32(at + 12);
     duration = view.getUint32(at + 16);
+    if (duration === 0xffffffff) return null; // all ones: the duration is unknown
   }
   if (timescale === 0 || !Number.isFinite(duration)) return null;
   return Math.round((duration / timescale) * 1000) / 1000;

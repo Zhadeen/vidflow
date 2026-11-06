@@ -15,7 +15,7 @@ export type RunEvent =
    * Generate is about to be pressed (recorded first, so a worker suspended mid-press looks before pressing again), or
    * was pressed but Flow's start wasn't seen. The scene stays pending until `submitted`; `at` starts its wait limit.
    */
-  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string; at?: number }
+  | { type: 'unconfirmed'; sceneId: string; keysBefore: string[]; prompt: string; at?: number; credits?: number }
   /** The full prompt read from a Flow card's detail view. */
   | { type: 'detail'; cardKey: string; prompt: string }
   | { type: 'refused'; sceneId: string; message: string }
@@ -38,7 +38,8 @@ export type RunEvent =
   /** A clip run read Flow's credit balance (once, before its first clip). */
   | { type: 'balance'; credits: number }
   /** A clip run reached its credit limit or the balance: slides still waiting aren't made (spec §20 settled 7). */
-  | { type: 'outOfCredits'; message: string }
+  /** sceneId: the slide being set up when it ran out (its earlier press, if any, was found not to have started). */
+  | { type: 'outOfCredits'; message: string; sceneId?: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
   | {
       type: 'needsOwner';
@@ -194,14 +195,21 @@ function setScene(state: RunState, sceneId: string, patch: Partial<SceneState>):
   };
 }
 
-/** Anything still submitted is stale (the page it was on is gone): put it back in the queue. */
-function requeueSubmitted(state: RunState): RunState {
+/**
+ * Anything still submitted is stale (the page it was on is gone): put it back in the queue. A clip run's clip was paid
+ * for when it was pressed: after a restart it goes back as unconfirmed, so its tile is looked for before any new press.
+ */
+function requeueSubmitted(state: RunState, keepPressed = false): RunState {
   const sceneStates: Record<string, SceneState> = {};
   for (const [id, s] of Object.entries(state.sceneStates)) {
     if (s.status !== 'submitted') sceneStates[id] = s;
     else {
-      const { submission: _gone, ...rest } = s;
-      sceneStates[id] = { ...rest, status: 'pending' };
+      const { submission, ...rest } = s;
+      const unconfirmed =
+        keepPressed && submission
+          ? { unconfirmed: { keysBefore: submission.keysBefore ?? [], prompt: submission.prompt, at: Date.now(), seq: submission.seq } }
+          : {};
+      sceneStates[id] = { ...rest, status: 'pending', ...unconfirmed };
     }
   }
   return { ...state, inFlight: [], sceneStates };
@@ -234,7 +242,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       if (state.status === 'running') return state;
       return settle({ ...clearPause(restartUnconfirmedClocks(state)), status: 'running' });
     case 'restore':
-      return requeueSubmitted(state);
+      return requeueSubmitted(state, state.kind === 'clips');
     case 'pause':
       if (state.status !== 'running' && state.status !== 'paused') return state; // nothing to pause
       return { ...state, status: 'paused', pauseReason: USER_PAUSE_REASON, resumeAt: null };
@@ -247,12 +255,18 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
         return { ...state, nextSeq: seq, skippedPrompts: [...(state.skippedPrompts ?? []), skipped] };
       }
       if (!current || current.status !== 'pending') return state;
-      const seq = (state.nextSeq ?? 0) + 1;
-      const { unconfirmed: _seen, ...rest } = current;
-      const submission = { seq, at: event.at ?? Date.now(), prompt: event.prompt ?? '' };
+      // A clip found again after a restart keeps its place in the order (its first submission's seq).
+      const seq = current.unconfirmed?.seq ?? (state.nextSeq ?? 0) + 1;
+      const { unconfirmed: seen, ...rest } = current;
+      const submission = {
+        seq,
+        at: event.at ?? Date.now(),
+        prompt: event.prompt ?? '',
+        ...(state.kind === 'clips' && seen ? { keysBefore: seen.keysBefore } : {}),
+      };
       return {
         ...state,
-        nextSeq: seq,
+        nextSeq: Math.max(seq, state.nextSeq ?? 0),
         inFlight: [...state.inFlight.filter((id) => id !== event.sceneId), event.sceneId],
         sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'submitted', submission } },
       };
@@ -261,7 +275,12 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       const current = state.sceneStates[event.sceneId];
       if (!current || current.status !== 'pending') return state;
       const unconfirmed = { keysBefore: event.keysBefore, prompt: event.prompt, at: event.at ?? Date.now() };
-      return { ...state, sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, unconfirmed } } };
+      return {
+        ...state,
+        // A clip's credits are counted with the record of its press, in one step (rolled back if it isn't pressed).
+        ...(event.credits ? { spent: (state.spent ?? 0) + event.credits } : {}),
+        sceneStates: { ...state.sceneStates, [event.sceneId]: { ...current, unconfirmed } },
+      };
     }
     case 'detail':
       return { ...state, detailPrompts: { ...state.detailPrompts, [event.cardKey]: event.prompt } };
@@ -331,7 +350,8 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'outOfCredits': {
       let sceneStates = state.sceneStates;
       for (const [id, s] of Object.entries(state.sceneStates)) {
-        if (s.status !== 'pending') continue;
+        // A slide whose press may have reached Flow (unconfirmed) is still looked for, never "not made".
+        if (s.status !== 'pending' || (s.unconfirmed && id !== event.sceneId)) continue;
         const { unconfirmed: _u, ...rest } = s;
         sceneStates = { ...sceneStates, [id]: { ...rest, status: 'failed', message: event.message } };
       }

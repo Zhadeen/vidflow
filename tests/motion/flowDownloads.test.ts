@@ -72,11 +72,13 @@ describe("Flow's own clip download (after VidFlow pressed 720p Original size)", 
     expect(api.erase).not.toHaveBeenCalled();
   });
 
-  it('cancels each Flow clip download in the window (a retried press can start two)', async () => {
+  it('cancels only the first Flow clip download after each press, then leaves the rest alone', async () => {
     const api = fakeDownloads({ 41: 'interrupted', 44: 'interrupted' });
     const guard = createFlowDownloadGuard(api, 'vidflow-ext', () => 0);
     guard.expect();
     expect(await guard.onCreated(item())).toBe(true);
+    expect(await guard.onCreated(item({ id: 44 }))).toBe(false);
+    guard.expect();
     expect(await guard.onCreated(item({ id: 44 }))).toBe(true);
     expect(api.cancel.mock.calls).toEqual([[41], [44]]);
   });

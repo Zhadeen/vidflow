@@ -19,7 +19,7 @@ import type { FlowMotionPort } from '../flow/port';
 import { scenesToClip, startFrameName } from '../motion/clips';
 import { createFlowDownloadGuard } from '../motion/flowDownloads';
 import { mp4Duration } from '../motion/mp4';
-import { useRange } from '../motion/timing';
+import { CLIP_COST, useRange } from '../motion/timing';
 import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, sceneNumber, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
@@ -644,6 +644,8 @@ const oldestFirst = (cards: FlowResultCard[]) => [...cards].sort((a, b) => b.dom
 
 /** Flow card keys already saved for a scene, or the hero reference's own tile; never matched to a scene. */
 function claimedKeys(s: RunState): Set<string> {
+  // A clip run's keys are grid places: only claims made since the tiles last looked the same count (clipCards).
+  if (isClipRun(s)) return new Set([...clipKnown].filter(([, k]) => k.sceneId !== undefined).map(([key]) => key));
   return new Set([...Object.values(s.sceneStates).flatMap((x) => x.cardKeys ?? []), ...(s.reference?.cardKeys ?? [])]);
 }
 
@@ -705,18 +707,53 @@ const NO_MOTION_PORT_MESSAGE = "VidFlow can't make clips in Flow yet. Open VidFl
 const CREDITS_UNREADABLE_MESSAGE = "VidFlow can't read your Flow credits. Check the Flow window, then press Resume.";
 const COST_UNREADABLE_MESSAGE = "VidFlow can't read what this clip costs in Flow. Check the Flow window, then press Resume.";
 const CLIP_PICTURE_MISSING = "VidFlow can't find this slide's picture. Make its pictures again, then make clips.";
-const CLIP_SAVE_FAILED_MESSAGE = "VidFlow couldn't save this slide's clip. Make clips again for it.";
-const CLIP_FILE_MESSAGE = "VidFlow couldn't get this clip's file from Flow. Make clips again for it.";
-const CLIP_LENGTH_MESSAGE = "VidFlow couldn't read this clip's length, so it wasn't saved. Make clips again for it.";
-const CLIP_UNCONFIRMED_MESSAGE = "VidFlow couldn't confirm which clip belongs to this slide. Make clips again for it.";
-const UNTRUSTED_CLIP_MESSAGE = "Flow gave VidFlow a clip from an address it doesn't trust, so it wasn't saved. Make clips again for it.";
+const CLIP_SAVE = "Couldn't save this clip.";
+const CLIP_FILE = "VidFlow couldn't get this clip's file from Flow.";
+const CLIP_UNCONFIRMED = "VidFlow couldn't confirm which clip belongs to this slide.";
+const CLIP_UNTRUSTED = "Flow gave VidFlow a clip from an address it doesn't trust, so it wasn't saved.";
+const CLIP_UNFINISHED = "Flow didn't finish this clip in 10 minutes.";
+/** The press of Generate itself failed: Flow may have taken it. */
+export const CLIP_PRESS_MESSAGE =
+  "VidFlow may have pressed Generate for this clip but couldn't tell. Check the Flow window, then press Resume (VidFlow looks for the clip before pressing again).";
 
-/** Verified clip files by result key, until saved (signed addresses: never stored with the run). */
-const clipFiles = new Map<string, ClipFile>();
-/** Result keys whose page verified but gave no file (their give-up message says so). */
-const clipFileMissing = new Set<string>();
+/** A clip's failure, saying what making it again costs (Flow doesn't refund: spec §20 settled 7). */
+function clipFailure(sceneId: string, what: string): string {
+  const job = state?.clips?.[sceneId];
+  return job ? `${what} Making it again costs ${CLIP_COST[job.length]} credits.` : what;
+}
+
+/**
+ * What VidFlow knows about a clip run's result tile by its key (a grid place): which slide it was saved for, and what
+ * its page showed. Kept only while the tile looks the same (`sig`: caption and poster); all of it is dropped when the
+ * grid loses a tile, so a place that shifted is opened and checked again.
+ */
+interface ClipKnown {
+  sig: string;
+  sceneId?: string;
+  prompt?: string;
+}
+let clipKnown = new Map<string, ClipKnown>();
+/** Each clip key's look now, and how many result tiles the grid showed last time. */
+let clipSigs = new Map<string, string>();
+let clipTileCount = 0;
 /** A clip run's result key → the Flow tab's own key for that tile now (grid position: changes as tiles are added). */
 let clipTileKeys = new Map<string, string>();
+
+function forgetClipTiles(): void {
+  clipKnown = new Map();
+  clipSigs = new Map();
+  clipTileCount = 0;
+}
+
+/** What a clip run's page reads gave for matching (prompts by key), still valid for the tiles as they look now. */
+function clipDetails(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, k] of clipKnown) if (k.prompt !== undefined) out[key] = k.prompt;
+  return out;
+}
+
+/** The detail prompts matching may use: a clip run never trusts its stored ones (keys are grid places). */
+const detailsFor = (run: RunState) => (isClipRun(run) ? clipDetails() : (run.detailPrompts ?? {}));
 
 /** Flow's browser download of a clip VidFlow fetched itself (registerCoordinator makes it). */
 let flowDownloads: ReturnType<typeof createFlowDownloadGuard> | null = null;
@@ -742,13 +779,20 @@ const isUploadTile = (c: FlowResultCard) =>
 function clipCards(cards: FlowResultCard[]): FlowResultCard[] {
   const kept = [...cards].filter((c) => !isUploadTile(c)).sort((a, b) => a.domIndex - b.domIndex);
   const keys = new Map<string, string>();
+  const sigs = new Map<string, string>();
   const out = kept.map((c, domIndex) => {
     const age = kept.length - 1 - domIndex;
     const key = c.video === true ? `clip-${age}` : c.refusal !== null ? `pending-refused-${age}` : `pending-${age}`;
     keys.set(key, c.key);
+    sigs.set(key, `${c.caption}|${c.imageUrl ?? ''}`);
     return { ...c, key, domIndex, imageUrl: c.video === true ? (c.imageUrl ?? 'video') : c.imageUrl };
   });
+  // A tile gone (or a place that now looks different) means places may have shifted: what was known there is dropped.
+  if (kept.length < clipTileCount) clipKnown = new Map();
+  else for (const [key, k] of clipKnown) if (sigs.get(key) !== k.sig) clipKnown.delete(key);
+  clipTileCount = kept.length;
   clipTileKeys = keys;
+  clipSigs = sigs;
   return out;
 }
 
@@ -824,75 +868,145 @@ async function prepareClipFor(
   const stop = spent + cost > (state?.limit ?? 0) ? CREDIT_LIMIT_NOTE : state?.balance !== undefined && spent + cost > state.balance ? BALANCE_NOTE : null;
   if (stop) {
     note(project, sceneId, stop === CREDIT_LIMIT_NOTE ? `Credit limit reached (${spent} of ${state?.limit ?? 0} used)` : `Not enough Flow credits left (${spent} of ${state?.balance ?? 0} used)`);
-    await dispatch({ type: 'outOfCredits', message: stop });
+    await dispatch({ type: 'outOfCredits', message: stop, sceneId });
     return 'stop';
   }
   return { at, cost };
 }
 
+/** What a clip's page showed: its prompt, the start frame's name (null when the page doesn't show it), its file. */
+interface ClipPage {
+  prompt: string;
+  frame: string | null;
+  file: ClipFile | null;
+}
+
 /**
- * On a clip's page: its prompt, and when that is `fileFor` (the slide's prompt) also its file (Download media → 720p
- * Original size; Flow's own browser download of it is cancelled). null when the page didn't show the clip plainly.
+ * Reads the clip page the tab is on; takes its file (Download media → 720p Original size, Flow's own browser download
+ * cancelled) only when `wantFile` says the prompt is one VidFlow is waiting for. null when the page showed no prompt.
  */
-async function readClipPage(tabId: number, key: string, fileFor?: string): Promise<string | null> {
-  const m = motionPort();
-  if (!m) return null;
-  const { prompt } = await m.readVideoDetail(tabId);
-  if (!prompt) return null;
-  if (fileFor === undefined || !verifyMatch(fileFor, prompt)) return prompt;
-  flowDownloads?.expect();
-  const file = await m.clipFile(tabId);
-  if (!file) {
-    clipFileMissing.add(key);
-    return null; // unread: tried again on the next tile report, given up after GIVE_UP_AFTER
+const readClipPage =
+  (tabId: number, wantFile: (prompt: string) => boolean) =>
+  async (): Promise<ClipPage | null> => {
+    const m = motionPort();
+    if (!m) return null;
+    const { prompt, startFrame } = await m.readVideoDetail(tabId);
+    if (!prompt) return null;
+    let file: ClipFile | null = null;
+    if (wantFile(prompt)) {
+      flowDownloads?.expect();
+      file = await m.clipFile(tabId);
+    }
+    return { prompt, frame: startFrame ?? null, file };
+  };
+
+/** In-flight slides of this run whose prompt the page's prompt is. */
+const slidesWithPrompt = (run: RunState, prompt: string) =>
+  run.inFlight.filter((id) => run.sceneStates[id]?.status === 'submitted' && verifyMatch(run.sceneStates[id]?.submission?.prompt ?? '', prompt));
+
+/**
+ * The slide a clip page belongs to: one in Flow with that prompt and, when the page names it, that start frame
+ * (vidflow-sNN.png), so slides sharing a motion prompt never swap clips. 'other' when the frame names none of them;
+ * null when it can't be told (several share the prompt and the page shows no frame name).
+ */
+function ownerOf(project: Project, run: RunState, page: ClipPage): string | 'other' | null {
+  const slides = slidesWithPrompt(run, page.prompt);
+  if (slides.length === 0) return 'other';
+  if (page.frame) return slides.find((id) => startFrameName(project, id) === page.frame) ?? 'other';
+  return slides.length === 1 ? slides[0]! : null;
+}
+
+/**
+ * Collects one clip the matcher placed for `sceneId`: opens its tile (always: its key is a grid place, so nothing read
+ * before is trusted), finds the slide it belongs to by prompt and start frame, and saves it there. 'wait' when this
+ * pass should end (stopped, or try again on the next tile report); otherwise something changed.
+ */
+async function collectClip(tabId: number, project: Project, run: RunState, sceneId: string, key: string, attempt: number): Promise<'wait' | 'changed'> {
+  if (unreadCount.get(key)?.attempt === attempt) return 'wait'; // already tried on this report
+  if (run.status !== 'running' && (unreadCount.get(key)?.count ?? 0) >= GIVE_UP_AFTER - 1) return 'wait';
+  note(project, sceneId, `Checking clip ${sceneNumber(project, sceneId)} matches its prompt`, 'tile', key);
+  const read = readClipPage(tabId, (prompt) => slidesWithPrompt(state ?? run, prompt).length > 0);
+  const page = await visitTile(tabId, run.projectId, key, read);
+  if (!stillCollecting(run.projectId) || page === SKIPPED || !state) return 'wait';
+  const strike = async (what: string): Promise<'wait' | 'changed'> => {
+    const tries = (unreadCount.get(key)?.count ?? 0) + 1;
+    unreadCount.set(key, { count: tries, attempt });
+    if (tries < GIVE_UP_AFTER || state?.status !== 'running') return 'wait';
+    unreadCount.delete(key);
+    await dispatch({ type: 'failed', sceneId, message: clipFailure(sceneId, what) });
+    return 'changed';
+  };
+  if (page === null) return strike(CLIP_UNCONFIRMED);
+  const sig = clipSigs.get(key) ?? '';
+  const owner = ownerOf(project, state, page);
+  if (owner === null) return strike(CLIP_UNCONFIRMED);
+  if (owner === 'other') {
+    // Not a clip of any slide waiting for one (another slide's frame, or a prompt none has): matching moves past it.
+    clipKnown.set(key, { sig, prompt: slidesWithPrompt(state, page.prompt).length > 0 ? '' : page.prompt });
+    return 'changed';
   }
-  clipFileMissing.delete(key);
-  clipFiles.set(key, file);
-  return prompt;
+  if (!page.file) return strike(CLIP_FILE);
+  unreadCount.delete(key);
+  const again = async (): Promise<ClipFile | null> => {
+    const fresh = await visitTile(tabId, run.projectId, key, readClipPage(tabId, () => true));
+    if (!fresh || fresh === SKIPPED || !state || ownerOf(project, state, fresh) !== owner) return null;
+    return fresh.file;
+  };
+  await saveClip(project, owner, key, sig, page.file, again);
+  return 'changed';
 }
 
 /**
  * Fetches a verified clip's file (signed flow-content.google address, background only), measures its length from its
- * own mvhd box, stores it as scene-NN-clip.mp4 and records the clip with the part the slide uses.
+ * own mvhd box, stores it as scene-NN-clip.mp4 and records the clip with the part the slide uses. A failed fetch or
+ * length read opens the clip page once more for a freshly signed address (`again`) before the slide fails.
  */
-async function saveClip(project: Project, sceneId: string, key: string, file: ClipFile): Promise<void> {
+async function saveClip(
+  project: Project,
+  sceneId: string,
+  key: string,
+  sig: string,
+  first: ClipFile,
+  again: () => Promise<ClipFile | null>,
+): Promise<void> {
   const job = state?.clips?.[sceneId];
   const wanted = () => state?.projectId === project.id && state.inFlight.includes(sceneId);
   if (!job || !wanted()) return;
-  if (!isFlowPictureUrl(file.url)) {
-    clipFiles.delete(key);
-    await dispatch({ type: 'failed', sceneId, message: UNTRUSTED_CLIP_MESSAGE });
-    return;
-  }
-  // One Flow clip (media id) is never saved for two slides.
-  const taken = Object.entries(state?.sceneStates ?? {}).some(([id, s]) => id !== sceneId && s.clip?.flowMediaId === file.mediaId);
-  if (taken) {
-    clipFiles.delete(key);
-    await dispatch({ type: 'failed', sceneId, message: CLIP_UNCONFIRMED_MESSAGE });
-    return;
-  }
-  let clip;
-  try {
-    const res = await fetch(file.url);
-    if (!res.ok) throw new Error(`clip fetch ${res.status}`);
-    const bytes = await res.arrayBuffer();
-    const length = mp4Duration(bytes);
-    if (length === null || length <= 0) {
-      clipFiles.delete(key);
-      await dispatch({ type: 'failed', sceneId, message: CLIP_LENGTH_MESSAGE });
+  const fail = (what: string) => dispatch({ type: 'failed', sceneId, message: clipFailure(sceneId, what) });
+  let file: ClipFile | null = first;
+  for (let tryNo = 1; file; tryNo++) {
+    if (!isFlowPictureUrl(file.url)) return void (await fail(CLIP_UNTRUSTED));
+    // One Flow clip (media id) is never saved for two slides.
+    const id = file.mediaId;
+    if (Object.entries(state?.sceneStates ?? {}).some(([other, s]) => other !== sceneId && s.clip?.flowMediaId === id)) {
+      return void (await fail(CLIP_UNCONFIRMED));
+    }
+    let bytes: ArrayBuffer | null = null;
+    try {
+      const res = await fetch(file.url);
+      if (res.ok) bytes = await res.arrayBuffer();
+    } catch {
+      bytes = null;
+    }
+    const length = bytes ? mp4Duration(bytes) : null;
+    if (!wanted()) return;
+    if (bytes && length !== null && length > 0) {
+      try {
+        const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
+        const mediaId = await getMediaStore().put(project.id, `scene-${nn}-clip.mp4`, new Blob([bytes], { type: 'video/mp4' }));
+        const clip = { mediaId, sourcePictureId: job.pictureId, length, use: useRange(job.seconds, length), flowMediaId: id };
+        clipKnown.set(key, { sig, sceneId });
+        await dispatch({ type: 'clip', sceneId, clip, cardKey: key });
+      } catch {
+        await fail(CLIP_SAVE);
+      }
       return;
     }
+    if (tryNo >= 2) break;
+    file = await again(); // the signed address may have run out: the page gives a fresh one
     if (!wanted()) return;
-    const nn = String(project.scenes.findIndex((s) => s.id === sceneId) + 1).padStart(2, '0');
-    const mediaId = await getMediaStore().put(project.id, `scene-${nn}-clip.mp4`, new Blob([bytes], { type: 'video/mp4' }));
-    clip = { mediaId, sourcePictureId: job.pictureId, length, use: useRange(job.seconds, length), flowMediaId: file.mediaId };
-  } catch {
-    clipFiles.delete(key);
-    await dispatch({ type: 'failed', sceneId, message: CLIP_SAVE_FAILED_MESSAGE });
-    return;
   }
-  clipFiles.delete(key);
-  await dispatch({ type: 'clip', sceneId, clip, cardKey: key });
+  await fail(CLIP_SAVE);
 }
 
 let clipPolling = false;
@@ -929,6 +1043,7 @@ async function submitScene(tabId: number, project: Project, sceneId: string, pro
 
 async function sendScene(tabId: number, project: Project, sceneId: string, prompt: string): Promise<'stop' | 'next'> {
   const projectId = project.id;
+  let pressing = false;
   try {
     if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop'; // stopped meanwhile; scene stays pending
     const clips = isClipRun(state);
@@ -938,14 +1053,14 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
     const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
     if (unconfirmed) {
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
-      const found = await findUnconfirmedStart(tabId, project, unconfirmed);
+      const found = await findUnconfirmedStart(tabId, project, unconfirmed, sceneId);
       if (found === null) return 'stop';
       if (found === 'wait') {
         // Look again after the pace pause, without pressing; but a tile that never finishes can't stall the run.
         if (unconfirmed.at === undefined) {
           await dispatch({ type: 'unconfirmed', sceneId, keysBefore: unconfirmed.keysBefore, prompt: unconfirmed.prompt });
         } else if (Date.now() - unconfirmed.at >= timings.unconfirmedWaitMs) {
-          await dispatch({ type: 'failed', sceneId, message: UNCONFIRMED_MESSAGE });
+          await dispatch({ type: 'failed', sceneId, message: clips ? clipFailure(sceneId, CLIP_UNCONFIRMED) : UNCONFIRMED_MESSAGE });
         }
         return 'next';
       }
@@ -981,14 +1096,22 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
     const keysBefore = (await runTiles(tabId)).filter(isFinished).map((c) => c.key);
     if (!stillRunning(projectId)) return 'stop';
     // Recorded before the press: if the worker is suspended before Flow's start is confirmed, the next pump looks for
-    // this scene's tiles before pressing again (no surplus batch). `submitted` clears it.
-    await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now() });
-    if (!stillRunning(projectId)) return 'stop';
-    if (!stillPending(sceneId)) return 'next';
-    // A clip's credits count from the press, whatever Flow then does with it (spec §20 settled 7: no refunds).
-    if (clips) await dispatch({ type: 'spent', credits: cost });
+    // this scene's tiles before pressing again (no surplus batch). `submitted` clears it. A clip's credits count from
+    // the press, whatever Flow then does with it (spec §20 settled 7: no refunds), so they go in the same step.
+    const spentBefore = state?.spent ?? 0;
+    await dispatch({ type: 'unconfirmed', sceneId, keysBefore, prompt, at: Date.now(), ...(clips ? { credits: cost } : {}) });
+    const counted = clips && (state?.spent ?? 0) === spentBefore + cost ? cost : 0;
+    // The last look before pressing: the tab is brought forward first, so nothing awaits between it and the press.
+    await frontTab(tabId);
+    if (!stillRunning(projectId) || !stillPending(sceneId)) {
+      // Paused, stopped or skipped at the last moment: nothing is pressed, so nothing is spent.
+      if (counted) await dispatch({ type: 'spent', credits: -counted });
+      return stillRunning(projectId) ? 'next' : 'stop';
+    }
     note(project, sceneId, 'Pressing Generate', 'generate');
-    await pressIn(tabId, at.x, at.y);
+    pressing = true;
+    await port!.press(tabId, at.x, at.y);
+    pressing = false;
     if (!stillRunning(projectId)) await detachFlowDebugger(tabId);
     const started = await port!.confirmStarted(tabId);
     if (started === 'notice') {
@@ -1027,6 +1150,12 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
     lastSendError = { sceneId, error: err instanceof Error ? err.message : String(err), at: Date.now() };
     console.warn('[VidFlow] send failed', lastSendError);
     void chrome.storage.local.set({ 'vidflow.lastSendError': lastSendError });
+    if (pressing && isClipRun(state)) {
+      // The press itself failed: Flow may have taken it (and the credits). The slide stays unconfirmed, so Resume looks
+      // for its clip before pressing again; it is never failed (that would invite paying twice).
+      await pauseWith(CLIP_PRESS_MESSAGE);
+      return 'stop';
+    }
     await dispatch({
       type: 'failed',
       sceneId,
@@ -1045,8 +1174,10 @@ async function findUnconfirmedStart(
   tabId: number,
   project: Project,
   u: NonNullable<SceneState['unconfirmed']>,
+  sceneId: string,
 ): Promise<boolean | 'wait' | null> {
   if (!state) return null;
+  const clips = isClipRun(state);
   const claimed = claimedKeys(state);
   const before = new Set(u.keysBefore);
   const all = (await runTiles(tabId)).filter((c) => !claimed.has(c.key) && notReference(state!)(c));
@@ -1064,7 +1195,7 @@ async function findUnconfirmedStart(
       }),
       ...sameSkipped.map((x) => ({ sceneId: `${SKIPPED_SLOT}${x.seq}`, prompt: x.prompt, seq: x.seq, submittedAt: x.at })),
     ];
-    const placed = matchResults(subs, all.filter((c) => before.has(c.key)), claimed, outputs, state.detailPrompts ?? {});
+    const placed = matchResults(subs, all.filter((c) => before.has(c.key)), claimed, outputs, detailsFor(state));
     skippedOwed -= placed.filter((m) => m.sceneId.startsWith(SKIPPED_SLOT) && m.kind !== 'unconfirmed').length;
   }
   const samePromptInFlight =
@@ -1080,6 +1211,9 @@ async function findUnconfirmedStart(
       if (detail === null) return null;
       if (detail === 'unread') return stillRunning(project.id) ? 'wait' : null;
       ok = verifyMatch(u.prompt, detail);
+      // A clip page that names its start frame must name this slide's (another slide may share the prompt).
+      const frame = clips ? lastClipFrame.get(card.key) : null;
+      if (ok && frame) ok = frame === startFrameName(project, sceneId);
     } else if (card.refusal !== null) {
       ok = verifyMatch(u.prompt, card.caption); // a refused tile keeps its prompt as caption: Flow did take it
     } else {
@@ -1102,16 +1236,16 @@ async function detailOf(
   projectId: string,
   key: string,
   attempt: number,
-  fileFor?: string,
 ): Promise<string | 'unread' | null> {
-  const known = state?.detailPrompts?.[key];
-  // A clip whose file is wanted is opened again even when its prompt is known (the file comes from its page).
-  if (known !== undefined && fileFor === undefined) return known;
+  const clips = isClipRun(state);
+  // A clip run's keys are grid places: what a page showed before isn't trusted, the tile is opened again.
+  const known = clips ? undefined : state?.detailPrompts?.[key];
+  if (known !== undefined) return known;
   if (unreadCount.get(key)?.attempt === attempt) return 'unread'; // already tried on this report
   // While not running, the last strike is left for after Resume: a paused run doesn't keep opening a tile that won't
   // read (each visit changes the tiles, which would bring the next read) and never gives up on a card.
   if (state?.status !== 'running' && (unreadCount.get(key)?.count ?? 0) >= GIVE_UP_AFTER - 1) return null;
-  const read = await readDetailFor(tabId, projectId, key, fileFor);
+  const read = clips ? await readClipPromptFor(tabId, projectId, key) : await readDetailFor(tabId, projectId, key);
   if (!stillCollecting(projectId)) return null;
   if (read === SKIPPED) return null; // paused with the tab elsewhere: not read, so not a strike against the card
   if (read === null) {
@@ -1119,11 +1253,24 @@ async function detailOf(
     unreadCount.set(key, { count: tries, attempt });
     if (tries < GIVE_UP_AFTER) return 'unread';
     if (state?.status !== 'running') return null; // never given up on while paused
-    await dispatch({ type: 'detail', cardKey: key, prompt: '' });
+    if (clips) clipKnown.set(key, { sig: clipSigs.get(key) ?? '', prompt: '' });
+    else await dispatch({ type: 'detail', cardKey: key, prompt: '' });
     return '';
   }
+  if (clips) return read;
   await dispatch({ type: 'detail', cardKey: key, prompt: read });
   return read;
+}
+
+/** The start frame a clip page named when it was last read by readClipPromptFor (findUnconfirmedStart checks it). */
+const lastClipFrame = new Map<string, string | null>();
+
+/** A clip tile's page prompt (no file taken); its frame goes in lastClipFrame. */
+async function readClipPromptFor(tabId: number, projectId: string, key: string): Promise<string | null | typeof SKIPPED> {
+  const page = await visitTile(tabId, projectId, key, readClipPage(tabId, () => false));
+  if (page === SKIPPED || page === null) return page;
+  lastClipFrame.set(key, page.frame);
+  return page.prompt;
 }
 
 /** readDetailFor didn't try (paused, tab off the project): unlike an unreadable detail, it doesn't count. */
@@ -1134,7 +1281,16 @@ const SKIPPED = Symbol('skipped');
  * run's project. null when anything doesn't line up; SKIPPED when a paused run's tab is off the project (it is never
  * moved then). Holds the tab.
  */
-async function readDetailFor(tabId: number, projectId: string, key: string, fileFor?: string): Promise<string | null | typeof SKIPPED> {
+function readDetailFor(tabId: number, projectId: string, key: string): Promise<string | null | typeof SKIPPED> {
+  return visitTile(tabId, projectId, key, async () => {
+    const { prompt, mediaId } = await port!.readDetail(tabId);
+    // Trust the prompt only when the page's one picture is this card; missing or different means unread.
+    return mediaId === key ? prompt : null;
+  });
+}
+
+/** Opens a result tile's page, reads it with `read`, and goes back to the run's project (see readDetailFor). */
+async function visitTile<T>(tabId: number, projectId: string, key: string, read: () => Promise<T | null>): Promise<T | null | typeof SKIPPED> {
   const flowUrl = state?.flowProjectUrl;
   if (!flowUrl || !port || !stillCollecting(projectId)) return null;
   const onProject = (u: string) => projectUrlOf(u) === flowUrl && !/\/edit\//.test(u);
@@ -1157,10 +1313,7 @@ async function readDetailFor(tabId: number, projectId: string, key: string, file
     if (!stillCollecting(projectId)) return null;
     await pressIn(tabId, at.x, at.y);
     if (!(await waitForUrl(tabId, (u) => projectUrlOf(u) === flowUrl && /\/edit\//.test(u)))) return null;
-    if (clips) return await readClipPage(tabId, key, fileFor);
-    const { prompt, mediaId } = await port.readDetail(tabId);
-    // Trust the prompt only when the page's one picture is this card; missing or different means unread.
-    return mediaId === key ? prompt : null;
+    return await read();
   } catch {
     return null;
   } finally {
@@ -1281,7 +1434,7 @@ async function matchOnce(): Promise<void> {
     }));
     const report = latestReport;
     const cards = report.cards.filter(notReference(run));
-    const details = run.detailPrompts ?? {};
+    const details = detailsFor(run);
     const matches = matchResults([...submissions, ...skipped], cards, claimedKeys(run), outputsOf(run, project), details).filter(
       (m) => !m.sceneId.startsWith(SKIPPED_SLOT),
     );
@@ -1299,23 +1452,12 @@ async function matchOnce(): Promise<void> {
         if (settled && streak.reportId !== report.id) unconfirmedStreak.set(m.sceneId, { count: streak.count + 1, reportId: report.id });
         if ((unconfirmedStreak.get(m.sceneId)?.count ?? 0) < GIVE_UP_AFTER) continue;
         unconfirmedStreak.delete(m.sceneId);
-        await dispatch({ type: 'failed', sceneId: m.sceneId, message: isClipRun(run) ? CLIP_UNCONFIRMED_MESSAGE : UNCONFIRMED_MESSAGE });
+        await dispatch({ type: 'failed', sceneId: m.sceneId, message: isClipRun(run) ? clipFailure(m.sceneId, CLIP_UNCONFIRMED) : UNCONFIRMED_MESSAGE });
       } else if (isClipRun(run)) {
-        // One clip per slide: opened once to check its prompt and take its file, then saved.
-        const key = m.cardKeys[0]!;
-        const file = clipFiles.get(key);
-        if (!file) {
-          const expected = run.sceneStates[m.sceneId]?.submission?.prompt ?? '';
-          note(project, m.sceneId, `Checking clip ${sceneNumber(project, m.sceneId)} matches its prompt`, 'tile', key);
-          const detail = await detailOf(tabId, run.projectId, key, report.id, expected);
-          if (detail === null || detail === 'unread') return; // stopped, or try again on the next tile report
-          if (detail === '') {
-            await dispatch({ type: 'failed', sceneId: m.sceneId, message: clipFileMissing.has(key) ? CLIP_FILE_MESSAGE : CLIP_UNCONFIRMED_MESSAGE });
-          }
-          changed = true;
-          break; // match again with what the page showed
-        }
-        await saveClip(project, m.sceneId, key, file);
+        // One clip per slide: its page is opened to check prompt and start frame and to take its file, then it is saved.
+        if ((await collectClip(tabId, project, run, m.sceneId, m.cardKeys[0]!, report.id)) === 'wait') return;
+        changed = true;
+        break; // match again with what the page showed
       } else {
         const [key] = unverifiedKeys(m, details);
         if (key !== undefined) {
@@ -1698,8 +1840,8 @@ async function startClipRunNow(projectId: string, limit: number): Promise<void> 
     const fresh = (await getProject(projectId)) ?? project;
     const ids = scenesToClip(fresh, fresh.sceneStates);
     if (ids.length === 0) throw new Error(NOTHING_TO_CLIP_MESSAGE);
-    clipFiles.clear();
-    clipFileMissing.clear();
+    forgetClipTiles();
+    lastClipFrame.clear();
     await commit(reduceRun(initClipRun(fresh, ids, limit), { type: 'start' }));
   });
   void pump();
@@ -1835,9 +1977,7 @@ async function handleDeadline(sceneId: string): Promise<void> {
         sceneId,
         // A scene VidFlow couldn't match consistently says so, rather than blaming Flow's speed.
         message: isClipRun(state)
-          ? unconfirmedStreak.has(sceneId)
-            ? CLIP_UNCONFIRMED_MESSAGE
-            : "Flow didn't finish this clip in 10 minutes. Make clips again for it."
+          ? clipFailure(sceneId, unconfirmedStreak.has(sceneId) ? CLIP_UNCONFIRMED : CLIP_UNFINISHED)
           : unconfirmedStreak.has(sceneId)
             ? UNCONFIRMED_MESSAGE
             : "Flow didn't finish this picture in 10 minutes. Press Try again to send it again.",

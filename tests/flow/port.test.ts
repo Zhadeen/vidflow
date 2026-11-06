@@ -223,10 +223,10 @@ describe('Flow port: clips and Agent questions', () => {
   it("reads video tiles, a clip's page and its file URL", async () => {
     const card = { key: 'video-1', caption: 'Stickman waving', imageUrl: 'u', progress: null, refusal: null, domIndex: 1, video: true };
     const file = { url: 'https://flow-content.google/video/1fc?Expires=1', mediaId: '1fc' };
-    const { send, port } = setup([{ cards: [card] }, { prompt: 'p', editId: 'e1' }, undefined, { file }, { file: null }]);
+    const { send, port } = setup([{ cards: [card] }, { prompt: 'p', editId: 'e1', startFrame: 'vidflow-s01.png' }, undefined, { file }, { file: null }]);
     expect(await port.videoTiles(7)).toEqual([card]);
-    expect(await port.readVideoDetail(7)).toEqual({ prompt: 'p', editId: 'e1' });
-    expect(await port.readVideoDetail(7)).toEqual({ prompt: null, editId: null });
+    expect(await port.readVideoDetail(7)).toEqual({ prompt: 'p', editId: 'e1', startFrame: 'vidflow-s01.png' });
+    expect(await port.readVideoDetail(7)).toEqual({ prompt: null, editId: null, startFrame: null });
     expect(await port.clipFile(7, 15_000)).toEqual(file);
     expect(await port.clipFile(7)).toBeNull();
     expect(send.mock.calls.map(([, m]) => m)).toEqual([

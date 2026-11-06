@@ -21,7 +21,8 @@ export interface SceneState {
   clip?: ClipRecord;
   clipNote?: string;
   /** While generating: the order and exact prompt this scene went to Flow with (result matching). */
-  submission?: { seq: number; at: number; prompt: string };
+  /** keysBefore (clip runs): the finished tiles before the press, so a restart looks for this clip before pressing. */
+  submission?: { seq: number; at: number; prompt: string; keysBefore?: string[] };
   /**
    * Whether these pictures were made with the hero reference attached in Flow (the Queue's "hero ✓"). Absent for
    * pictures saved before VidFlow recorded it: no mark rather than a guess.
@@ -33,7 +34,7 @@ export interface SceneState {
    * Generate was (about to be) pressed but Flow's start wasn't seen: the finished tiles before the press, to look for
    * it on Resume, and when that was (missing in runs saved before it was recorded).
    */
-  unconfirmed?: { keysBefore: string[]; prompt: string; at?: number };
+  unconfirmed?: { keysBefore: string[]; prompt: string; at?: number; seq?: number };
 }
 /** The hero's model sheet (made in Flow): kept apart from the scenes, so it is never a scene in the grid or export. */
 export interface HeroSheet {

@@ -29,6 +29,10 @@ describe('mp4Duration (the moov/mvhd box)', () => {
     expect(mp4Duration(whole.slice(0, whole.length - 30))).toBeNull();
   });
 
+  it('gives null for an unknown duration (all ones)', () => {
+    expect(mp4Duration(mp4Bytes({ duration: 0xffffffff, timescale: 1000 }))).toBeNull();
+  });
+
   it('accepts an ArrayBuffer as well as bytes', () => {
     const bytes = mp4Bytes({ duration: 4032, timescale: 1000 });
     expect(mp4Duration(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))).toBe(4.032);

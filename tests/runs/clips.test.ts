@@ -66,15 +66,32 @@ const FAST = { paceMinMs: 1, paceMaxMs: 2, urlPollMs: 5, backWaitMs: 200, clipPo
 
 type Tile =
   | { kind: 'upload'; id: string; name: string }
-  | { kind: 'clip'; prompt: string; mediaId: string; done: boolean; refused?: string; detailPrompt?: string; showsFrame?: boolean };
+  | {
+      kind: 'clip';
+      prompt: string;
+      mediaId: string;
+      done: boolean;
+      refused?: string;
+      detailPrompt?: string;
+      showsFrame?: boolean;
+      /** The start frame attached when it was made (its page shows the name). */
+      frame?: string;
+      /** Flow left it out of the grid for a moment. */
+      hidden?: boolean;
+    };
+
+/** The Flow tab's mocked chrome as it is now (a restart replaces it). */
+const currentTab = () => (globalThis as unknown as { chrome: { tab: { url: string } } }).chrome.tab;
 
 /**
  * A small Flow: uploads become picture tiles captioned with the file name, Generate adds a drawing clip, finish()
  * turns them into finished video tiles (keyed by grid position, no media id), which open to their detail page.
  */
-function flowWorld(chromeMock: ReturnType<typeof mockChrome>) {
+function flowWorld() {
   const tiles: Tile[] = []; // oldest first
   let typed = '';
+  let frame = '';
+  const visible = () => [...tiles].reverse().filter((t) => !(t.kind === 'clip' && t.hidden));
   let opened: Extract<Tile, { kind: 'clip' }> | null = null;
   let made = 0;
   const world = {
@@ -83,7 +100,7 @@ function flowWorld(chromeMock: ReturnType<typeof mockChrome>) {
     /** Set to refuse the next Generate (the tile keeps the prompt as caption). */
     refuseNext: null as string | null,
     cards(): FlowResultCard[] {
-      return [...tiles].reverse().map((t, domIndex): FlowResultCard => {
+      return visible().map((t, domIndex): FlowResultCard => {
         if (t.kind === 'upload') {
           return { key: t.id, caption: t.name, imageUrl: `https://flow-content.google/image/${t.id}`, progress: null, refusal: null, domIndex };
         }
@@ -93,7 +110,7 @@ function flowWorld(chromeMock: ReturnType<typeof mockChrome>) {
           return { key: `frame-${t.mediaId}`, caption: t.prompt, imageUrl: `https://flow-content.google/image/f-${t.mediaId}`, progress: null, refusal: null, domIndex };
         }
         if (!t.done) return { key: `pending-${domIndex}`, caption: t.prompt, imageUrl: null, progress: 40, refusal: null, domIndex };
-        return { key: `video-${domIndex}`, caption: 'Stickman waving', imageUrl: 'https://flow.google.com/asb/tok', progress: null, refusal: null, domIndex, video: true };
+        return { key: `video-${domIndex}`, caption: 'Stickman waving', imageUrl: `https://flow.google.com/asb/tok-${t.mediaId}`, progress: null, refusal: null, domIndex, video: true };
       });
     },
     finish() {
@@ -108,12 +125,12 @@ function flowWorld(chromeMock: ReturnType<typeof mockChrome>) {
     findNewProject: vi.fn(async () => ({ x: 5, y: 5 })),
     prepare: vi.fn(async () => ({ x: 1, y: 1 })),
     press: vi.fn(async (_tabId: number, x: number) => {
-      if (x === 5) chromeMock.tab.url = PROJECT_URL;
-      if (x === TILE_X) chromeMock.tab.url = `${PROJECT_URL}/edit/e-${opened?.mediaId ?? 'x'}`;
+      if (x === 5) currentTab().url = PROJECT_URL;
+      if (x === TILE_X) currentTab().url = `${PROJECT_URL}/edit/e-${opened?.mediaId ?? 'x'}`;
       if (x === GENERATE.x) {
         world.generates++;
         made++;
-        tiles.push({ kind: 'clip', prompt: typed, mediaId: `m${made}`, done: false, ...(world.refuseNext ? { refused: world.refuseNext } : {}) });
+        tiles.push({ kind: 'clip', prompt: typed, frame, mediaId: `m${made}`, done: false, ...(world.refuseNext ? { refused: world.refuseNext } : {}) });
         world.refuseNext = null;
       }
     }),
@@ -123,15 +140,16 @@ function flowWorld(chromeMock: ReturnType<typeof mockChrome>) {
       const i = world.cards().findIndex((c) => c.key === key);
       if (i < 0) throw new Error(`no tile ${key}`);
       world.opened.push(key);
-      const t = [...tiles].reverse()[i]!;
+      const t = visible()[i]!;
       opened = t.kind === 'clip' ? t : null;
       return { x: TILE_X, y: 300 };
     }),
     readDetail: vi.fn(async () => ({ prompt: null as string | null, mediaId: null as string | null })),
     uploadReference: vi.fn(async (): Promise<string | null> => 'ref'),
     acceptNotice: vi.fn(async (): Promise<boolean | null | 'gone'> => true),
-    prepareClip: vi.fn(async (_tabId: number, prompt: string, _options: ClipOptions) => {
+    prepareClip: vi.fn(async (_tabId: number, prompt: string, options: ClipOptions) => {
       typed = prompt;
+      frame = options.startFrame;
       return { ...GENERATE };
     }),
     uploadStartFrame: vi.fn(async (_tabId: number, name: string, _image: Blob) => {
@@ -140,7 +158,11 @@ function flowWorld(chromeMock: ReturnType<typeof mockChrome>) {
     generateCost: vi.fn(async (_tabId: number): Promise<number | null> => 7),
     creditBalance: vi.fn(async (_tabId: number) => ({ credits: 1000, resets: '13 Nov at 13:50' }) as { credits: number; resets: string | null } | null),
     videoTiles: vi.fn(async () => world.cards()),
-    readVideoDetail: vi.fn(async () => ({ prompt: opened ? (opened.detailPrompt ?? opened.prompt) : null, editId: opened ? `e-${opened.mediaId}` : null })),
+    readVideoDetail: vi.fn(async () => ({
+      prompt: opened ? (opened.detailPrompt ?? opened.prompt) : null,
+      editId: opened ? `e-${opened.mediaId}` : null,
+      startFrame: opened?.frame ?? null,
+    })),
     clipFile: vi.fn(async () => (opened ? { url: `https://flow-content.google/video/${opened.mediaId}?Expires=1`, mediaId: opened.mediaId } : null)),
     prepareAgentQuestion: vi.fn(async () => ({ x: 9, y: 9 })),
     readAgentReply: vi.fn(async () => null),
@@ -203,7 +225,7 @@ async function setup(opts: { aspect?: Project['aspect']; picks?: string[]; scene
     project.sceneStates[s.id] = { sceneId: s.id, status: 'done', pictureIds: [a, b], cardKeys: [`k-${s.id}-a`, `k-${s.id}-b`] };
   }
   await store.saveProject(project);
-  const { world, port } = flowWorld(chromeMock);
+  const { world, port } = flowWorld();
   return { chromeMock, coordinator, project, media, store, world, port };
 }
 
@@ -557,6 +579,143 @@ describe('Motion run (clips)', () => {
     await expect(coordinator.startClipRun(project.id, 100)).rejects.toThrow('Flow makes clips only for 16:9 and 9:16 videos.');
     expect(coordinator.getRunState()).toBeNull();
     expect(port.findNewProject).not.toHaveBeenCalled();
+  });
+
+  it('a restart never pays twice: the clip in Flow is looked for before any press, then collected', async () => {
+    const ctx = await setup({ picks: ['s1'] });
+    stubFetch();
+    ctx.coordinator.setFlowPort(ctx.port);
+    await ctx.coordinator.startClipRun(ctx.project.id, 100);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 in Flow');
+    // The browser restarts: the saved run comes back in a fresh worker (no session marker).
+    const saved = structuredClone(ctx.chromeMock.storage.local.data);
+    await ctx.coordinator.stopRun(); // the old worker is gone (stopping it here only keeps it from acting)
+    vi.resetModules();
+    const chrome2 = mockChrome();
+    Object.assign(chrome2.storage.local.data, saved);
+    const store2 = await import('../../src/store/projects');
+    store2.setMediaStore(ctx.media);
+    const c2 = await import('../../src/runs/coordinator');
+    c2.setTimingsForTests(FAST);
+    live.push(c2);
+    c2.registerCoordinator();
+    c2.setFlowPort(ctx.port);
+    await waitFor(() => !!c2.getRunState()?.sceneStates.s1?.unconfirmed, 's1 waiting to be found');
+    ctx.world.finish();
+    await c2.handleTiles([]);
+    await waitFor(() => c2.getRunState()?.status === 'finished', 'the run finished');
+    await c2.settledForTests();
+    expect(ctx.world.generates).toBe(1);
+    expect(c2.getRunState()!.spent).toBe(7);
+    const project = (await store2.getProject(ctx.project.id))!;
+    expect(project.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+  });
+
+  it('a tile that briefly disappears loses no slide, and each slide gets its own clip', async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1', 's2'] });
+    stubFetch();
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 2, 'two clips pressed');
+    world.finish();
+    world.clip(1).hidden = true; // Flow redraws: the older clip is missing for a moment
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s2?.status === 'done', 's2 saved');
+    world.clip(1).hidden = false;
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    await coordinator.settledForTests();
+    const saved = (await store.getProject(project.id))!;
+    expect(saved.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+    expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
+  it('slides with the same motion prompt never swap clips: the start frame on the clip page decides', async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+    stubFetch();
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 2, 'two clips pressed');
+    // Flow lists the second slide's clip in the first one's place.
+    const a = world.tiles.indexOf(world.clip(1));
+    const b = world.tiles.indexOf(world.clip(2));
+    [world.tiles[a], world.tiles[b]] = [world.tiles[b]!, world.tiles[a]!];
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    await coordinator.settledForTests();
+    const saved = (await store.getProject(project.id))!;
+    expect(saved.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+    expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
+  it('Stop arriving right before the press: nothing is pressed and nothing is spent', async () => {
+    const { coordinator, project, port, world, chromeMock } = await setup({ picks: ['s1'] });
+    let stopped = false;
+    const get = chromeMock.tabs.get.getMockImplementation()!;
+    chromeMock.tabs.get.mockImplementation(async () => {
+      // The first look at the tab after the press was recorded is the one right before pressing.
+      if (!stopped && coordinator.getRunState()?.sceneStates.s1?.unconfirmed) {
+        stopped = true;
+        await coordinator.stopRun();
+      }
+      return get();
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => stopped, 'stopped at the press');
+    await coordinator.settledForTests();
+    expect(world.generates).toBe(0);
+    expect(coordinator.getRunState()!.status).toBe('idle');
+    expect(coordinator.getRunState()!.spent).toBe(0);
+  });
+
+  it('a press that throws pauses the run with the slide waiting to be found, never failed', async () => {
+    const { coordinator, project, port, world } = await setup({ picks: ['s1'] });
+    const press = port.press.getMockImplementation()!;
+    port.press.mockImplementation(async (tabId: number, x: number) => {
+      if (x === GENERATE.x) throw new Error('Debugger is not attached');
+      return press(tabId, x);
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused');
+    const s1 = coordinator.getRunState()!.sceneStates.s1!;
+    expect(s1.status).toBe('pending');
+    expect(s1.unconfirmed).toBeDefined();
+    expect(coordinator.getRunState()!.pauseReason).toMatch(/clip/);
+    expect(world.generates).toBe(0);
+  });
+
+  it('a failed fetch opens the clip page again for a fresh address, then saves', async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1'] });
+    const ok = stubFetch();
+    const okImpl = ok.getMockImplementation()!;
+    let calls = 0;
+    ok.mockImplementation(async (url: string) => (++calls === 1 ? ({ ok: false, status: 403 } as never) : okImpl(url)));
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 1, 'pressed');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    await coordinator.settledForTests();
+    expect(port.clipFile).toHaveBeenCalledTimes(2);
+    expect((await store.getProject(project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+  });
+
+  it('a clip that still cannot be saved says what making it again costs', async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1'] });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 403 })));
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 1, 'pressed');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    await coordinator.settledForTests();
+    expect(port.clipFile).toHaveBeenCalledTimes(2);
+    expect((await store.getProject(project.id))!.sceneStates.s1!.clipNote).toBe("Couldn't save this clip. Making it again costs 7 credits.");
   });
 
   it("logs Flow's announcement and a panel left open in the run's activity", async () => {

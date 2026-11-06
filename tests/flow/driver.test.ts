@@ -1405,7 +1405,10 @@ describe('FlowDriver video tiles and clip detail (spike S8)', () => {
     expect(createFlowDriver().readVideoDetail()).toEqual({
       prompt: 'The stickman waves hello. Keep the exact same drawing style and characters as the start frame.',
       editId: 'edit-456',
+      startFrame: 'vidflow-s01.png',
     });
+    document.querySelector('.frame-chip')!.remove();
+    expect(createFlowDriver().readVideoDetail().startFrame).toBeNull();
     history.pushState({}, '', '/u/0/project/p-123');
     expect(createFlowDriver().readVideoDetail().editId).toBeNull();
   });

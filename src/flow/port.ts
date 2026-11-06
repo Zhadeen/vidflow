@@ -219,7 +219,7 @@ export function createFlowPort(over: Partial<PortDeps> = {}): FlowPort & FlowMot
 
     async readVideoDetail(tabId) {
       const reply = (await ask(tabId, { type: FLOW_VIDEO_DETAIL })) as VideoDetailResponse | undefined;
-      return { prompt: reply?.prompt ?? null, editId: reply?.editId ?? null };
+      return { prompt: reply?.prompt ?? null, editId: reply?.editId ?? null, startFrame: reply?.startFrame ?? null };
     },
 
     async clipFile(tabId, timeoutMs = CLIP_FILE_TIMEOUT_MS) {

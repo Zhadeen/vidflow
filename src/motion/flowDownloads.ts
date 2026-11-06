@@ -49,7 +49,7 @@ function isFlowClip(item: FlowDownloadItem): boolean {
 export function createFlowDownloadGuard(api: DownloadsApi, ownExtensionId: string, now: () => number = Date.now) {
   let until = Number.NEGATIVE_INFINITY;
   return {
-    /** VidFlow is about to press Flow's download: its download may start within the window. */
+    /** VidFlow is about to press Flow's download: the first Flow clip download within the window is its own. */
     expect(windowMs = FLOW_DOWNLOAD_WINDOW_MS): void {
       until = now() + windowMs;
     },
@@ -58,6 +58,7 @@ export function createFlowDownloadGuard(api: DownloadsApi, ownExtensionId: strin
       if (now() > until) return false;
       if (item.byExtensionId && item.byExtensionId === ownExtensionId) return false;
       if (!isFlowClip(item)) return false;
+      until = Number.NEGATIVE_INFINITY; // one download per press: anything after it is left alone
       await api.cancel(item.id).catch(() => undefined);
       const [after] = await api.search({ id: item.id }).catch(() => [] as Array<{ id: number; state?: string }>);
       if ((after?.state ?? item.state) === 'complete') await api.removeFile(item.id).catch(() => undefined);

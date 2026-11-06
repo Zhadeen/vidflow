@@ -63,7 +63,12 @@ export interface DetailRead {
 export interface VideoDetailRead {
   prompt: string | null;
   editId: string | null;
+  /** The start frame's asset name the clip page shows (vidflow-sNN.png); null when it shows none. */
+  startFrame: string | null;
 }
+
+/** VidFlow's own asset names (start frames, Auto-pick pictures). */
+const VIDFLOW_ASSET = /\bvidflow-s\d+(?:-[a-d])?\.(?:png|jpe?g|webp)\b/i;
 
 /** A finished clip's file: Flow's signed URL and the media id it names. */
 export interface ClipFile {
@@ -419,7 +424,16 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const parts = prompt ? [...prompt.querySelectorAll(SEL.detailPromptText)].map((p) => p.textContent ?? '') : [];
     const text = squash(parts.join(''));
     const editId = /\/edit\/([^/?#]+)/.exec(doc.location?.pathname ?? '')?.[1] ?? null;
-    return { prompt: text || null, editId: editId ? decodeURIComponent(editId) : null };
+    // The clip's page names the start frame it was made from (a button with the asset's name; S8 addendum).
+    let startFrame: string | null = null;
+    for (const el of doc.querySelectorAll<HTMLElement>('button, [role="button"]')) {
+      const m = VIDFLOW_ASSET.exec(squash(`${el.textContent ?? ''} ${el.getAttribute('aria-label') ?? ''}`));
+      if (m) {
+        startFrame = m[0];
+        break;
+      }
+    }
+    return { prompt: text || null, editId: editId ? decodeURIComponent(editId) : null, startFrame };
   }
 
   function readDetailPrompt(): DetailRead {
