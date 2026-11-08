@@ -713,6 +713,8 @@ const CLIP_UNCONFIRMED = "VidFlow couldn't confirm which clip belongs to this sl
 const CLIP_UNTRUSTED = "Flow gave VidFlow a clip from an address it doesn't trust, so it wasn't saved.";
 const CLIP_UNFINISHED = "Flow didn't finish this clip in 10 minutes.";
 /** The press of Generate itself failed: Flow may have taken it. */
+/** Still unsure after the wait limit whether Flow started a slide's clip: never pressed again on a guess. */
+export const CLIP_UNSURE_MESSAGE = "VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume.";
 export const CLIP_PRESS_MESSAGE =
   "VidFlow may have pressed Generate for this clip but couldn't tell. Check the Flow window, then press Resume (VidFlow looks for the clip before pressing again).";
 
@@ -904,6 +906,8 @@ async function collectClip(tabId: number, project: Project, run: RunState, scene
     if (tries < GIVE_UP_AFTER || state?.status !== 'running') return 'wait';
     unreadCount.delete(key);
     if (known === undefined && what === CLIP_UNCONFIRMED) await dispatch({ type: 'detail', cardKey: key, prompt: '' });
+    // A tile whose prompt checked out is this slide's, even when the slide fails on it: no other slide takes it.
+    if (what !== CLIP_UNCONFIRMED) await dispatch({ type: 'clipClaim', key, sceneId });
     await dispatch({ type: 'failed', sceneId, message: clipFailure(sceneId, what) });
     return 'changed';
   };
@@ -935,7 +939,11 @@ async function saveClip(
   const job = state?.clips?.[sceneId];
   const wanted = () => state?.projectId === project.id && state.inFlight.includes(sceneId);
   if (!job || !wanted()) return;
-  const fail = (what: string) => dispatch({ type: 'failed', sceneId, message: clipFailure(sceneId, what) });
+  // The tile's prompt checked out: it stays this slide's when the slide fails on it (no other slide takes it).
+  const fail = async (what: string) => {
+    await dispatch({ type: 'clipClaim', key, sceneId });
+    await dispatch({ type: 'failed', sceneId, message: clipFailure(sceneId, what) });
+  };
   let file: ClipFile | null = first;
   for (let tryNo = 1; file; tryNo++) {
     if (!isFlowPictureUrl(file.url)) return void (await fail(CLIP_UNTRUSTED));
@@ -1015,14 +1023,25 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
     const unconfirmed = state?.sceneStates[sceneId]?.unconfirmed;
     if (unconfirmed) {
       // A press whose start VidFlow didn't see may still have worked: look before pressing again (no surplus batch).
-      const found = clips ? await findUnconfirmedClip(tabId, project, unconfirmed) : await findUnconfirmedStart(tabId, project, unconfirmed);
+      const found = clips ? await findUnconfirmedClip(tabId, project, sceneId, unconfirmed) : await findUnconfirmedStart(tabId, project, unconfirmed);
       if (found === null) return 'stop';
       if (found === 'wait') {
         // Look again after the pace pause, without pressing; but a tile that never finishes can't stall the run.
         if (unconfirmed.at === undefined) {
-          await dispatch({ type: 'unconfirmed', sceneId, keysBefore: unconfirmed.keysBefore, prompt: unconfirmed.prompt });
+          await dispatch({
+            type: 'unconfirmed',
+            sceneId,
+            keysBefore: unconfirmed.keysBefore,
+            prompt: unconfirmed.prompt,
+            ...(unconfirmed.othersBefore !== undefined ? { othersBefore: unconfirmed.othersBefore } : {}),
+          });
         } else if (Date.now() - unconfirmed.at >= timings.unconfirmedWaitMs) {
-          await dispatch({ type: 'failed', sceneId, message: clips ? clipFailure(sceneId, CLIP_UNCONFIRMED) : UNCONFIRMED_MESSAGE });
+          // A clip is never pressed again on a guess (nor failed: its press may be in Flow): the owner looks.
+          if (clips) {
+            await pauseWith(CLIP_UNSURE_MESSAGE);
+            return 'stop';
+          }
+          await dispatch({ type: 'failed', sceneId, message: UNCONFIRMED_MESSAGE });
         }
         return 'next';
       }
@@ -1143,47 +1162,95 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
 }
 
 /**
+ * A clip run's unconfirmed slides whose last look found no clip of their press, with the press record looked at
+ * (its `at`): one look alone never leads to a new press, a second one (after the pace pause) is needed.
+ */
+const noClipSeen = new Map<string, number>();
+
+/**
  * A clip run's version of findUnconfirmedStart (after a press whose start wasn't seen, or a restart): true when a clip
  * of this press is in Flow. Tiles there at the press never count: the finished ones (keysBefore, poster keys) and the
  * `othersBefore` oldest of the rest, which were still drawing then. Claimed tiles never count either. Of the newer
  * clips with this prompt, slides sharing it that were sent after this press (seq or time) are owed theirs first; a
- * slide sent before it got its clip from the older tiles. null when the run stopped meanwhile. Holds the tab.
+ * slide sent before it got its clip from the older tiles.
+ *
+ * Telling the older tiles by place is only safe on a whole grid, and pressing again on a wrong "no" pays twice. So
+ * "not started" (false) needs: no fewer tiles than at the press, no checked tile with this prompt left out of the read,
+ * no unclaimed tile with this prompt (by its checked prompt, or a drawing tile's caption) anywhere past keysBefore, and
+ * the same answer on two looks in a row. Anything less is 'wait' (look again; the run pauses after the wait limit).
+ * null when the run stopped meanwhile. Holds the tab.
  */
-async function findUnconfirmedClip(tabId: number, project: Project, u: NonNullable<SceneState['unconfirmed']>): Promise<boolean | 'wait' | null> {
+async function findUnconfirmedClip(
+  tabId: number,
+  project: Project,
+  sceneId: string,
+  u: NonNullable<SceneState['unconfirmed']>,
+): Promise<boolean | 'wait' | null> {
   const run = state;
   if (!run) return null;
   const claimed = new Set(Object.keys(run.clipClaims ?? {}));
   const before = new Set(u.keysBefore);
-  const newer = oldestFirst(await runTiles(tabId))
-    .filter((c) => !before.has(c.key))
-    .slice(u.othersBefore ?? 0)
-    .filter((c) => !claimed.has(c.key));
+  const olderCount = u.othersBefore ?? 0;
+  const tiles = oldestFirst(await runTiles(tabId));
+  const notBefore = tiles.filter((c) => !before.has(c.key));
+  const newer = notBefore.slice(olderCount).filter((c) => !claimed.has(c.key));
+  const older = notBefore.slice(0, olderCount).filter((c) => !claimed.has(c.key));
   const later = (seq: number, at: number) => (u.seq !== undefined ? seq > u.seq : at >= (u.at ?? 0));
   const owed =
     run.inFlight.filter((id) => {
       const sub = run.sceneStates[id]?.submission;
       return !!sub && later(sub.seq, sub.at) && verifyMatch(u.prompt, sub.prompt);
     }).length + liveSkipped(run, Date.now()).filter((x) => later(x.seq, x.at) && verifyMatch(u.prompt, x.prompt)).length;
-  let hits = 0;
-  let generating = 0;
   const attempt = -++unconfirmedAttempt;
-  for (const card of newer) {
-    let ok: boolean;
+  /** Whether a tile carries this prompt: 'drawing' when only its caption says so. */
+  const promptOf = async (card: FlowResultCard): Promise<boolean | 'drawing' | 'unread' | null> => {
     if (isFinished(card)) {
       const detail = await detailOf(tabId, project.id, card.key, attempt);
-      if (detail === null) return null;
-      if (detail === 'unread') return stillRunning(project.id) ? 'wait' : null;
-      ok = verifyMatch(u.prompt, detail);
-    } else if (card.refusal !== null) {
-      ok = verifyMatch(u.prompt, card.caption); // a refused tile keeps its prompt as caption: Flow did take it
-    } else {
-      if (verifyMatch(u.prompt, card.caption)) generating++;
-      continue;
+      return detail === null || detail === 'unread' ? detail : verifyMatch(u.prompt, detail);
     }
-    if (ok && ++hits > owed) return true;
+    if (card.refusal !== null) return verifyMatch(u.prompt, card.caption); // a refused tile keeps its prompt: Flow took it
+    return verifyMatch(u.prompt, card.caption) ? 'drawing' : false; // still drawing: its caption alone doesn't prove it
+  };
+  let hits = 0;
+  let generating = 0;
+  for (const card of newer) {
+    const ok = await promptOf(card);
+    if (ok === null) return null;
+    if (ok === 'unread') return stillRunning(project.id) ? 'wait' : null;
+    if (ok === 'drawing') generating++;
+    else if (ok && ++hits > owed) {
+      noClipSeen.delete(sceneId);
+      return true;
+    }
   }
   if (!stillRunning(project.id)) return null;
-  return hits + generating > owed ? 'wait' : false;
+  let unsure = hits + generating > 0;
+  // A tile left out of this read shifts the places: an older tile told by place may be this press's clip.
+  const shown = new Set(tiles.map((c) => c.key));
+  if (tiles.length < u.keysBefore.length + olderCount) unsure = true;
+  for (const [key, prompt] of Object.entries(run.detailPrompts ?? {})) {
+    if (!shown.has(key) && !claimed.has(key) && verifyMatch(u.prompt, prompt)) unsure = true;
+  }
+  for (const card of unsure ? [] : older) {
+    const ok = await promptOf(card);
+    if (ok === null) return null;
+    if (ok !== false) {
+      unsure = true;
+      break;
+    }
+  }
+  if (!stillRunning(project.id)) return null;
+  if (unsure) {
+    noClipSeen.delete(sceneId);
+    return 'wait';
+  }
+  // Nothing of this press in a whole grid: once is not enough (Flow can leave a tile out of one read).
+  if (noClipSeen.get(sceneId) !== u.at) {
+    noClipSeen.set(sceneId, u.at ?? 0);
+    return 'wait';
+  }
+  noClipSeen.delete(sceneId);
+  return false;
 }
 
 /**
@@ -2010,7 +2077,11 @@ const CHECK_GRACE_MINUTES = 2;
 function clipBeingChecked(run: RunState, sceneId: string): boolean {
   const sub = run.sceneStates[sceneId]?.submission;
   if (!sub) return false;
-  if (sub.clipKey && !run.clipClaims?.[sub.clipKey]) return true;
+  if (sub.clipKey && !run.clipClaims?.[sub.clipKey]) {
+    // A tile whose page showed another slide's prompt is not being checked for this one.
+    const checked = run.detailPrompts?.[sub.clipKey];
+    if (checked === undefined || verifyMatch(sub.prompt, checked)) return true;
+  }
   return latestReport.cards.some((c) => {
     if (!isFinished(c) || !c.key.startsWith('poster:') || run.clipClaims?.[c.key]) return false;
     const detail = run.detailPrompts?.[c.key];

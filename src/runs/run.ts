@@ -293,11 +293,14 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'unconfirmed': {
       const current = state.sceneStates[event.sceneId];
       if (!current || current.status !== 'pending') return state;
+      // What an earlier press Flow answered with its usage notice counted stays counted (it's never paid twice).
+      const paid = current.unconfirmed?.paid;
       const unconfirmed = {
         keysBefore: event.keysBefore,
         prompt: event.prompt,
         at: event.at ?? Date.now(),
         ...(event.othersBefore !== undefined ? { othersBefore: event.othersBefore } : {}),
+        ...(paid !== undefined ? { paid } : {}),
       };
       return {
         ...state,

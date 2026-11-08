@@ -870,6 +870,149 @@ describe('Motion run (clips)', () => {
     expect((await store.getProject(project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
   });
 
+  /** Hides clip n from the one grid read a restart's look for an unconfirmed slide makes, when `when()` holds. */
+  function hideFromOneLook(ctx: Awaited<ReturnType<typeof setup>>, n: number, when: () => boolean) {
+    let hidden = false;
+    const read = ctx.port.videoTiles.getMockImplementation()!;
+    ctx.port.videoTiles.mockImplementation(async () => {
+      const look = (new Error().stack ?? '').includes('findUnconfirmedClip');
+      if (hidden || !look || !when()) return read();
+      hidden = true;
+      ctx.world.clip(n).hidden = true;
+      try {
+        return await read();
+      } finally {
+        ctx.world.clip(n).hidden = false;
+      }
+    });
+    return () => hidden;
+  }
+
+  it('repro A: same prompt, s1 still drawing at s2’s press, restart, s1’s tile missing from the read made for s2: 2 Generates, 14 spent', async () => {
+    const ctx = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+    stubFetch();
+    ctx.coordinator.setFlowPort(ctx.port);
+    await ctx.coordinator.startClipRun(ctx.project.id, 100);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 's2 in Flow');
+    expect(ctx.world.clip(1).done).toBe(false); // s1 was still drawing when s2 was pressed
+    const { c2, store2 } = await restart(ctx);
+    ctx.world.clip(1).done = true; // s1's clip finishes: s1 is found again first
+    const hid = hideFromOneLook(ctx, 1, () => c2.getRunState()?.sceneStates.s1?.status !== 'pending'); // s1 found: s2 is looked for
+    c2.setFlowPort(ctx.port);
+    await waitFor(hid, "the look for s2's clip made");
+    await new Promise((r) => setTimeout(r, 60)); // a few more rounds
+    ctx.world.finish();
+    await c2.handleTiles([]);
+    await waitFor(() => c2.getRunState()?.status === 'finished', 'the run finished');
+    await c2.settledForTests();
+    expect(ctx.world.generates).toBe(2);
+    expect(c2.getRunState()!.spent).toBe(14);
+    const project = (await store2.getProject(ctx.project.id))!;
+    expect(project.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+    expect(project.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
+  it("repro B: after a restart a slide's own tile is missing from one read of its look: it is never pressed again", async () => {
+    const ctx = await setup({ picks: ['s1'] });
+    stubFetch();
+    ctx.coordinator.setFlowPort(ctx.port);
+    await ctx.coordinator.startClipRun(ctx.project.id, 100);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 in Flow');
+    const { c2, store2 } = await restart(ctx);
+    ctx.world.finish();
+    const hid = hideFromOneLook(ctx, 1, () => true);
+    c2.setFlowPort(ctx.port);
+    await waitFor(hid, 'the look made');
+    await waitFor(() => c2.getRunState()?.status === 'finished', 'the run finished');
+    await c2.settledForTests();
+    expect(ctx.world.generates).toBe(1);
+    expect(c2.getRunState()!.spent).toBe(7);
+    expect((await store2.getProject(ctx.project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+  });
+
+  it('a slide still unsure after the wait limit pauses with a plain message; nothing is pressed again', async () => {
+    const ctx = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+    stubFetch();
+    ctx.coordinator.setFlowPort(ctx.port);
+    await ctx.coordinator.startClipRun(ctx.project.id, 100);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s2?.status === 'submitted', 's2 in Flow');
+    const { c2 } = await restart(ctx);
+    c2.setTimingsForTests({ unconfirmedWaitMs: 40 });
+    ctx.world.clip(1).done = true;
+    // From the look for s2 on, Flow keeps s1's tile out of the grid: VidFlow can't tell whether s2's clip started.
+    const read = ctx.port.videoTiles.getMockImplementation()!;
+    ctx.port.videoTiles.mockImplementation(async () => {
+      if (c2.getRunState()?.sceneStates.s1?.status !== 'pending') ctx.world.clip(1).hidden = true;
+      return read();
+    });
+    c2.setFlowPort(ctx.port);
+    await waitFor(() => c2.getRunState()?.status === 'paused', 'paused');
+    expect(c2.getRunState()!.pauseReason).toBe("VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume.");
+    expect(c2.getRunState()!.sceneStates.s2!.status).toBe('pending');
+    expect(ctx.world.generates).toBe(2);
+    expect(c2.getRunState()!.spent).toBe(14);
+  });
+
+  it('repro C: two usage notices in a row, Resume, clip made: 7 spent, not 14', async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1'] });
+    stubFetch();
+    const press = port.press.getMockImplementation()!;
+    port.press.mockImplementation(async (tabId: number, x: number) => {
+      if (x === GENERATE.x && world.generates < 2) world.noticeNext = true;
+      return press(tabId, x);
+    });
+    port.confirmStarted.mockResolvedValueOnce('notice').mockResolvedValueOnce('notice');
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => coordinator.getRunState()?.status === 'paused', 'paused on the second notice');
+    expect(world.generates).toBe(2);
+    await coordinator.resumeRun();
+    await waitFor(() => world.generates === 3, 'pressed after Resume');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    expect(coordinator.getRunState()!.spent).toBe(7);
+    expect((await store.getProject(project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+  });
+
+  it("repro D: a matched tile whose page shows another prompt doesn't hold off the slide's deadline forever", async () => {
+    const { coordinator, project, port, world, chromeMock } = await setup({ picks: ['s1'] });
+    stubFetch();
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 1, 'pressed');
+    world.clip(1).detailPrompt = 'Someone else entirely walks away';
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => Object.keys(coordinator.getRunState()?.detailPrompts ?? {}).length === 1, 'the tile checked');
+    await coordinator.settledForTests();
+    listenerOf<(a: { name: string }) => void>(chromeMock.alarms.onAlarm)({ name: 'vidflow-deadline:s1' });
+    await waitFor(() => coordinator.getRunState()?.sceneStates.s1?.status === 'failed', 's1 ended by its deadline');
+  });
+
+  it("repro E: same prompt, s1's clip file can't be read twice: s1 fails, s2 gets its own clip, never s1's", async () => {
+    const { coordinator, project, port, world, store } = await setup({ picks: ['s1', 's2'], scenes: [scene(1, 0, 3, 'Same'), scene(2, 3, 6, 'Same')] });
+    stubFetch();
+    const file = port.clipFile.getMockImplementation()!;
+    // m1's file can't be read until s1 has failed for it.
+    port.clipFile.mockImplementation(async () => {
+      const f = await file();
+      return f?.mediaId === 'm1' && coordinator.getRunState()?.sceneStates.s1?.status !== 'failed' ? null : f;
+    });
+    coordinator.setFlowPort(port);
+    await coordinator.startClipRun(project.id, 100);
+    await waitFor(() => world.generates === 2, 'two clips pressed');
+    world.finish();
+    await coordinator.handleTiles([]);
+    await waitFor(() => coordinator.getRunState()?.status === 'finished', 'the run finished');
+    await coordinator.settledForTests();
+    const saved = (await store.getProject(project.id))!;
+    expect(coordinator.getRunState()!.sceneStates.s1!.status).toBe('failed');
+    expect(saved.sceneStates.s1!.clip).toBeUndefined();
+    expect(saved.sceneStates.s1!.clipNote).toMatch(/file/);
+    expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
   it("logs Flow's announcement and a panel left open in the run's activity", async () => {
     const { coordinator, project, port, chromeMock } = await setup({ picks: ['s1'] });
     port.prepareClip.mockImplementation(() => new Promise(() => undefined));
