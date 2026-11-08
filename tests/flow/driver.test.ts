@@ -1273,6 +1273,17 @@ describe('FlowDriver Generate cost and credit balance (spike S8)', () => {
     expect(document.querySelector('.account-panel')).toBeNull();
   });
 
+  it('waits for a brand-new project to draw its Account details button', async () => {
+    // Live (8 Nov 2026): the balance is read right after a new Flow project opens, before its header was drawn.
+    load('prompt-bar.html');
+    const button = $('[aria-label="Account details"]');
+    fakeAccountPanel();
+    button.remove();
+    setTimeout(() => document.body.append(button), 40);
+    const balance = await createFlowDriver(document, { pollMs: 5, timeoutMs: 300 }).readCreditBalance();
+    expect(balance).toEqual({ credits: 1043, resets: '13 Nov at 13:50' });
+  });
+
   it('closes the panel also when it cannot read a balance', async () => {
     load('prompt-bar.html');
     const close = fakeAccountPanel({ credits: 'Credits unavailable', resets: '' });

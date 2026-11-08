@@ -808,7 +808,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
 
   async function readCreditBalance(): Promise<CreditBalance | null> {
     stopForDialog();
-    const button = q(SEL.accountDetails);
+    // A brand-new Flow project draws its header a moment after it opens (live, 8 Nov 2026).
+    const button = await untilWatching(() => q<HTMLElement>(SEL.accountDetails), opts.timeoutMs ?? SETTINGS_TIMEOUT_MS);
     if (!button) return null;
     try {
       button.click();
