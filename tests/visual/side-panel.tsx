@@ -94,7 +94,7 @@ async function main() {
   };
 
   const reply = async (): Promise<RunReply> => ({ ok: true, state: run });
-  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, skip: reply, forget: reply, choose: reply, heroSheet: reply, makeClips: reply, checks: async () => ({ ok: true, flowOpen: true, rows: ROWS }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
+  const client: RunClient = { get: reply, start: reply, pause: reply, resume: reply, retry: reply, stop: reply, skip: reply, forget: reply, choose: reply, heroSheet: reply, makeClips: reply, autoPick: reply, checks: async () => ({ ok: true, flowOpen: true, rows: ROWS }), openFlow: async () => ({ ok: true }), showMe: async () => ({ ok: true, missing: [] }), testPrompt: async () => ({ ok: true, message: 'Flow is ready.' }), subscribe: () => () => undefined };
   createRoot(document.getElementById('root')!).render(<Panel client={client} />);
   Object.assign(window, { REPLY, ready: true });
 }

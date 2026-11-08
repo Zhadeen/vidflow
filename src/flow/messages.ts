@@ -453,6 +453,8 @@ export const RUN_CHOOSE = 'run/choose';
 export const RUN_HERO_SHEET = 'run/hero-sheet';
 /** Make clips (spec §20): a Motion run for the slides that need a clip, within a credit limit. */
 export const RUN_MAKE_CLIPS = 'run/make-clips';
+/** Auto-pick now (spec §20): Flow's Agent picks each slide's better picture; never over the owner's own choice. */
+export const RUN_AUTO_PICK = 'run/auto-pick';
 export const RUN_STATE = 'run/state';
 /** The Checks tab (spec §19): read VidFlow's Flow tab, open Flow, ring its controls, try one prompt without Generate. */
 export const RUN_CHECKS = 'run/checks';
@@ -487,7 +489,8 @@ export type StudioRequest =
   | { type: typeof RUN_RETRY; projectId: string; sceneId: string }
   | { type: typeof RUN_CHOOSE; projectId: string; sceneId: string; pictureId: string }
   | { type: typeof RUN_HERO_SHEET; projectId: string }
-  | { type: typeof RUN_MAKE_CLIPS; projectId: string; limit: number };
+  | { type: typeof RUN_MAKE_CLIPS; projectId: string; limit: number }
+  | { type: typeof RUN_AUTO_PICK; projectId: string };
 
 /** The run as it is now, or why the request was refused (message is shown to the owner word for word). */
 export type RunReply =

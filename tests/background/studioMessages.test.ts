@@ -19,6 +19,7 @@ vi.mock('../../src/runs/coordinator', () => ({
   setStartChecks: vi.fn(),
   startHeroSheetRun: vi.fn(async () => undefined),
   startClipRun: vi.fn(async () => undefined),
+  startAutoPick: vi.fn(async () => undefined),
   noteFlowTab: vi.fn(),
   startRun: vi.fn(async () => undefined),
   stopRun: vi.fn(async () => undefined),
@@ -221,5 +222,31 @@ describe("Flow's usage notice while VidFlow waits", () => {
     vi.mocked(coordinator.isFlowTab).mockResolvedValueOnce(true);
     onMessage({ type: 'flow/notice' }, { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 7 } }, vi.fn());
     await vi.waitFor(() => expect(coordinator.handleFlowNotice).toHaveBeenCalledWith(7));
+  });
+});
+
+describe('run/auto-pick', () => {
+  const autoPick = { type: 'run/auto-pick', projectId: 'p1' };
+
+  it("is refused from VidFlow's content script in a Flow tab and from other extensions", async () => {
+    const { startAutoPick } = await import('../../src/runs/coordinator');
+    for (const sender of [
+      { id: 'vidflow', url: 'https://flow.google.com/project/1', tab: { id: 4 } },
+      { id: 'other', url: 'chrome-extension://other/studio.html' },
+    ]) {
+      const sendResponse = vi.fn();
+      expect(onMessage(autoPick, sender, sendResponse)).toBeUndefined();
+      expect(sendResponse).not.toHaveBeenCalled();
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(startAutoPick).not.toHaveBeenCalled();
+  });
+
+  it('starts Auto-pick for the studio page', async () => {
+    const { startAutoPick } = await import('../../src/runs/coordinator');
+    const sendResponse = vi.fn();
+    expect(onMessage(autoPick, { id: 'vidflow', url: 'chrome-extension://vidflow/studio.html' }, sendResponse)).toBe(true);
+    await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ ok: true, state: null }));
+    expect(startAutoPick).toHaveBeenCalledWith('p1');
   });
 });

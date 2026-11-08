@@ -12,6 +12,7 @@ import {
   RUN_CHOOSE,
   RUN_HERO_SHEET,
   RUN_MAKE_CLIPS,
+  RUN_AUTO_PICK,
   RUN_CHECKS,
   RUN_OPEN_FLOW,
   RUN_SHOW_ME,
@@ -46,6 +47,8 @@ export interface RunClient {
   heroSheet(projectId: string): Promise<RunReply>;
   /** Make clips: a Motion run for the slides that need a clip, stopping before `limit` credits; refused while any run is live. */
   makeClips(projectId: string, limit: number): Promise<RunReply>;
+  /** Auto-pick now: Flow's Agent picks each slide's better picture (never over the owner's choice); refused while any run is live. */
+  autoPick(projectId: string): Promise<RunReply>;
   /** The Checks tab: reads VidFlow's own Flow tab (rows "Not checked yet" when it isn't open). */
   checks(projectId: string): Promise<ChecksReply>;
   /** Opens (or brings forward) VidFlow's Flow window; no Flow project is made. */
@@ -92,6 +95,7 @@ export function chromeRunClient(): RunClient {
     choose: (projectId, sceneId, pictureId) => send({ type: RUN_CHOOSE, projectId, sceneId, pictureId }),
     heroSheet: (projectId) => send({ type: RUN_HERO_SHEET, projectId }),
     makeClips: (projectId, limit) => send({ type: RUN_MAKE_CLIPS, projectId, limit }),
+    autoPick: (projectId) => send({ type: RUN_AUTO_PICK, projectId }),
     checks: (projectId) => ask<ChecksReply>({ type: RUN_CHECKS, projectId }),
     openFlow: () => ask<OpenFlowReply>({ type: RUN_OPEN_FLOW }),
     showMe: () => ask<ShowMeReply>({ type: RUN_SHOW_ME }),

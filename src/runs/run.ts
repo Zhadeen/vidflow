@@ -1,6 +1,7 @@
 import { clipPrompt } from '../motion/clips';
 import { clipLengthFor, slideSeconds, type ClipLength, type ClipRecord } from '../motion/timing';
 import { chosenPicture } from '../studio/chosen';
+import { AUTO_PICK_GAVE_UP_MESSAGE, AUTO_PICK_MAX_MISSES, AUTO_PICK_MAX_PICTURES, NOT_AUTO_CHECKED } from './autopick';
 import type { AspectRatio, Project, SceneState } from '../store/projects';
 
 export type RunEvent =
@@ -47,6 +48,13 @@ export type RunEvent =
   /** sceneId: the slide being set up when it ran out (its earlier press, if any, was found not to have started). */
   | { type: 'outOfCredits'; message: string; sceneId?: string }
   | { type: 'limit'; message: string; resumeAt: number | null }
+  /**
+   * An Auto-pick run asked Flow's Agent about this slide: `pictureId` is the picture it chose (null: no usable answer,
+   * the slide is "not auto-checked"). `miss` counts towards the three-in-a-row stop (the Agent gave no usable answer).
+   */
+  | { type: 'autoPicked'; sceneId: string; pictureId: string | null; reason: string; miss: boolean }
+  /** An Auto-pick run uploaded these comparison pictures into its Flow project (never uploaded twice). */
+  | { type: 'uploaded'; names: string[] }
   | {
       type: 'needsOwner';
       reason: 'policy-dialog' | 'signed-out' | 'wrong-account' | 'page-not-recognised';
@@ -98,7 +106,14 @@ export interface RunState {
    * project.heroSheet rather than the scenes. 'clips': a Motion run (spec §20): one clip per slide from its chosen
    * picture; its scene states are the clips' progress, never the pictures'. Absent for a scene (pictures) run.
    */
-  kind?: 'hero-sheet' | 'clips';
+  kind?: 'hero-sheet' | 'clips' | 'auto-pick';
+  /** A pictures run of the whole video (Start), not ▶ Run or Try again: Auto-pick follows it when it finishes. */
+  whole?: boolean;
+  /** An Auto-pick run: slides in a row the Agent gave no usable answer for, and the comparison pictures uploaded. */
+  misses?: number;
+  uploaded?: string[];
+  /** Why an Auto-pick run ended early (three unanswered in a row): said plainly, the run is finished, not paused. */
+  endMessage?: string;
   /** A clip run's slides, fixed when it starts. */
   clips?: Record<string, ClipJob>;
   /** A clip run's credit limit, what it has pressed Generate for so far, and Flow's balance read before its first clip. */
@@ -179,6 +194,21 @@ export function initClipRun(project: Project, sceneIds: string[], limit: number)
   return { projectId: project.id, kind: 'clips', clips, limit, spent: 0, status: 'idle', inFlight: [], sceneStates };
 }
 
+/**
+ * An Auto-pick run (spec §20) for these slides (scene ids, in slide order): each one's pictures (up to 4) are fixed now;
+ * Flow's Agent is asked which matches its prompt. Its scene states are the questions' progress, never the pictures'.
+ */
+export function initAutoPickRun(project: Project, sceneIds: string[]): RunState {
+  const sceneStates: Record<string, SceneState> = {};
+  for (const id of sceneIds) {
+    const saved = project.sceneStates[id];
+    if (!saved || saved.pictureIds.length < 2) continue;
+    sceneStates[id] = { sceneId: id, status: 'pending', pictureIds: saved.pictureIds.slice(0, AUTO_PICK_MAX_PICTURES) };
+  }
+  return { projectId: project.id, kind: 'auto-pick', misses: 0, uploaded: [], status: 'idle', inFlight: [], sceneStates };
+}
+
+export const isAutoPickRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'auto-pick';
 export const isHeroSheetRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'hero-sheet';
 export const isClipRun = (run: Pick<RunState, 'kind'> | null | undefined): boolean => run?.kind === 'clips';
 /** A run that makes the project's scene pictures (not the model sheet, not clips). */
@@ -374,8 +404,11 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       const current = state.sceneStates[event.sceneId];
       if (!current || (current.status !== 'refused' && current.status !== 'failed')) return state;
       const { message: _m, submission: _s, unconfirmed: _u, ...rest } = current;
+      // A whole-video run with nothing left to make that takes a scene back is a Try again now: Auto-pick doesn't
+      // follow it. (One still making pictures carries on as the whole-video run.)
+      const { whole: _w, ...run } = state;
       return {
-        ...state,
+        ...(hasUnfinished(state) ? state : run),
         // A finished run carries on with the re-queued scene; a paused one waits for Resume.
         status: state.status === 'finished' ? 'running' : state.status,
         sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'pending' } },
@@ -425,6 +458,27 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     }
     case 'limit':
       return { ...clearPause(state), status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };
+    case 'autoPicked': {
+      const current = state.sceneStates[event.sceneId];
+      if (state.kind !== 'auto-pick' || current?.status !== 'pending') return state; // skipped or stopped meanwhile
+      const picked = event.pictureId !== null && current.pictureIds.includes(event.pictureId);
+      const answer: Partial<SceneState> = picked
+        ? { chosenPictureId: event.pictureId!, choiceSource: 'auto', autoReason: event.reason, autoChecked: true }
+        : { autoReason: NOT_AUTO_CHECKED, autoChecked: true };
+      const misses = picked ? 0 : event.miss ? (state.misses ?? 0) + 1 : (state.misses ?? 0);
+      let next: RunState = { ...setScene(state, event.sceneId, { status: 'done', message: undefined, ...answer }), misses };
+      if (misses >= AUTO_PICK_MAX_MISSES) {
+        // Three in a row: the pass stops (finished, not paused); the slides not asked about keep their pictures.
+        const sceneStates = { ...next.sceneStates };
+        for (const [id, s] of Object.entries(sceneStates)) {
+          if (s.status === 'pending') sceneStates[id] = { ...s, status: 'failed', message: AUTO_PICK_GAVE_UP_MESSAGE };
+        }
+        next = { ...next, sceneStates, endMessage: AUTO_PICK_GAVE_UP_MESSAGE };
+      }
+      return settle(next);
+    }
+    case 'uploaded':
+      return { ...state, uploaded: [...new Set([...(state.uploaded ?? []), ...event.names])] };
     case 'needsOwner':
       return {
         ...clearPause(state),

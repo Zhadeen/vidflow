@@ -20,6 +20,7 @@ import {
   RUN_CHOOSE,
   RUN_HERO_SHEET,
   RUN_MAKE_CLIPS,
+  RUN_AUTO_PICK,
   RUN_CHECKS,
   RUN_OPEN_FLOW,
   RUN_SHOW_ME,
@@ -54,6 +55,7 @@ import {
   setFlowPort,
   setStartChecks,
   skipCurrent,
+  startAutoPick,
   startClipRun,
   startHeroSheetRun,
   startRun,
@@ -94,6 +96,9 @@ async function answerStudio(message: StudioRequest): Promise<RunReply> {
         break;
       case RUN_MAKE_CLIPS:
         await startClipRun(message.projectId, message.limit);
+        break;
+      case RUN_AUTO_PICK:
+        await startAutoPick(message.projectId);
         break;
       case RUN_GET:
         break;
@@ -140,6 +145,7 @@ const STUDIO_TYPES = new Set<string>([
   RUN_CHOOSE,
   RUN_HERO_SHEET,
   RUN_MAKE_CLIPS,
+  RUN_AUTO_PICK,
   ...CHECKS_TYPES,
 ]);
 

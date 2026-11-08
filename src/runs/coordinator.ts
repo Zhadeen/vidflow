@@ -2,6 +2,7 @@
 import { policyDialogMessage, type ClipFile, type FlowResultCard, type StartVerb } from '../flow/driver';
 import { matchResults, unverifiedKeys, UNCONFIRMED_MESSAGE, verifyMatch, type Submission } from '../flow/match';
 import {
+  AGENT_ASK_MESSAGE,
   CLIP_ASPECT_MESSAGE,
   FlowBlockedError,
   REFERENCE_ATTACH_MESSAGE,
@@ -24,15 +25,28 @@ import { buildImagePrompt, buildModelSheetPrompt } from '../prompts/build';
 import { customStyle, STYLE_PRESETS } from '../prompts/styles';
 import { logActivity, sceneNumber, setStep, STEP_KEY, type Step, type StepTarget } from './activity';
 import { getMediaStore, getProject, updateProject, type Project, type SceneState } from '../store/projects';
-import { getAcceptNotices, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
+import { getAcceptNotices, getAutoPick, getKeepAwake, KEEP_AWAKE_KEY } from '../settings';
+import { choiceSourceOf } from '../studio/chosen';
+import {
+  AUTO_PICK_QUESTION,
+  AUTO_PICK_REPLY_MS,
+  autoPickSlides,
+  comparisonName,
+  isComparisonUpload,
+  NOT_AUTO_CHECKED,
+  NOTHING_TO_AUTO_PICK_MESSAGE,
+  parseAgentAnswer,
+} from './autopick';
 import { autoSaveScene, forgetDownloads } from '../files/downloads';
 import {
   BALANCE_NOTE,
   CREDIT_LIMIT_NOTE,
   HERO_SHEET_ID,
+  initAutoPickRun,
   initClipRun,
   initHeroSheetRun,
   initRun,
+  isAutoPickRun,
   isClipRun,
   isHeroSheetRun,
   isLive,
@@ -118,6 +132,9 @@ const timings = {
   unconfirmedWaitMs: DEADLINE_MINUTES * 60_000,
   /** A clip run asks the Flow tab for its video tiles this often (the page itself reports picture tiles only). */
   clipPollMs: 5_000,
+  /** How long Flow's Agent may take to answer one Auto-pick question (spec §20: 90 s), and each ask within it. */
+  agentReplyMs: AUTO_PICK_REPLY_MS,
+  agentSliceMs: 10_000,
 };
 
 /** Tests only: shorter waits, so a test doesn't sit out the real pacing between scenes. */
@@ -221,6 +238,14 @@ function motionPort(): (FlowPort & FlowMotionPort) | null {
   return needed.every((k) => typeof p[k] === 'function') ? (p as FlowPort & FlowMotionPort) : null;
 }
 
+/** The port with its Agent methods, or null when it has none (an Auto-pick run then pauses). */
+function agentPort(): (FlowPort & Pick<FlowMotionPort, 'uploadStartFrame' | 'prepareAgentQuestion' | 'readAgentReply' | 'finishAgent'>) | null {
+  const p = port;
+  if (!p) return null;
+  const needed: Array<keyof FlowMotionPort> = ['uploadStartFrame', 'prepareAgentQuestion', 'readAgentReply', 'finishAgent'];
+  return needed.every((k) => typeof p[k] === 'function') ? (p as FlowPort & FlowMotionPort) : null;
+}
+
 export function getRunState(): RunState | null {
   return state;
 }
@@ -264,7 +289,9 @@ const pictures = (n: number) => `${n} picture${n === 1 ? '' : 's'}`;
 /** Log lines for what changed between two run states (scene results and the run's own status). */
 function noteChanges(prev: RunState | null, next: RunState, project: Project): void {
   const clips = isClipRun(next);
-  for (const [sceneId, now] of Object.entries(next.sceneStates)) {
+  const autoPick = isAutoPickRun(next);
+  // An Auto-pick run logs each slide's answer itself ("Auto-picked slide N: …").
+  for (const [sceneId, now] of autoPick ? [] : Object.entries(next.sceneStates)) {
     const before = prev?.sceneStates[sceneId]?.status;
     if (before === now.status) continue;
     if (now.status === 'submitted') note(project, sceneId, 'Sent to Flow');
@@ -278,10 +305,14 @@ function noteChanges(prev: RunState | null, next: RunState, project: Project): v
   else if (next.status === 'finished') {
     const { done } = runSummary(next);
     if (isHeroSheetRun(next)) note(project, null, done > 0 ? 'Finished: the model sheet is ready' : 'Finished: the model sheet needs a look');
+    else if (autoPick) note(project, null, next.endMessage ?? `Finished: auto-picked ${autoPicked(next)} of ${Object.keys(next.sceneStates).length} slides`);
     else if (clips) note(project, null, `Finished: clips made for ${done} of ${Object.keys(next.sceneStates).length} slides (${next.spent ?? 0} credits used)`);
     else note(project, null, `Finished: pictures ready for ${done} of ${Object.keys(next.sceneStates).length} scenes`);
   }
 }
+
+/** How many of an Auto-pick run's slides the Agent chose a picture for. */
+const autoPicked = (run: RunState) => Object.values(run.sceneStates).filter((s) => s.status === 'done' && s.choiceSource === 'auto').length;
 
 /** What Flow was (or will be) asked for: a sheet run keeps the outputs and shape it started with. */
 const outputsOf = (run: RunState | null, project: Project) => (isClipRun(run) ? 1 : (run?.sheet?.outputs ?? project.outputsPerPrompt));
@@ -447,6 +478,9 @@ function announce(prev: RunState | null, next: RunState): void {
         ? 'The model sheet is ready. Pick the hero reference in VidFlow.'
         : 'The model sheet needs a look — open VidFlow.',
     );
+  } else if (next.status === 'finished' && isAutoPickRun(next)) {
+    const total = Object.keys(next.sceneStates).length;
+    notify(next.endMessage ?? `Auto-pick is done: Flow's Agent picked the picture for ${autoPicked(next)} of ${total} slides.`);
   } else if (next.status === 'finished' && isClipRun(next)) {
     const { done } = runSummary(next);
     const total = Object.keys(next.sceneStates).length;
@@ -495,6 +529,22 @@ async function commit(next: RunState): Promise<void> {
         states[id] = { ...rest, ...(r.status === 'done' && r.clip ? { clip: r.clip } : {}), ...(clipNote ? { clipNote } : {}) };
       }
       project.sceneStates = states;
+    } else if (isAutoPickRun(next)) {
+      // Only the answer of each slide settled now is written, and never over a choice of the owner's (one made while
+      // the Agent thought included: this is the single writer, so the check and the write are one step) or onto
+      // pictures made again meanwhile.
+      const states = { ...project.sceneStates };
+      for (const [id, r] of Object.entries(next.sceneStates)) {
+        const before = isAutoPickRun(prev) && prev?.projectId === next.projectId ? prev.sceneStates[id]?.status : undefined;
+        const saved = states[id];
+        if (r.status !== 'done' || before === 'done' || !saved || r.autoChecked !== true) continue;
+        if (choiceSourceOf(saved) === 'owner' || !r.pictureIds.every((pic) => saved.pictureIds.includes(pic))) continue;
+        states[id] =
+          r.choiceSource === 'auto' && r.chosenPictureId
+            ? { ...saved, chosenPictureId: r.chosenPictureId, choiceSource: 'auto', autoReason: r.autoReason ?? '', autoChecked: true }
+            : { ...saved, autoReason: NOT_AUTO_CHECKED, autoChecked: true };
+      }
+      project.sceneStates = states;
     } else project.sceneStates = { ...project.sceneStates, ...next.sceneStates };
   });
   if (project) noteChanges(prev, next, project);
@@ -517,6 +567,13 @@ async function commit(next: RunState): Promise<void> {
   }
   await syncDeadlines(prev, next);
   announce(prev, next);
+  // Auto-pick leaves Flow's Agent off and its panel closed whenever it stops asking (paused, stopped, finished); after
+  // the question being asked now, which finishes it too (the tab takes turns).
+  if (isAutoPickRun(prev) && prev?.status === 'running' && next.status !== 'running') void finishAgentLater();
+  // A whole-video pictures run finished: Auto-pick follows it when its switch is on (spec §20 settled 6).
+  if (isSceneRun(next) && next.whole && prev?.status === 'running' && next.status === 'finished' && prev.projectId === next.projectId) {
+    void autoPickAfterRun(next.projectId);
+  }
   for (const listener of listeners) {
     try {
       listener(next);
@@ -651,7 +708,8 @@ function claimedKeys(s: RunState): Set<string> {
 }
 
 /** The uploaded hero reference's grid tile keeps its file name as caption: never a scene's picture, even unrecorded. */
-const notReference = (s: RunState) => (c: FlowResultCard) => !s.reference || !c.caption.includes(s.reference.name);
+const notReference = (s: RunState) => (c: FlowResultCard) =>
+  !isComparisonUpload(c.caption) && (!s.reference || !c.caption.includes(s.reference.name));
 
 const REFERENCE_EXTENSION: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
 
@@ -758,6 +816,7 @@ const CLIP_CAPTION = /keep the exact same drawing style/i;
 const isUploadTile = (c: FlowResultCard) =>
   c.video !== true &&
   (/\bvidflow-s\d+/i.test(c.caption) ||
+    isComparisonUpload(c.caption) ||
     (c.imageUrl !== null && c.progress === null && c.refusal === null && !c.key.startsWith('pending-') && !CLIP_CAPTION.test(c.caption)));
 
 /**
@@ -997,6 +1056,148 @@ async function clipPoll(): Promise<void> {
     }
   } finally {
     clipPolling = false;
+  }
+}
+
+// ---- Auto-pick with Flow's Agent (spec §20, spike S6) -----------------------
+
+export const AUTO_PICK_BUSY_MESSAGE = 'VidFlow is auto-picking pictures right now. Wait for it to finish, then try again.';
+export const AUTO_PICK_PAUSED_MESSAGE = 'Auto-pick is paused. Resume or stop it, then try again.';
+const NO_AGENT_PORT_MESSAGE = "VidFlow can't ask Flow's Agent yet. Open VidFlow again, then press Resume.";
+
+/** Why a live Auto-pick run blocks another start: it is asking, or it is paused. */
+const autoPickBlock = (run: RunState) => (run.status === 'paused' ? AUTO_PICK_PAUSED_MESSAGE : AUTO_PICK_BUSY_MESSAGE);
+
+/** Answer of waitForAgentReply when the run stopped asking (paused, stopped or skipped) before the Agent answered. */
+const NOT_WAITING = Symbol('not waiting');
+
+/**
+ * Waits up to timings.agentReplyMs for the Agent's reply, asking the tab in short slices so a pause or stop is seen
+ * within one. null when no reply came in time, or the page lost the question (a reload: a slice that ends early).
+ */
+async function waitForAgentReply(
+  tabId: number,
+  m: NonNullable<ReturnType<typeof agentPort>>,
+  projectId: string,
+  sceneId: string,
+): Promise<string | null | typeof NOT_WAITING> {
+  const deadline = Date.now() + timings.agentReplyMs;
+  for (;;) {
+    const left = deadline - Date.now();
+    if (left <= 0) return null;
+    const want = Math.min(left, timings.agentSliceMs);
+    const started = Date.now();
+    const reply = await m.readAgentReply(tabId, want);
+    if (reply !== null) return stillRunning(projectId) && stillPending(sceneId) ? reply : NOT_WAITING;
+    if (!stillRunning(projectId) || !stillPending(sceneId)) return NOT_WAITING;
+    if (Date.now() - started < want / 2) return null; // the page has no question waiting any more: no reply will come
+  }
+}
+
+/**
+ * One slide of an Auto-pick run: uploads its pictures as vidflow-s<NN>-a.png … (once per Flow project), asks Flow's
+ * Agent which matches the slide's picture prompt, and records the answer (or "not auto-checked"). The Agent is always
+ * finished afterwards (Agent mode off, panel closed). Only the Agent's send is pressed: never Generate (0 credits).
+ * 'stop' ends this pump round (paused, stopped, or the pass ended). Holds the tab.
+ */
+async function autoPickSlide(tabId: number, project: Project, sceneId: string): Promise<'stop' | 'next'> {
+  const projectId = project.id;
+  const m = agentPort();
+  if (!m) {
+    await pauseWith(NO_AGENT_PORT_MESSAGE);
+    return 'stop';
+  }
+  const slide = sceneNumber(project, sceneId) ?? 0;
+  const run = state;
+  const pictureIds = run?.sceneStates[sceneId]?.pictureIds ?? [];
+  const scene = project.scenes.find((s) => s.id === sceneId);
+  const after = () => (stillRunning(projectId) ? 'next' : 'stop');
+  try {
+    if (!(await ensureFlowProject(tabId, projectId, () => note(project, null, 'Opened a new Flow project', 'project')))) return 'stop';
+    // The owner chose this slide's picture meanwhile (or its pictures were made again): nothing to ask.
+    const saved = (await getProject(projectId))?.sceneStates[sceneId];
+    if (!scene || !saved || choiceSourceOf(saved) === 'owner' || !pictureIds.every((pic) => saved.pictureIds.includes(pic))) {
+      note(project, sceneId, choiceSourceOf(saved) === 'owner' ? `Slide ${slide}: kept your choice` : `Slide ${slide} not auto-checked`);
+      await dispatch({ type: 'autoPicked', sceneId, pictureId: null, reason: NOT_AUTO_CHECKED, miss: false });
+      return after();
+    }
+    note(project, sceneId, `Auto-picking slide ${slide} of ${project.scenes.length}`, 'prompt');
+    const names = pictureIds.map((_, i) => comparisonName(project, sceneId, i));
+    for (const [i, pictureId] of pictureIds.entries()) {
+      const name = names[i]!;
+      if (state?.uploaded?.includes(name)) continue;
+      const image = await getMediaStore()
+        .get(pictureId)
+        .catch(() => undefined);
+      if (!image) {
+        // A picture missing from VidFlow's storage can't be shown to the Agent: the slide keeps what it has.
+        note(project, sceneId, `Slide ${slide} not auto-checked`);
+        await dispatch({ type: 'autoPicked', sceneId, pictureId: null, reason: NOT_AUTO_CHECKED, miss: false });
+        return after();
+      }
+      if (!stillRunning(projectId)) return 'stop';
+      await pastNotice(tabId, projectId, sceneId, () => m.uploadStartFrame(tabId, name, image));
+      await dispatch({ type: 'uploaded', names: [name] });
+    }
+    if (!stillRunning(projectId)) return 'stop';
+    if (!stillPending(sceneId)) return 'next';
+    const question = AUTO_PICK_QUESTION(scene.imagePrompt, pictureIds.length);
+    let reply: string | null | typeof NOT_WAITING;
+    try {
+      const at = await pastNotice(tabId, projectId, sceneId, () => m.prepareAgentQuestion(tabId, names, question));
+      // The last look before pressing the Agent's send: the tab is brought forward first.
+      await frontTab(tabId);
+      if (!stillRunning(projectId) || !stillPending(sceneId)) return after();
+      await port!.press(tabId, at.x, at.y);
+      reply = await waitForAgentReply(tabId, m, projectId, sceneId);
+    } finally {
+      // Agent mode off and its panel closed after every question, whatever happened.
+      if (!(await m.finishAgent(tabId).catch(() => false))) noteFlowTab("Flow's Agent panel didn't close");
+    }
+    if (reply === NOT_WAITING) return after(); // paused or stopped: the slide is asked again after Resume
+    const answer = reply === null ? null : parseAgentAnswer(reply, pictureIds.length);
+    const pictureId = answer ? (pictureIds[answer.pick - 1] ?? null) : null;
+    await dispatch({ type: 'autoPicked', sceneId, pictureId, reason: answer?.reason ?? NOT_AUTO_CHECKED, miss: !answer });
+    // Logged as written: a choice the owner made while the Agent thought wins, and says so.
+    const now = (await getProject(projectId))?.sceneStates[sceneId];
+    if (answer && now?.choiceSource === 'auto' && now.chosenPictureId === pictureId) note(project, sceneId, `Auto-picked slide ${slide}: ${answer.reason}`);
+    else if (choiceSourceOf(now) === 'owner') note(project, sceneId, `Slide ${slide}: kept your choice`);
+    else note(project, sceneId, `Slide ${slide} not auto-checked`);
+    return after();
+  } catch (err) {
+    if (err instanceof FlowBlockedError) {
+      await dispatch(err.event);
+      return 'stop';
+    }
+    lastSendError = { sceneId, error: err instanceof Error ? err.message : String(err), at: Date.now() };
+    console.warn('[VidFlow] Auto-pick failed', lastSendError);
+    await pauseWith(AGENT_ASK_MESSAGE, sceneId);
+    return 'stop';
+  }
+}
+
+/** After an Auto-pick run stops asking: Agent mode off and its panel closed (after any question still being asked). */
+async function finishAgentLater(): Promise<void> {
+  const m = agentPort();
+  const tabId = (await savedFlowWindow())?.tabId;
+  if (!m || tabId === undefined) return;
+  await withTab(async () => {
+    if (isAutoPickRun(state) && state?.status === 'running') return; // asking again (resumed meanwhile)
+    if (!(await m.finishAgent(tabId).catch(() => false))) noteFlowTab("Flow's Agent panel didn't close");
+  }).catch(() => undefined);
+}
+
+/** A whole-video pictures run finished: Auto-pick follows when its switch is on. A refusal is logged, never thrown. */
+async function autoPickAfterRun(projectId: string): Promise<void> {
+  try {
+    // A port that can't ask Flow's Agent (tests' picture-only fakes) never starts it.
+    if (!agentPort() || !(await getAutoPick())) return;
+    const project = await getProject(projectId);
+    if (!project || autoPickSlides(project).length === 0) return;
+    await startAutoPick(projectId);
+  } catch (err) {
+    const text = err instanceof Error ? err.message : String(err);
+    logActivity({ at: Date.now(), projectId, sceneId: null, text: `Auto-pick didn't start: ${text}` }).catch(() => undefined);
   }
 }
 
@@ -1636,6 +1837,11 @@ async function pump(): Promise<void> {
       } catch {
         return void (await pauseWith("VidFlow couldn't open its Flow window. Check Chrome, then press Resume."));
       }
+      if (isAutoPickRun(state)) {
+        if ((await withTab(() => autoPickSlide(tabId, project, sceneId))) === 'stop') return;
+        await sleep(paceMs());
+        continue;
+      }
       const job = isClipRun(state) ? state.clips?.[sceneId] : undefined;
       const prompt = job
         ? job.prompt
@@ -1653,7 +1859,7 @@ async function pump(): Promise<void> {
 // ---- Public API ----------------------------------------------------------
 
 /** Which run is about to start: a model sheet only needs the account, the page and the prompt bar. */
-export type StartChecksKind = 'scenes' | 'sheet' | 'clips';
+export type StartChecksKind = 'scenes' | 'sheet' | 'clips' | 'auto-pick';
 /** Runs the Checks before a start: the failing check's plain fix, or null to go ahead. */
 export type StartChecks = (projectId: string, kind: StartChecksKind) => Promise<string | null>;
 let startChecks: StartChecks | null = null;
@@ -1742,6 +1948,7 @@ const NO_PORT_MESSAGE = "VidFlow can't reach the Flow page yet. Try again in a m
 async function startBlocker(projectId: string): Promise<string | null> {
   if (state && isHeroSheetRun(state) && isLive(state)) return sheetBlock(state);
   if (state && isClipRun(state) && isLive(state)) return clipsBlock(state);
+  if (state && isAutoPickRun(state) && isLive(state)) return autoPickBlock(state);
   if (!state || state.projectId === projectId) return null;
   if (state.status === 'running') return BUSY_MESSAGE;
   const unfinished = Object.values(state.sceneStates).some((s) => s.status === 'pending' || s.status === 'submitted');
@@ -1777,7 +1984,8 @@ async function startRunNow(projectId: string, retrySceneId?: string): Promise<vo
     if (blocked) throw new RunBlockedError(blocked);
     // Already making this project's pictures: nothing to do (a fresh start would re-send scenes in Flow).
     if (state?.projectId === projectId && state.status === 'running') return;
-    let next = initRun(project);
+    // Start (the whole video): Auto-pick follows it when it finishes. ▶ Run / Try again (one scene) never.
+    let next: RunState = retrySceneId ? initRun(project) : { ...initRun(project), whole: true };
     if (retrySceneId) {
       // ▶ Run / Try again with no run of this video: a run of just that scene (spec §19 settled detail 2).
       const only = next.sceneStates[retrySceneId];
@@ -1818,7 +2026,10 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
       await enqueue(async () => {
         if (!state || state.projectId !== projectId || sceneId in state.sceneStates) return;
         const joined = scene && scene.status !== 'submitted' ? { ...scene } : { sceneId, status: 'pending' as const, pictureIds: scene?.pictureIds ?? [] };
-        const next = { ...state, sceneStates: { ...state.sceneStates, [sceneId]: joined } };
+        // A run with nothing left to make that takes a scene is a ▶ Run now: Auto-pick doesn't follow it.
+        const { whole: _w, ...over } = state;
+        const base = isLive(state) ? state : over;
+        const next = { ...base, sceneStates: { ...state.sceneStates, [sceneId]: joined } };
         // A finished run carries on with it; a pending scene that joins needs the run going too.
         await commit(joined.status === 'pending' && next.status === 'finished' ? { ...next, status: 'running' } : next);
       });
@@ -1886,6 +2097,7 @@ async function startHeroSheetRunNow(projectId: string): Promise<void> {
         throw new RunBlockedError(state.status === 'paused' ? HERO_SHEET_PAUSED_MESSAGE : BUSY_MESSAGE);
       }
       if (isClipRun(state)) throw new RunBlockedError(clipsBlock(state));
+      if (isAutoPickRun(state)) throw new RunBlockedError(autoPickBlock(state));
       throw new RunBlockedError(state.projectId === projectId ? HERO_SHEET_SCENES_BUSY : BUSY_MESSAGE);
     }
     await commit(reduceRun(initHeroSheetRun(project), { type: 'start' }));
@@ -1915,6 +2127,7 @@ async function startClipRunNow(projectId: string, limit: number): Promise<void> 
     if (!run || !isLive(run)) return null;
     if (isHeroSheetRun(run)) return sheetBlock(run);
     if (isClipRun(run)) return run.projectId === projectId ? clipsBlock(run) : BUSY_MESSAGE;
+    if (isAutoPickRun(run)) return autoPickBlock(run);
     return run.projectId === projectId ? CLIPS_SCENES_BUSY : BUSY_MESSAGE;
   };
   const busy = refusal(state);
@@ -1933,6 +2146,47 @@ async function startClipRunNow(projectId: string, limit: number): Promise<void> 
   });
   void pump();
   void clipPoll();
+}
+
+/**
+ * Auto-pick now (spec §20), and on its own after a whole-video pictures run: Flow's Agent compares each slide's
+ * pictures (slides with 2+ pictures, no choice of the owner's, not checked already, in slide order) and VidFlow sets the
+ * one it names as chosen. Its own run kind, in a fresh Flow project, behind the one-at-a-time lock; the Checks run
+ * first, as for every start. 0 credits: Generate is never pressed.
+ */
+export function startAutoPick(projectId: string): Promise<void> {
+  return asStart(() => startAutoPickNow(projectId));
+}
+
+async function startAutoPickNow(projectId: string): Promise<void> {
+  await ready;
+  postPressNotices.clear();
+  waitingNotices = 0;
+  const project = await getProject(projectId);
+  if (!project) throw new Error('That project is no longer in VidFlow.');
+  if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+  const refusal = (run: RunState | null): string | null => {
+    if (!run || !isLive(run)) return null;
+    if (isHeroSheetRun(run)) return sheetBlock(run);
+    if (isClipRun(run)) return run.projectId === projectId ? clipsBlock(run) : BUSY_MESSAGE;
+    if (isAutoPickRun(run)) return autoPickBlock(run);
+    return BUSY_MESSAGE;
+  };
+  const busy = refusal(state);
+  if (busy) throw new RunBlockedError(busy);
+  if (autoPickSlides(project).length === 0) throw new Error(NOTHING_TO_AUTO_PICK_MESSAGE);
+  await passStartChecks(projectId, 'auto-pick');
+  await enqueue(async () => {
+    if (testingPrompt) throw new RunBlockedError(TESTING_PROMPT_MESSAGE);
+    const blocked = refusal(state);
+    if (blocked) throw new RunBlockedError(blocked);
+    // The slides and their pictures as they are now.
+    const fresh = (await getProject(projectId)) ?? project;
+    const ids = autoPickSlides(fresh);
+    if (ids.length === 0) throw new Error(NOTHING_TO_AUTO_PICK_MESSAGE);
+    await commit(reduceRun(initAutoPickRun(fresh, ids), { type: 'start' }));
+  });
+  void pump();
 }
 
 /**

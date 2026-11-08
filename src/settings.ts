@@ -73,3 +73,12 @@ export async function getDownloadBoth(): Promise<boolean> {
 export async function setDownloadBoth(on: boolean): Promise<void> {
   await write(DOWNLOAD_BOTH_KEY, on);
 }
+
+/** "Auto-pick the better picture" (spec §20): Flow's Agent picks each slide's picture after a whole-video run. On by default. */
+export const AUTO_PICK_KEY = 'vidflow.autoPick';
+export async function getAutoPick(): Promise<boolean> {
+  return (await read(AUTO_PICK_KEY)) !== false;
+}
+export async function setAutoPick(on: boolean): Promise<void> {
+  await write(AUTO_PICK_KEY, on);
+}

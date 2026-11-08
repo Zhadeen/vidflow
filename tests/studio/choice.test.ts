@@ -28,7 +28,7 @@ function fakeClient(): RunClient {
     stop: vi.fn(ok), skip: vi.fn(ok),
     forget: vi.fn(ok),
     choose: vi.fn(ok),
-    heroSheet: vi.fn(ok), makeClips: vi.fn(ok),
+    heroSheet: vi.fn(ok), makeClips: vi.fn(ok), autoPick: vi.fn(ok),
     checks: vi.fn(async () => ({ ok: true as const, flowOpen: false, rows: [] })),
     openFlow: vi.fn(async () => ({ ok: true as const })),
     showMe: vi.fn(async () => ({ ok: true as const, missing: [] })),
