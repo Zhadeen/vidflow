@@ -3,7 +3,7 @@
 import { createProject, getMediaStore, getProject, saveProject, type AspectRatio } from '../store/projects';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { parseSceneFile } from '../scenes/parse';
-import { chooseScenePicture, getLastSendError, getRunState, resumeRun, startClipRun, startHeroSheetRun, startRun, stopRun } from '../runs/coordinator';
+import { chooseScenePicture, getLastSendError, getRunState, resumeRun, startAutoPick, startClipRun, startHeroSheetRun, startRun, stopRun } from '../runs/coordinator';
 import { runSummary } from '../runs/run';
 import { readActivity } from '../runs/activity';
 
@@ -16,6 +16,7 @@ export const E2E_STOP = 'e2e/stop';
 export const E2E_RELOAD = 'e2e/reload';
 export const E2E_CHOOSE = 'e2e/choose';
 export const E2E_MAKE_CLIPS = 'e2e/make-clips';
+export const E2E_AUTO_PICK = 'e2e/auto-pick';
 
 export interface E2eStart {
   type: typeof E2E_START;
@@ -43,6 +44,10 @@ export interface E2eMakeClips {
   picks: string[];
   limit: number;
 }
+export interface E2eAutoPick {
+  type: typeof E2E_AUTO_PICK;
+  projectId: string;
+}
 export interface E2eStatus {
   type: typeof E2E_STATUS;
   projectId?: string;
@@ -51,10 +56,10 @@ export interface E2ePicture {
   type: typeof E2E_PICTURE;
   mediaId: string;
 }
-export type E2eRequest = E2eStart | E2eStatus | E2ePicture | E2eChoose | E2eMakeClips | { type: typeof E2E_RESUME | typeof E2E_STOP | typeof E2E_RELOAD };
+export type E2eRequest = E2eStart | E2eStatus | E2ePicture | E2eChoose | E2eMakeClips | E2eAutoPick | { type: typeof E2E_RESUME | typeof E2E_STOP | typeof E2E_RELOAD };
 export type E2eReply = { ok: true; data: unknown } | { ok: false; error: string };
 
-const E2E_TYPES = new Set<string>([E2E_MAKE_CLIPS, E2E_CHOOSE, E2E_START, E2E_STATUS, E2E_PICTURE, E2E_RESUME, E2E_STOP, E2E_RELOAD]);
+const E2E_TYPES = new Set<string>([E2E_AUTO_PICK, E2E_MAKE_CLIPS, E2E_CHOOSE, E2E_START, E2E_STATUS, E2E_PICTURE, E2E_RESUME, E2E_STOP, E2E_RELOAD]);
 const FLOW_HOSTS = new Set(['flow.google.com', 'labs.google']);
 
 /** Only a content script of this extension, running in a Flow tab, may use the hook. */
@@ -156,6 +161,9 @@ export async function handleE2e(message: E2eRequest): Promise<E2eReply> {
         await startClipRun(project.id, message.limit); // the same path the panel's Make clips uses
         return { ok: true, data: null };
       }
+      case E2E_AUTO_PICK:
+        await startAutoPick(message.projectId); // the same path the panel's Auto-pick uses
+        return { ok: true, data: null };
       case E2E_CHOOSE:
         await chooseScenePicture(message.projectId, message.sceneId, message.pictureId);
         return { ok: true, data: null };

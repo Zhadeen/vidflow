@@ -12,6 +12,7 @@ const ACTIONS: Record<string, string> = {
   reload: 'e2e/reload',
   choose: 'e2e/choose',
   'make-clips': 'e2e/make-clips',
+  'auto-pick': 'e2e/auto-pick',
 };
 
 export function installPageBridge(
