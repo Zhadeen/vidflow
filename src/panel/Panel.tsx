@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { RunReply } from '../flow/messages';
+import { motionLive } from '../motion/view';
 import { healthLine } from '../runs/health';
 import { isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import { createProject, getProject, listProjects, type Project } from '../store/projects';
@@ -16,7 +17,7 @@ import { PanelSetup, VideoPicker } from './PanelSetup';
 import { panelId, tabId, Tabs, type PanelTab } from './Tabs';
 
 type Summary = Pick<Project, 'id' | 'name' | 'updatedAt'>;
-export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop' | 'skip';
+export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop' | 'skip' | 'clips';
 
 const LOAD_FAILED = "VidFlow couldn't load your videos. Close this panel and open it again.";
 const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
@@ -204,7 +205,8 @@ export function Panel({ client }: { client: RunClient }) {
 
   const shown = project && project.id === projectId ? project : null;
   const phase = shown ? runPhase(shown, run) : 'idle';
-  const running = !!shown && (phase === 'running' || phase === 'paused');
+  // A run of this video's pictures, clips or Auto-pick is going or paused: Setup waits (Go to Queue).
+  const running = !!shown && (phase === 'running' || phase === 'paused' || motionLive(shown, run));
   const studio = () => void openStudio(shown?.id).catch(() => undefined);
   const health = !loaded ? null : !projectId ? [] : checks ? healthLine(checks.rows, checks.flowOpen) : checkError ? ['Flow not checked'] : null;
   const tabs: { id: PanelTab; label: string }[] = [
@@ -242,6 +244,10 @@ export function Panel({ client }: { client: RunClient }) {
                 onChange={change}
                 onRunState={setRun}
                 onStart={() => void act('start', () => client.start(shown.id))}
+                onMakeClips={(limit) =>
+                  // The Motion choice and picks are saved before the background reads them.
+                  void act('clips', () => saving.current.then(() => client.makeClips(shown.id, limit)))
+                }
                 onReview={studio}
                 onOpenStudio={studio}
                 locked={running}
@@ -273,13 +279,23 @@ export function Panel({ client }: { client: RunClient }) {
               onSceneState={(sceneId, state) =>
                 setProject((p) => (p && p.id === shown.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
               }
+              onChange={change}
             />
           ) : scenesLive ? null : (
             <p className="vf-pn-sub">Pick a video on Setup first.</p>
           )
         ) : tab === 'checks' ? (
           shown ? (
-            <PanelChecks project={shown} client={client} result={checks} checking={checking} error={checkError} onCheck={() => void check()} />
+            <PanelChecks
+              project={shown}
+              run={run}
+              client={client}
+              result={checks}
+              checking={checking}
+              error={checkError}
+              onCheck={() => void check()}
+              onRunState={setRun}
+            />
           ) : (
             <p className="vf-pn-sub">Pick a video on Setup first.</p>
           )

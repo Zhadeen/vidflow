@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type Ref } from 'react';
 import type { RunReply } from '../flow/messages';
+import { autoMark } from '../motion/view';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
 import { getProject, type Project, type SceneState } from '../store/projects';
@@ -21,19 +22,19 @@ interface Props {
   onRunState(state: RunState | null): void;
   /** One scene's state as saved, read back after a swap (with no run live the background sends no broadcast). */
   onSceneState?(sceneId: string, state: SceneState): void;
+  /** "Continue to Motion →": the Motion step. */
+  onContinue(): void;
 }
 
 type Busy = null | 'start' | 'pause' | 'resume' | 'stop' | `retry:${string}`;
 
-const MOTION_NEXT = 'Motion is coming next in VidFlow. Your pictures are saved in this project.';
 const SWAP_HINT = "VidFlow uses Flow's first picture. Click another to swap.";
 const SWAP_FAILED = "VidFlow couldn't save that choice. Try again.";
 
-export function PicturesStep({ project, run, client, media, onRunState, onSceneState }: Props) {
+export function PicturesStep({ project, run, client, media, onRunState, onSceneState, onContinue }: Props) {
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
-  const [motionNote, setMotionNote] = useState(false);
   // Swaps shown at once, before the background confirms them; each goes once the saved state agrees (or it fails).
   const [swaps, setSwaps] = useState<Record<string, string>>({});
   const [swapping, setSwapping] = useState(false);
@@ -256,8 +257,7 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
             Start making pictures
           </Button>
         ) : (
-          // Motion isn't built yet: the owner kept this coral (approved look); pressing it says so instead of moving on.
-          <Button variant="primary" aria-disabled="true" aria-describedby="vf-motion-next" onClick={() => setMotionNote(true)}>
+          <Button variant="primary" onClick={onContinue}>
             Continue to Motion →
           </Button>
         )}
@@ -275,9 +275,6 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
       {phase === 'paused' && (
         <p className="vf-hint">Stop ends this run and keeps every picture. Start carries on later from the first scene without one.</p>
       )}
-      <p className="vf-hint" id="vf-motion-next" aria-live="polite">
-        {motionNote ? MOTION_NEXT : ''}
-      </p>
     </div>
   );
 }
@@ -340,6 +337,8 @@ export function Options({ ref, project, state, urls, busy, onUse }: OptionsProps
   const ids = state?.pictureIds ?? [];
   const count = ids.length > 0 ? ids.length : project.outputsPerPrompt;
   const inUse = chosenPicture(state);
+  // What Auto-pick did, under the chosen card ("Auto-picked: shows the shoulder bag" / "Not auto-checked").
+  const auto = autoMark(state);
   const empty =
     state?.status === 'submitted' ? 'Flow is making this…' : state?.status === 'refused' || state?.status === 'failed' ? 'No picture' : 'Not made yet';
   const titleId = useId();
@@ -379,6 +378,7 @@ export function Options({ ref, project, state, urls, busy, onUse }: OptionsProps
               <span className="vf-option-title" id={`${titleId}-${i}`}>
                 Option {i + 1} of {count}
               </span>
+              {chosen && auto && <span className="vf-option-sub">{auto}</span>}
               {other && (
                 <Button small className="vf-option-use" disabled={busy} aria-describedby={`${titleId}-${i}`}>
                   Use this picture

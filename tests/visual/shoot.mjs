@@ -26,6 +26,8 @@ const shots = [
   ['script-hero', 1280, 1100, 'script-step-hero'],
   ['script-model-sheet', 1280, 1500, 'script-step-model-sheet'],
   ['swap', 1280, 1000, 'pictures-step-swap'],
+  ['motion', 1280, 1000, 'motion-step'],
+  ['autopick', 1280, 900, 'pictures-step-autopick'],
 ];
 // Optional: only the named shots, e.g. `node tests/visual/shoot.mjs docs/design/build-check pictures-step-swap`.
 const only = process.argv.slice(3);

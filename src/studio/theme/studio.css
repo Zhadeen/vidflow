@@ -1165,3 +1165,119 @@ textarea.vf-input {
 .vf-hero-sheet-picture .vf-option-title {
   font-size: var(--vf-text-sm);
 }
+
+/* ---- Motion step (spec §20): the choice, the limit, the slides with Clip ticks and marks ---- */
+
+.vf-motion {
+  gap: var(--vf-space-3);
+}
+
+.vf-motion .vf-status,
+.vf-motion .vf-hint {
+  margin: 0;
+}
+
+.vf-motion-options {
+  flex-wrap: wrap;
+}
+
+.vf-seg:disabled .vf-seg-option {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.vf-motion-limit {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-3);
+}
+
+.vf-motion-limit .vf-label {
+  margin: 0;
+}
+
+.vf-motion-limit .vf-input {
+  width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* In the Motion step the grid is the whole screen's width and grows with its slides */
+.vf-motion-grid {
+  height: auto;
+  min-height: 0;
+}
+
+.vf-motion-grid .vf-tiles {
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  overflow: visible;
+}
+
+.vf-clip-tile {
+  cursor: default;
+}
+
+.vf-clip-tile:hover {
+  border-color: var(--vf-navy-line-strong);
+}
+
+.vf-clip-tile[data-making] {
+  border-color: var(--vf-coral);
+}
+
+.vf-clip-tile .vf-tile-label {
+  align-items: center;
+}
+
+.vf-clip-tick {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-clip-tick input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.vf-clip-tick span {
+  padding: 1px 8px;
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-pill);
+  color: var(--vf-cream-muted);
+}
+
+.vf-clip-tick span::before {
+  content: '○ ';
+}
+
+/* Ticked: cream outline on the selected-chip navy (the cream fill is kept for "✓ Saved") */
+.vf-clip-tick:has(input:checked) span {
+  border-color: var(--vf-cream);
+  background: var(--vf-navy-pill);
+  color: var(--vf-cream);
+  font-weight: 700;
+}
+
+.vf-clip-tick:has(input:checked) span::before {
+  content: '✓ ';
+}
+
+.vf-clip-tick:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.vf-clip-tick:focus-within {
+  box-shadow: var(--vf-focus);
+}
+
+.vf-clip-mark {
+  display: block;
+  padding: 0 6px 4px;
+  background: var(--vf-navy-raised);
+  color: var(--vf-cream-muted);
+}

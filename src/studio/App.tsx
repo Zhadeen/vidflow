@@ -141,6 +141,7 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
             onChange={change}
             onHome={() => open(null)}
             onRunState={setRun}
+            onFlush={() => saving.current}
             onSceneState={(sceneId, state) =>
               setProject((p) => (p && p.id === project.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
             }

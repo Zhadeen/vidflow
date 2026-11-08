@@ -212,16 +212,14 @@ describe('studio', () => {
     await waitFor(() => expect(client.stop).toHaveBeenCalled());
   });
 
-  it('Continue to Motion stays coral and says Motion is coming next when pressed', () => {
+  it('Continue to Motion stays coral and opens the Motion step', () => {
     const p = project(60);
     renderProject(p, runningState(p, 38), 'pictures');
     const next = screen.getByRole('button', { name: /continue to motion/i }) as HTMLButtonElement;
     expect(next.getAttribute('data-variant')).toBe('primary');
     expect(next.disabled).toBe(false);
-    expect(next.getAttribute('aria-disabled')).toBe('true');
-    expect(screen.queryByText(/Motion is coming next in VidFlow/)).toBeNull();
     fireEvent.click(next);
-    expect(screen.getByText('Motion is coming next in VidFlow. Your pictures are saved in this project.')).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: 'Motion' })).toBeTruthy();
   });
 
   it('Pictures step shows live progress', () => {
@@ -280,7 +278,7 @@ describe('studio', () => {
     expect(screen.getByText(/1 done · 1 refused · 1 failed/)).toBeTruthy();
   });
 
-  it('Voice, Motion, Edit and Export are not clickable and say Coming next', () => {
+  it('Voice, Edit and Export say Coming next; Motion waits for pictures', () => {
     renderProject(project(3), null, 'script');
     const steps = screen.getByRole('navigation', { name: /steps/i });
     for (const name of ['Voice', 'Motion', 'Edit', 'Export']) {

@@ -1,14 +1,18 @@
 /// <reference types="chrome" />
 import { useEffect, useId, useState } from 'react';
 import type { CheckId, CheckRow } from '../runs/checks';
+import { isLive, type RunState } from '../runs/run';
 import {
   ACCEPT_NOTICES_KEY,
+  AUTO_PICK_KEY,
   AUTO_SAVE_KEY,
   getAcceptNotices,
+  getAutoPick,
   getAutoSave,
   getKeepAwake,
   KEEP_AWAKE_KEY,
   setAcceptNotices,
+  setAutoPick,
   setAutoSave,
   setKeepAwake,
 } from '../settings';
@@ -37,6 +41,7 @@ const BADGE: Record<CheckId, string> = {
 /** Rows the run puts right itself when it starts (agent mode, Flow's settings): a problem there doesn't stop Start. */
 const SET_AT_START = new Set<CheckId>(['agentOff', 'settings']);
 const REQUEST_FAILED = 'Something went wrong — try again.';
+const AUTO_PICK_WAITS = 'Auto-pick now works once the current run has finished or is stopped.';
 
 /** What a row reads as, as in the approved panel ("Google account · unscripted4ce", "Credits · 1,043"). */
 function title(row: CheckRow): string {
@@ -112,24 +117,30 @@ export function useStoredSwitch(key: string, read: () => Promise<boolean>, defau
 
 interface Props {
   project: Project;
+  /** The background's run: Auto-pick now waits while any run is live. */
+  run?: RunState | null;
   client: RunClient;
   result: ChecksResult | null;
   checking: boolean;
   error: string | null;
   /** Reads VidFlow's Flow tab again (Check again, and after Open Flow / Test one prompt). */
   onCheck(): void;
+  /** The run as the background reported it after Auto-pick now. */
+  onRunState?(state: RunState | null): void;
 }
 
 /**
  * Checks (spec §19): what VidFlow read from its own Flow tab, row by row, the automation switches, Show me in
  * Flow, Test one prompt and the coral Check again.
  */
-export function PanelChecks({ project, client, result, checking, error, onCheck }: Props) {
+export function PanelChecks({ project, run = null, client, result, checking, error, onCheck, onRunState }: Props) {
   const ids = useId();
   const [notices, setNotices] = useStoredSwitch(ACCEPT_NOTICES_KEY, getAcceptNotices);
   const [awake, setAwake] = useStoredSwitch(KEEP_AWAKE_KEY, getKeepAwake);
   const [autoSave, setAutoSaveOn] = useStoredSwitch(AUTO_SAVE_KEY, getAutoSave, false);
-  const [tool, setTool] = useState<null | 'open' | 'show' | 'test'>(null);
+  const [autoPick, setAutoPickOn] = useStoredSwitch(AUTO_PICK_KEY, getAutoPick);
+  const [tool, setTool] = useState<null | 'open' | 'show' | 'test' | 'pick'>(null);
+  const anyLive = isLive(run);
   const [message, setMessage] = useState<{ text: string; problem: boolean } | null>(null);
 
   function flip(set: (on: boolean) => void, save: (on: boolean) => Promise<void>, on: boolean) {
@@ -140,11 +151,15 @@ export function PanelChecks({ project, client, result, checking, error, onCheck 
     });
   }
 
-  async function use(kind: 'open' | 'show' | 'test') {
+  async function use(kind: 'open' | 'show' | 'test' | 'pick') {
     setTool(kind);
     setMessage(null);
     try {
-      if (kind === 'open') {
+      if (kind === 'pick') {
+        const reply = await client.autoPick(project.id);
+        if (reply.ok) onRunState?.(reply.state);
+        else setMessage({ text: reply.message, problem: true });
+      } else if (kind === 'open') {
         const reply = await client.openFlow();
         if (!reply.ok) setMessage({ text: reply.message, problem: true });
         onCheck();
@@ -219,7 +234,22 @@ export function PanelChecks({ project, client, result, checking, error, onCheck 
         <Switch label="Accept Flow's notices automatically" on={notices} onChange={(on) => flip(setNotices, setAcceptNotices, on)} />
         <Switch label="Keep Mac awake while running" on={awake} onChange={(on) => flip(setAwake, setKeepAwake, on)} />
         <Switch label="Save automatically as each scene finishes" on={autoSave} onChange={(on) => flip(setAutoSaveOn, setAutoSave, on)} />
+        <Switch label="Auto-pick the better picture" on={autoPick} onChange={(on) => flip(setAutoPickOn, setAutoPick, on)} />
       </ul>
+      <div className="vf-pn-autopick">
+        <Button
+          className="vf-pn-sec"
+          onClick={() => void use('pick')}
+          loading={tool === 'pick'}
+          disabled={tool !== null || anyLive}
+          aria-describedby={anyLive ? `${ids}-pick-why` : `${ids}-pick-what`}
+        >
+          Auto-pick now
+        </Button>
+        <p className="vf-pn-note" id={anyLive ? `${ids}-pick-why` : `${ids}-pick-what`}>
+          {anyLive ? AUTO_PICK_WAITS : "Flow's Agent picks each slide's better picture. Never over your own choice. 0 credits."}
+        </p>
+      </div>
 
       <div className="vf-pn-pair">
         <Button className="vf-pn-sec" onClick={() => void use('show')} loading={tool === 'show'} disabled={tool !== null}>

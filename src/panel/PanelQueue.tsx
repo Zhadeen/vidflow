@@ -2,8 +2,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type RefObject } from 'react';
 import type { RunReply } from '../flow/messages';
 import { liveView } from '../flow/live';
+import { pillLine } from '../flow/pill';
+import { autoMark, clipMark, motionLive, motionPauseReason, motionRunFor, pausedOnSlide, runCounts, togglePick } from '../motion/view';
 import { sceneNumber, STEP_KEY, type Step } from '../runs/activity';
-import { isHeroSheetRun, isLive, type RunState } from '../runs/run';
+import { isClipRun, isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import type { Scene } from '../scenes/types';
 import type { MediaStore } from '../store/media';
 import { getMediaStore, getProject, type Project, type SceneState } from '../store/projects';
@@ -14,6 +16,7 @@ import { chosenPicture } from '../studio/chosen';
 import { Options } from '../studio/PicturesStep';
 import { ownerPauseReason, runPhase, sceneStatesFor } from '../studio/progress';
 import type { RunClient } from '../studio/runClient';
+import type { ProjectPatch } from '../studio/ScriptStep';
 import { usePictureUrls } from '../studio/usePictureUrls';
 import type { PanelBusy } from './Panel';
 
@@ -125,6 +128,8 @@ interface Props {
   onRunState(state: RunState | null): void;
   /** One scene's state as saved, read back after a swap (with no run live the background sends no broadcast). */
   onSceneState(sceneId: string, state: SceneState): void;
+  /** The video's Clip picks ("Clips for the slides I pick"): a row's tick, Pick all, Pick none. */
+  onChange?(patch: ProjectPatch): void;
 }
 
 /**
@@ -149,7 +154,10 @@ export function PanelQueue(props: Props) {
   const optionsRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
-  const phase = runPhase(project, run);
+  // A Motion (clips) or Auto-pick run of this video shows here as a picture run does (spec §20).
+  const motionRun = motionLive(project, run) ? motionRunFor(project, run) : null;
+  const clipping = !!motionRun && isClipRun(motionRun);
+  const phase = motionRun ? (motionRun.status as 'running' | 'paused') : runPhase(project, run);
   const paused = phase === 'paused';
   const live = phase === 'running' || paused;
   const anyLive = isLive(run);
@@ -171,7 +179,8 @@ export function PanelQueue(props: Props) {
 
   // The scene VidFlow is working on now (a paused run isn't working on any).
   const stepScene = phase === 'running' && step && step.projectId === project.id ? step.sceneId : null;
-  const currentId = stepScene && (states[stepScene]?.status === 'pending' || states[stepScene]?.status === 'submitted') ? stepScene : null;
+  const runStates = motionRun ? motionRun.sceneStates : states;
+  const currentId = stepScene && (runStates[stepScene]?.status === 'pending' || runStates[stepScene]?.status === 'submitted') ? stepScene : null;
 
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { all: project.scenes.length, drawing: 0, togo: 0, failed: 0, done: 0 };
@@ -290,17 +299,29 @@ export function PanelQueue(props: Props) {
   const line = paused
     ? 'Paused · press Resume to carry on'
     : live
-      ? view?.step
-        ? view.scene !== null
-          ? `Scene ${view.scene} of ${view.total} · ${view.step}`
-          : view.step
-        : `Picture ${view?.n ?? 0} of ${view?.total ?? 0}`
+      ? view
+        ? pillLine(view)
+        : ''
       : total === 0
         ? 'No scenes yet. Add them on Setup.'
         : counts.done === total
           ? `All ${total} ${total === 1 ? 'scene has' : 'scenes have'} pictures.`
           : `${counts.done} of ${total} ${total === 1 ? 'scene has' : 'scenes have'} pictures.`;
-  const percent = total === 0 ? 0 : Math.round(((counts.done + counts.drawing / 2) / total) * 100);
+  const motionCounts = motionRun ? runCounts(motionRun) : null;
+  const percent = motionCounts
+    ? motionCounts.total === 0
+      ? 0
+      : Math.round(((motionCounts.done + motionCounts.working / 2) / motionCounts.total) * 100)
+    : total === 0
+      ? 0
+      : Math.round(((counts.done + counts.drawing / 2) / total) * 100);
+  const countsLine = !motionCounts
+    ? `${counts.done} saved · ${counts.drawing} being drawn · ${counts.togo} to go · ${counts.failed} failed`
+    : clipping
+      ? `${motionCounts.done} made · ${motionCounts.working} being made · ${motionCounts.toGo} to go · ${motionCounts.failed} not made · ${motionRun!.spent ?? 0} of ${motionRun!.limit ?? 0} credits used`
+      : `${motionCounts.done} checked · ${motionCounts.toGo + motionCounts.working} to go`;
+  const picking = project.motionMode === 'picked' && project.aspect !== '1:1' && !!props.onChange;
+  const picks = new Set(project.clipPicks ?? []);
 
   // ▶ Run and Retry failed use the retry path: refused while any run is live, so they wait and say why.
   const whyId = `${ids}-why`;
@@ -318,10 +339,21 @@ export function PanelQueue(props: Props) {
   const remaining = project.scenes.filter((s) => states[s.id]!.status !== 'done' && states[s.id]!.status !== 'refused').length;
   const sheetLive = !!run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused');
   const canStart = !live && total > 0 && remaining > 0 && !sheetLive;
-  const pauseReason = ownerPauseReason(project, run);
+  const pauseReason = ownerPauseReason(project, run) ?? motionPauseReason(project, run);
+  // An Auto-pick pass that stopped early says why (it finished; it isn't paused).
+  const ended = !live && run && run.projectId === project.id && run.status === 'finished' ? (run.endMessage ?? null) : null;
   // Paused about one slide (VidFlow couldn't tell whether Flow started its clip): the owner may skip that slide.
-  const pausedOnId = paused && run?.pauseSceneId && states[run.pauseSceneId]?.status === 'pending' ? run.pauseSceneId : null;
-  const pausedOn = pausedOnId ? (project.scenes.find((s) => s.id === pausedOnId)?.slide ?? null) : null;
+  const pausedOnId = !motionRun && paused && run?.pauseSceneId && states[run.pauseSceneId]?.status === 'pending' ? run.pauseSceneId : null;
+  const pausedOn = motionRun
+    ? pausedOnSlide(project, run)
+    : pausedOnId
+      ? (project.scenes.find((s) => s.id === pausedOnId)?.slide ?? null)
+      : null;
+  const skipWhy = !motionRun
+    ? 'Skip works while VidFlow is making pictures.'
+    : clipping
+      ? 'Skip works while VidFlow is making clips.'
+      : 'Skip works while VidFlow is auto-picking.';
   const skipLabel = pausedOn !== null ? `Skip slide ${pausedOn}` : 'Skip';
 
   return (
@@ -330,12 +362,14 @@ export function PanelQueue(props: Props) {
         <b className="vf-pn-name">{project.name}</b>
         <div className="vf-pn-sub">{line}</div>
       </div>
-      <div className="vf-pn-track" role="progressbar" aria-label="Pictures made" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+      <div
+        className="vf-pn-track"
+        role="progressbar"
+        aria-label={!motionRun ? 'Pictures made' : clipping ? 'Clips made' : 'Slides auto-picked'}
+        aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
         <div className="vf-pn-fill" style={{ width: `${percent}%` }} />
       </div>
-      <div className="vf-pn-note">
-        {counts.done} saved · {counts.drawing} being drawn · {counts.togo} to go · {counts.failed} failed
-      </div>
+      <div className="vf-pn-note">{countsLine}</div>
 
       {total > 0 && (
         <div className="vf-pn-filters" role="group" aria-label="Show">
@@ -368,10 +402,32 @@ export function PanelQueue(props: Props) {
         </div>
       )}
 
+      {picking && total > 0 && (
+        <div className="vf-pn-picks" role="group" aria-label="Clip picks">
+          <span className="vf-pn-note">
+            {picks.size === 0 ? 'Tick the slides that get a clip' : `${project.scenes.filter((s) => picks.has(s.id)).length} picked for clips`}
+          </span>
+          <button type="button" className="vf-pn-filter" onClick={() => props.onChange!({ clipPicks: project.scenes.map((s) => s.id) })}>
+            Pick all
+          </button>
+          <button type="button" className="vf-pn-filter" onClick={() => props.onChange!({ clipPicks: [] })}>
+            Pick none
+          </button>
+        </div>
+      )}
+
       {total > 0 && (
         <ul ref={listRef} className="vf-pn-queue" aria-label="Scenes">
           {rows.map((scene) => {
             const s = states[scene.id]!;
+            // This slide in the Motion / Auto-pick run (its clip or question, never its pictures).
+            const ms = motionRun?.sceneStates[scene.id];
+            const clipState: SceneState =
+              clipping && ms?.status === 'done' && ms.clip
+                ? { ...s, clip: ms.clip, clipNote: undefined }
+                : clipping && (ms?.status === 'failed' || ms?.status === 'refused')
+                  ? { ...s, clipNote: ms.message }
+                  : s;
             const n = sceneNumber(project, scene.id) ?? 0;
             const nn = pad(n);
             const current = scene.id === currentId;
@@ -384,15 +440,25 @@ export function PanelQueue(props: Props) {
             const tc = timecode(scene);
             if (tc) detail.push(tc);
             if (current && step) detail.push(lowerFirst(step.text));
+            else if (ms?.status === 'submitted') detail.push(clipping ? 'making its clip' : 'asking Flow’s Agent');
             else if (s.status === 'submitted') detail.push('sent to Flow');
             else if (s.status === 'failed' || s.status === 'refused') detail.push(s.message ?? 'No reason was given.');
             if (s.status === 'done') {
               if (marks.checked) detail.push('✓ checked');
               if (marks.hero) detail.push('hero ✓');
               if (marks.options > 1) detail.push(`${marks.options} options`);
+              const auto = autoMark(s);
+              if (auto) detail.push(auto);
             }
+            const clipNote = clipMark(clipState);
+            if (clipNote) detail.push(clipNote);
+            const motionTag =
+              motionRun && (current || ms?.status === 'submitted')
+                ? { text: clipping ? 'Making clip' : 'Auto-picking', tone: 'current' }
+                : null;
             const tag =
-              s.status === 'done'
+              motionTag ??
+              (s.status === 'done'
                 ? { text: '✓ Saved', tone: 'done' }
                 : current && step?.target === 'tile'
                   ? { text: 'Checking', tone: 'current' }
@@ -402,7 +468,7 @@ export function PanelQueue(props: Props) {
                       ? { text: 'Failed', tone: 'warn' }
                       : s.status === 'refused'
                         ? { text: 'Refused', tone: 'warn' }
-                        : null;
+                        : null);
             const canRun = !current && (s.status === 'pending' || s.status === 'failed' || s.status === 'refused');
             const optionsId = `${ids}-options-${scene.id}`;
             const body = (
@@ -432,8 +498,19 @@ export function PanelQueue(props: Props) {
                   ) : (
                     <div className="vf-pn-qopen">{body}</div>
                   )}
-                  {(tag || canRun) && (
+                  {(tag || canRun || picking) && (
                     <div className="vf-pn-qside">
+                      {picking && (
+                        <label className="vf-pn-tick">
+                          <input
+                            type="checkbox"
+                            aria-label={`Clip for slide ${n}`}
+                            checked={picks.has(scene.id)}
+                            onChange={(e) => props.onChange!({ clipPicks: togglePick(project, scene.id, e.target.checked) })}
+                          />
+                          <span aria-hidden="true">Clip</span>
+                        </label>
+                      )}
                       {tag && (
                         <span className="vf-pn-tag" data-tone={tag.tone}>
                           {tag.text}
@@ -477,9 +554,9 @@ export function PanelQueue(props: Props) {
         <ActivityList projectId={project.id} project={project} limit={5} showSwitch={false} />
       </div>
 
-      {pauseReason && (
+      {(pauseReason ?? ended) && (
         <p className="vf-notice vf-pn-notice" role="alert">
-          {pauseReason}
+          {pauseReason ?? ended}
         </p>
       )}
       {(localError ?? error) && (
@@ -491,7 +568,7 @@ export function PanelQueue(props: Props) {
       {paused && pausedOn === null && (
         // Paused, nothing is being worked on: there is no current scene to skip.
         <p className="vf-pn-note vf-pn-end" id={skipWhyId}>
-          Skip works while VidFlow is making pictures.
+          {skipWhy}
         </p>
       )}
       {live ? (

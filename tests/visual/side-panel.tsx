@@ -5,7 +5,7 @@
 import { createRoot } from 'react-dom/client';
 import type { RunReply } from '../../src/flow/messages';
 import { Panel } from '../../src/panel/Panel';
-import { initRun, reduceRun, type RunState } from '../../src/runs/run';
+import { initClipRun, initRun, reduceRun, type RunState } from '../../src/runs/run';
 import { parseSceneFile } from '../../src/scenes/parse';
 import { createProject, deleteProject, listProjects, saveProject, setMediaStore } from '../../src/store/projects';
 import type { CheckRow } from '../../src/runs/checks';
@@ -49,7 +49,23 @@ async function main() {
   const project = await createProject('Phone Bill Story');
   project.script = 'Every month my phone bill went up. So I read every line.';
   project.character = { description: 'A short stickman with a red cap', referenceMediaId: `${project.id}/hero-reference` };
-  if (screen === 'running' || screen === 'finished') project.scenes = parseSceneFile(REPLY).scenes;
+  const motion = screen === 'motion' || screen === 'clips';
+  if (screen === 'running' || screen === 'finished' || motion) project.scenes = parseSceneFile(REPLY).scenes;
+  if (motion) {
+    // Every slide has its pictures; clips for the slides he picked (1, 3, 4, 6): slide 1's is made, slide 3's wasn't
+    // (the credit limit), slide 2 was auto-picked, slide 5 not auto-checked.
+    project.motionMode = 'picked';
+    project.clipPicks = [id(1), id(3), id(4), id(6)];
+    for (let i = 1; i <= 6; i++) {
+      project.sceneStates[id(i)] = { sceneId: id(i), status: 'done', pictureIds: [`${id(i)}-1`, `${id(i)}-2`], cardKeys: [`k${i}a`, `k${i}b`], withHero: true };
+    }
+    project.sceneStates[id(2)] = { ...project.sceneStates[id(2)]!, chosenPictureId: `${id(2)}-2`, choiceSource: 'auto', autoReason: 'shows the long bill', autoChecked: true };
+    project.sceneStates[id(5)] = { ...project.sceneStates[id(5)]!, autoReason: 'not auto-checked', autoChecked: true };
+    if (screen === 'motion') {
+      project.sceneStates[id(1)] = { ...project.sceneStates[id(1)]!, clip: { mediaId: 'c1', sourcePictureId: `${id(1)}-1`, length: 4, use: [0, 4] } };
+      project.sceneStates[id(3)] = { ...project.sceneStates[id(3)]!, clipNote: 'Not made — credit limit' };
+    }
+  }
   if (screen === 'finished') {
     // A finished video: five scenes saved (scene 2 with its second picture chosen), one Flow didn't finish.
     for (let i = 1; i <= 6; i++) {
@@ -59,8 +75,6 @@ async function main() {
           : { sceneId: id(i), status: 'done', pictureIds: [`${id(i)}-1`, `${id(i)}-2`], cardKeys: [`k${i}a`, `k${i}b`], ...(i === 2 ? { chosenPictureId: `${id(i)}-2` } : {}) };
     }
   }
-  await saveProject(project);
-
   let run: RunState | null = null;
   if (screen === 'running') {
     let s = reduceRun(initRun(project), { type: 'start' });
@@ -71,11 +85,29 @@ async function main() {
     s = reduceRun(s, { type: 'submitted', sceneId: id(3) });
     run = reduceRun(s, { type: 'submitted', sceneId: id(4) });
   }
+  if (screen === 'motion') run = { ...initClipRun(project, [id(1)], 7), status: 'finished', balance: 1043, spent: 7 };
+  if (screen === 'clips') {
+    // Making clips for slides 1, 3, 4 and 6: slide 1's made, slide 3's in Flow.
+    let s = reduceRun(initClipRun(project, [id(1), id(3), id(4), id(6)], 28), { type: 'start' });
+    s = reduceRun(s, { type: 'submitted', sceneId: id(1) });
+    s = reduceRun(s, { type: 'clip', sceneId: id(1), clip: { mediaId: 'c1', sourcePictureId: `${id(1)}-1`, length: 4, use: [0, 4] }, cardKey: 'c1' });
+    s = reduceRun(s, { type: 'submitted', sceneId: id(3) });
+    run = { ...s, spent: 14, balance: 1043 };
+    project.sceneStates[id(1)] = { ...project.sceneStates[id(1)]!, clip: { mediaId: 'c1', sourcePictureId: `${id(1)}-1`, length: 4, use: [0, 4] } };
+  }
+
+  await saveProject(project);
 
   const today = new Date();
   const at = (h: number, m: number, sec: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate(), h, m, sec).getTime();
   const store: Record<string, unknown> = {
-    'vidflow.step': { projectId: project.id, sceneId: id(3), text: 'Checking picture 2 of 2 matches its prompt', target: 'tile', at: Date.now() },
+    'vidflow.step': {
+      projectId: project.id,
+      sceneId: id(3),
+      text: screen === 'clips' ? 'Waiting for Flow to make the clip' : 'Checking picture 2 of 2 matches its prompt',
+      target: 'tile',
+      at: Date.now(),
+    },
     'vidflow.activity': [
       { at: at(10, 23, 58), projectId: project.id, sceneId: null, text: 'Opened a new Flow project' },
       { at: at(10, 24, 40), projectId: project.id, sceneId: id(1), text: '✓ Saved 2 pictures' },

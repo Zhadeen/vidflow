@@ -185,6 +185,31 @@ function view() {
       );
       return <ProjectScreen project={project} run={run} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
     }
+    case 'motion': {
+      // Every slide has pictures; clips for the slides he picked: slide 1's made, slide 4's from an old picture, slide
+      // 6's not made (the credit limit).
+      const twelve = project.scenes.slice(0, 12);
+      const sceneStates: Project['sceneStates'] = {};
+      twelve.forEach((s, i) => (sceneStates[s.id] = { sceneId: s.id, status: 'done', pictureIds: i % 2 ? ['stick2', 'stick1'] : ['stick1', 'stick2'] }));
+      const clip = (pic: string) => ({ mediaId: 'c', sourcePictureId: pic, length: 4, use: [0, 4] as [number, number] });
+      sceneStates[id(1)] = { ...sceneStates[id(1)]!, clip: clip('stick1') };
+      sceneStates[id(4)] = { ...sceneStates[id(4)]!, clip: clip('stick1') };
+      sceneStates[id(6)] = { ...sceneStates[id(6)]!, clipNote: 'Not made — credit limit' };
+      const p: Project = { ...project, scenes: twelve, sceneStates, motionMode: 'picked', clipPicks: [id(1), id(2), id(4), id(6), id(9)] };
+      return <ProjectScreen project={p} run={null} client={client} media={media} initialStep="motion" onChange={noop} onHome={noop} />;
+    }
+    case 'autopick': {
+      // Auto-pick chose scene 1's second picture: its reason under the chosen card.
+      const one = project.scenes.slice(0, 1);
+      const p: Project = {
+        ...project,
+        scenes: one,
+        sceneStates: {
+          [id(1)]: { sceneId: id(1), status: 'done', pictureIds: ['stick1', 'stick2'], chosenPictureId: 'stick2', choiceSource: 'auto', autoReason: 'shows the switched-off lamp', autoChecked: true },
+        },
+      };
+      return <ProjectScreen project={p} run={null} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;
+    }
     default: {
       const run = runWith(38, (s) => reduceRun(reduceRun(s, { type: 'submitted', sceneId: id(39) }), { type: 'submitted', sceneId: id(40) }));
       return <ProjectScreen project={project} run={run} client={client} media={media} initialStep="pictures" onChange={noop} onHome={noop} />;

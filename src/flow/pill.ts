@@ -15,6 +15,8 @@ export interface PillView {
   toGo: number;
   /** The run makes the hero's model sheet: one prompt, so no picture counts or bar; the line names the sheet. */
   sheet?: boolean;
+  /** A Motion run (clips) or an Auto-pick run: its line and counts say so (spec §20). */
+  kind?: 'clips' | 'auto-pick';
 }
 
 const HOST_ID = 'vidflow-pill';
@@ -30,9 +32,12 @@ export function pillView(
   const scenes = Object.values(state.sceneStates);
   const count = (status: string) => scenes.filter((s) => s.status === status).length;
   const started = scenes.filter((s) => s.status !== 'pending').length;
+  const settled = scenes.filter((s) => s.status !== 'pending' && s.status !== 'submitted').length;
   const total = scenes.length;
+  const motion = state.kind === 'clips' || state.kind === 'auto-pick';
   return {
-    n: Math.min(total, Math.max(1, started)),
+    // A clip or Auto-pick run counts the slide it is on: the ones finished, plus this one.
+    n: Math.min(total, Math.max(1, motion ? settled + 1 : started)),
     total,
     paused: state.status === 'paused',
     step: step?.text ?? null,
@@ -41,7 +46,40 @@ export function pillView(
     drawing: count('submitted'),
     toGo: count('pending'),
     ...(state.kind === 'hero-sheet' ? { sheet: true } : {}),
+    ...(state.kind === 'clips' || state.kind === 'auto-pick' ? { kind: state.kind } : {}),
   };
+}
+
+/**
+ * The pill's line in two parts: the lead ("Scene 2 of 3 · ", "Clip 2 of 5 · ", "Picture 2 of 6") and the step in bold
+ * (null between steps). The panel's Queue reads the same words.
+ */
+export function pillParts(view: PillView): { lead: string; step: string | null } {
+  const at = view.scene ?? view.n;
+  if (view.kind === 'auto-pick') {
+    const lead = `Auto-picking slide ${at} of ${view.total}`;
+    return view.step ? { lead: `${lead} · `, step: view.step } : { lead, step: null };
+  }
+  if (view.step) {
+    if (view.scene === null) return { lead: '', step: view.step };
+    return { lead: `${view.kind === 'clips' ? 'Clip' : 'Scene'} ${view.scene} of ${view.total} · `, step: view.step };
+  }
+  if (view.sheet) return { lead: 'Model sheet', step: null };
+  return { lead: view.kind === 'clips' ? `Making clip ${view.n} of ${view.total}` : `Picture ${view.n} of ${view.total}`, step: null };
+}
+
+/** The pill's line as plain text. */
+export const pillLine = (view: PillView): string => {
+  const { lead, step } = pillParts(view);
+  return `${lead}${step ?? ''}`;
+};
+
+/** The counts under the bar: pictures, clips or slides checked. */
+export function pillCounts(view: PillView): string {
+  if (view.sheet) return '';
+  if (view.kind === 'clips') return `${view.saved} made · ${view.drawing} being made · ${view.toGo} to go`;
+  if (view.kind === 'auto-pick') return `${view.saved} checked · ${view.toGo} to go`;
+  return `${view.saved} saved · ${view.drawing} being drawn · ${view.toGo} to go`;
 }
 
 /** Progress for the bar: saved pictures, plus half for those being drawn. */
@@ -100,17 +138,18 @@ export function renderPill(
 
   const line = root.querySelector<HTMLElement>('.step')!;
   line.replaceChildren();
-  if (view.step) {
-    if (view.scene !== null) line.append(`Scene ${view.scene} of ${view.total} · `);
+  const parts = pillParts(view);
+  if (parts.lead) line.append(parts.lead);
+  if (parts.step) {
     const b = doc.createElement('b');
     b.style.fontWeight = '700';
-    b.textContent = view.step;
+    b.textContent = parts.step;
     line.append(b);
-  } else line.textContent = view.sheet ? 'Model sheet' : `Picture ${view.n} of ${view.total}`;
+  }
 
   root.querySelector<HTMLElement>('.fill')!.style.width = `${pillProgress(view)}%`;
   const counts = root.querySelector<HTMLElement>('.counts')!;
-  counts.textContent = view.sheet ? '' : `${view.saved} saved · ${view.drawing} being drawn · ${view.toGo} to go`;
+  counts.textContent = pillCounts(view);
   const show = view.sheet ? 'none' : '';
   for (const part of [counts, root.querySelector<HTMLElement>('.track')!]) if (part.style.display !== show) part.style.display = show;
 

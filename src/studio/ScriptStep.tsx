@@ -9,7 +9,7 @@ import { Button } from './Button';
 import { HeroReference, type SheetControls } from './HeroReference';
 import { useScriptDraft } from './useScriptDraft';
 
-export type ProjectPatch = Partial<Pick<Project, 'script' | 'scenes' | 'style' | 'customStyle' | 'character' | 'aspect' | 'outputsPerPrompt' | 'downloadFolder'>>;
+export type ProjectPatch = Partial<Pick<Project, 'script' | 'scenes' | 'style' | 'customStyle' | 'character' | 'aspect' | 'outputsPerPrompt' | 'downloadFolder' | 'motionMode' | 'clipPicks'>>;
 
 interface Props {
   project: Project;

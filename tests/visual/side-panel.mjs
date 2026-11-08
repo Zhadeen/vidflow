@@ -18,13 +18,22 @@ const server = await createServer({ root: here, configFile: false, plugins: [rea
 await server.listen();
 const browser = await chromium.launch({ channel: 'chrome' });
 
-const HEIGHTS = { setup: 720, 'setup-unapplied': 760, checks: 860, running: 760, 'queue-finished': 760, 'queue-options': 900, files: 720 };
+const HEIGHTS = { setup: 720, 'setup-unapplied': 760, checks: 860, running: 760, 'queue-finished': 760, 'queue-options': 900, files: 720, 'setup-motion': 900, 'queue-clips': 900, 'queue-picks': 900 };
 // Optional: only the named screens, e.g. `node tests/visual/side-panel.mjs docs/design/build-check '' files`.
 const only = process.argv.slice(4);
-const SCREENS = ['setup', 'setup-unapplied', 'checks', 'running', 'queue-finished', 'queue-options', 'files'];
+const SCREENS = ['setup', 'setup-unapplied', 'checks', 'running', 'queue-finished', 'queue-options', 'files', 'setup-motion', 'queue-clips', 'queue-picks'];
 for (const screen of SCREENS.filter((s) => only.length === 0 || only.includes(s))) {
   const page = await browser.newPage({ viewport: { width: 320, height: HEIGHTS[screen] }, deviceScaleFactor: 2 });
-  const data = screen === 'running' ? 'running' : screen.startsWith('queue-') || screen === 'files' ? 'finished' : 'setup';
+  const data =
+    screen === 'running'
+      ? 'running'
+      : screen === 'setup-motion' || screen === 'queue-picks'
+        ? 'motion'
+        : screen === 'queue-clips'
+          ? 'clips'
+          : screen.startsWith('queue-') || screen === 'files'
+            ? 'finished'
+            : 'setup';
   await page.goto(`http://localhost:5197/side-panel.html?screen=${data}`);
   await page.waitForFunction(() => window.ready === true);
   if (screen === 'setup' || screen === 'checks') {
@@ -40,7 +49,15 @@ for (const screen of SCREENS.filter((s) => only.length === 0 || only.includes(s)
     await page.getByRole('textbox', { name: "Paste Claude's reply" }).fill(REPLY);
     await page.getByRole('button', { name: 'Use these scenes' }).waitFor();
   }
-  if (screen === 'checks') {
+  if (screen === 'setup-motion') {
+    // Every slide has pictures, clips for the picked slides: the coral is Make clips.
+    await page.getByRole('button', { name: /^Make clips/ }).waitFor();
+  } else if (screen === 'queue-clips') {
+    await page.getByRole('button', { name: 'Pause' }).waitFor();
+  } else if (screen === 'queue-picks') {
+    await page.getByRole('tab', { name: /^Queue/ }).click();
+    await page.getByRole('button', { name: 'Pick all' }).waitFor();
+  } else if (screen === 'checks') {
     await page.getByRole('tab', { name: 'Checks' }).click();
     await page.getByRole('button', { name: 'Check again' }).waitFor();
   } else if (screen === 'running') {
@@ -57,7 +74,7 @@ for (const screen of SCREENS.filter((s) => only.length === 0 || only.includes(s)
   }
   await page.waitForTimeout(300);
   // The Queue scrolls in the real panel: shoot the whole page so the rows and the Pause/Stop/Skip row both show.
-  const fullPage = screen === 'running' || screen.startsWith('queue-');
+  const fullPage = screen === 'running' || screen.startsWith('queue-') || screen === 'setup-motion';
   await page.screenshot({ path: path.join(out, `side-panel-${screen}.png`), fullPage });
   await page.close();
 }

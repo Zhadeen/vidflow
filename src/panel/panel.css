@@ -942,3 +942,109 @@ button.vf-pn-qopen {
   outline: none;
   box-shadow: var(--vf-focus);
 }
+
+/* ---- Motion (spec §20): the choice, the limit, Clip ticks, Auto-pick now ---- */
+
+/* The Motion choice is a fieldset of chips (one tab stop; arrows move between them) */
+.vf-pn-chipset-motion {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+/* A clip choice a 1:1 video can't have: greyed, with the reason under it */
+.vf-pn-chip[data-off] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.vf-pn-chip[data-off] input {
+  cursor: default;
+}
+
+.vf-pn-chipset-motion:disabled .vf-pn-chip {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.vf-pn-limit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-space-2);
+  font-size: var(--vf-text-xs);
+  color: var(--vf-cream-soft);
+}
+
+.vf-pn-limit .vf-pn-field {
+  width: 84px;
+  padding: 5px 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-pn-picks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vf-pn-picks .vf-pn-note {
+  margin-right: auto;
+}
+
+/* A row's Clip tick: a small pill like the tags; ticked = cream */
+.vf-pn-tick {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-pn-tick input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.vf-pn-tick span {
+  padding: 2px 7px;
+  border: 1px solid var(--vf-navy-line-strong);
+  border-radius: var(--vf-radius-pill);
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--vf-cream-muted);
+}
+
+.vf-pn-tick span::before {
+  content: '○ ';
+}
+
+/* Ticked: cream outline on the selected-chip navy (the cream fill is kept for "✓ Saved") */
+.vf-pn-tick:has(input:checked) span {
+  border-color: var(--vf-cream);
+  background: var(--vf-navy-pill);
+  color: var(--vf-cream);
+  font-weight: 700;
+}
+
+.vf-pn-tick:has(input:checked) span::before {
+  content: '✓ ';
+}
+
+.vf-pn-tick:focus-within {
+  box-shadow: var(--vf-focus);
+}
+
+.vf-pn-autopick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vf-pn .vf-pn-autopick .vf-btn[data-variant].vf-pn-sec {
+  align-self: flex-start;
+}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
 import type { Project, SceneState } from '../store/projects';
+import { MotionStep } from './MotionStep';
 import { PicturesStep } from './PicturesStep';
 import { pictureProgress, runPhase } from './progress';
 import type { RunClient } from './runClient';
@@ -13,17 +14,21 @@ interface Props {
   run: RunState | null;
   client: RunClient;
   media: MediaStore;
-  initialStep?: 'script' | 'pictures';
+  initialStep?: Screen;
   onChange(patch: ProjectPatch): void;
   onHome(): void;
   /** The run as the background reported it after a request from this screen. */
   onRunState?(state: RunState | null): void;
   /** One scene's state as saved, read back after the owner swaps its picture. */
   onSceneState?(sceneId: string, state: SceneState): void;
+  /** Resolves once the edits made so far are saved (Make clips waits for the Motion choice and picks). */
+  onFlush?(): Promise<unknown>;
 }
 
-export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome, onRunState, onSceneState }: Props) {
-  const [step, setStep] = useState<'script' | 'pictures'>(initialStep ?? (project.scenes.length > 0 ? 'pictures' : 'script'));
+type Screen = 'script' | 'pictures' | 'motion';
+
+export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome, onRunState, onSceneState, onFlush }: Props) {
+  const [step, setStep] = useState<Screen>(initialStep ?? (project.scenes.length > 0 ? 'pictures' : 'script'));
   const [run, setRun] = useState(runProp);
   useEffect(() => setRun(runProp), [runProp]);
 
@@ -55,7 +60,8 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
       comingNext: false,
       enabled: hasScenes,
     },
-    { id: 'motion', label: 'Motion', done: false, comingNext: true, enabled: false },
+    // Motion (spec §20): open once some slide has its picture.
+    { id: 'motion', label: 'Motion', done: false, comingNext: false, enabled: hasScenes && progress.done > 0 },
     { id: 'edit', label: 'Edit', done: false, comingNext: true, enabled: false },
     { id: 'export', label: 'Export', done: false, comingNext: true, enabled: false },
   ];
@@ -68,7 +74,11 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
         </button>
         <h1 className="vf-project-name">{project.name}</h1>
       </header>
-      <StepBar steps={steps} active={step} onSelect={(id: StepId) => (id === 'script' || id === 'pictures') && setStep(id)} />
+      <StepBar
+        steps={steps}
+        active={step}
+        onSelect={(id: StepId) => (id === 'script' || id === 'pictures' || id === 'motion') && setStep(id)}
+      />
       {step === 'script' ? (
         <ScriptStep
           project={project}
@@ -78,8 +88,18 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
           onContinue={() => setStep('pictures')}
           sheet={{ run, client, onRunState: reportRun }}
         />
+      ) : step === 'motion' ? (
+        <MotionStep project={project} run={run} client={client} media={media} onChange={change} onRunState={reportRun} flush={onFlush} />
       ) : (
-        <PicturesStep project={project} run={run} client={client} media={media} onRunState={reportRun} onSceneState={onSceneState} />
+        <PicturesStep
+          project={project}
+          run={run}
+          client={client}
+          media={media}
+          onRunState={reportRun}
+          onSceneState={onSceneState}
+          onContinue={() => setStep('motion')}
+        />
       )}
     </div>
   );

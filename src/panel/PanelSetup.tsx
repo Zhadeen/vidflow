@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { buildClaudePrompt, buildRapidBeatPrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
-import { isHeroSheetRun, type RunState } from '../runs/run';
+import { estimate } from '../motion/clips';
+import { clampLimit, motionLive } from '../motion/view';
+import { isClipRun, isHeroSheetRun, type RunState } from '../runs/run';
 import { fileToText, SCENE_FILE_ACCEPT } from '../scenes/fileText';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from '../studio/Button';
@@ -10,6 +12,7 @@ import type { RunClient } from '../studio/runClient';
 import type { ProjectPatch } from '../studio/ScriptStep';
 import { useScriptDraft } from '../studio/useScriptDraft';
 import type { PanelBusy } from './Panel';
+import { MotionSection } from './MotionSection';
 import { PanelHero } from './PanelHero';
 
 const NEW = 'new';
@@ -180,6 +183,8 @@ interface Props {
   onChange(patch: ProjectPatch): void;
   onRunState(state: RunState | null): void;
   onStart(): void;
+  /** Make clips (spec §20): a Motion run for the slides that need a clip, within this credit limit. */
+  onMakeClips(limit: number): void;
   /** Every scene has its pictures: review them in the full studio. */
   onReview(): void;
   onOpenStudio(): void;
@@ -199,6 +204,7 @@ export function PanelSetup({
   onChange,
   onRunState,
   onStart,
+  onMakeClips,
   onReview,
   onOpenStudio,
   locked = false,
@@ -217,6 +223,11 @@ export function PanelSetup({
   // Flow is drawing this video's model sheet: the look and Start wait until it's done (as in the studio).
   const sheetLive = !!run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused');
   const lookFrozen = locked || sheetLive;
+  const [limit, setLimit] = useState<string | null>(null);
+  // Clips are made once every scene has its pictures; the coral is Make clips while some are left to make.
+  const clips = estimate(project, states);
+  const canMakeClips = sceneCount > 0 && remaining === 0 && !draft.pending && clips.clips > 0;
+  const makingWhat = motionLive(project, run) ? (isClipRun(run) ? 'making clips' : 'auto-picking pictures') : 'making pictures';
 
   async function upload(file: File | undefined) {
     if (!file) return;
@@ -242,7 +253,7 @@ export function PanelSetup({
     <>
       {locked && (
         <p className="vf-pn-sub" role="status">
-          VidFlow is making pictures for this video. Its scenes and look wait until it stops.
+          VidFlow is {makingWhat} for this video. Its scenes and look wait until it stops.
         </p>
       )}
       <div className="vf-pn-group">
@@ -373,6 +384,17 @@ export function PanelSetup({
 
       <PanelHero project={project} run={run} client={client} onChange={onChange} onRunState={onRunState} locked={locked} />
 
+      <MotionSection
+        project={project}
+        states={states}
+        run={run}
+        needed={clips.credits}
+        limit={limit}
+        onLimit={setLimit}
+        disabled={lookFrozen}
+        onChange={onChange}
+      />
+
       <p className="vf-pn-summary">
         {sceneCount === 0
           ? "Paste Claude's reply to start."
@@ -406,6 +428,10 @@ export function PanelSetup({
             </Button>
             <Button onClick={draft.cancel}>Keep the old scenes</Button>
           </>
+        ) : canMakeClips ? (
+          <Button variant="primary" onClick={() => onMakeClips(clampLimit(limit ?? '', clips.credits))} loading={busy === 'clips'} disabled={sheetLive}>
+            Make clips ({clips.credits} {clips.credits === 1 ? 'credit' : 'credits'})
+          </Button>
         ) : sceneCount > 0 && remaining === 0 && !draft.pending ? (
           <Button variant="primary" onClick={onReview}>
             Review in the full studio
