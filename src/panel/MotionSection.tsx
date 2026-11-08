@@ -1,5 +1,6 @@
 import { useId } from 'react';
 import { CLIP_ASPECT_MESSAGE } from '../flow/messages';
+import type { ClipLimit } from '../motion/useClipLimit';
 import { estimateLine, MOTION_CHOICES } from '../motion/view';
 import type { RunState } from '../runs/run';
 import type { Project, SceneState } from '../store/projects';
@@ -11,11 +12,12 @@ interface Props {
   states: Record<string, SceneState>;
   /** The background's run: a clip run that read Flow's balance gives "credits left". */
   run: RunState | null;
-  /** The credits the clips left to make need (the limit's default and most). */
+  /** The credit limit field (defaults to the estimate, never above it). */
+  limit: ClipLimit;
+  /** The credits the clips left to make need (the limit's most). */
   needed: number;
-  /** The credit limit as typed; null follows the estimate. */
-  limit: string | null;
-  onLimit(text: string): void;
+  /** Scenes still without pictures: clips wait for them here. */
+  picturesLeft: number;
   disabled?: boolean;
   onChange(patch: ProjectPatch): void;
 }
@@ -24,7 +26,7 @@ interface Props {
  * Setup's "4 · Motion" (spec §20): Stills only (default) / Clips for the slides I pick / Clips for every slide, the
  * clips · credits needed · credits left line, and the credit limit for the run. A 1:1 video can't have clips.
  */
-export function MotionSection({ project, states, run, needed, limit, onLimit, disabled = false, onChange }: Props) {
+export function MotionSection({ project, states, run, limit, needed, picturesLeft, disabled = false, onChange }: Props) {
   const ids = useId();
   const mode = project.motionMode ?? 'stills';
   const square = project.aspect === '1:1';
@@ -69,13 +71,17 @@ export function MotionSection({ project, states, run, needed, limit, onLimit, di
             max={needed}
             step={1}
             inputMode="numeric"
-            value={limit ?? String(needed)}
+            value={limit.text}
             disabled={disabled}
-            onChange={(e) => onLimit(e.target.value)}
+            onChange={(e) => limit.onChange(e.target.value)}
+            onBlur={limit.onBlur}
           />
         </label>
       )}
       {clips && mode === 'picked' && <p className="vf-pn-note">Tick the slides that get a clip on Queue.</p>}
+      {clips && picturesLeft > 0 && (
+        <p className="vf-pn-note">Clips can be made once every scene has its picture — or use the studio's Motion step.</p>
+      )}
     </div>
   );
 }

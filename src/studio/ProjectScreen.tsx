@@ -27,6 +27,9 @@ interface Props {
 
 type Screen = 'script' | 'pictures' | 'motion';
 
+/** Why the Motion step can't be opened yet (the step bar's tooltip and Continue to Motion's reason). */
+export const MOTION_WAITS = 'Motion opens once a slide has its picture.';
+
 export function ProjectScreen({ project, run: runProp, client, media, initialStep, onChange, onHome, onRunState, onSceneState, onFlush }: Props) {
   const [step, setStep] = useState<Screen>(initialStep ?? (project.scenes.length > 0 ? 'pictures' : 'script'));
   const [run, setRun] = useState(runProp);
@@ -47,6 +50,7 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
   const progress = pictureProgress(project, run);
   const hasScenes = project.scenes.length > 0;
   const live = phase === 'running' || phase === 'paused';
+  const motionReady = hasScenes && progress.done > 0;
   const counting = hasScenes && (live || phase === 'finished' || progress.done > 0 || step === 'pictures');
 
   const steps: StepView[] = [
@@ -61,7 +65,7 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
       enabled: hasScenes,
     },
     // Motion (spec §20): open once some slide has its picture.
-    { id: 'motion', label: 'Motion', done: false, comingNext: false, enabled: hasScenes && progress.done > 0 },
+    { id: 'motion', label: 'Motion', done: false, comingNext: false, enabled: motionReady, ...(motionReady ? {} : { reason: MOTION_WAITS }) },
     { id: 'edit', label: 'Edit', done: false, comingNext: true, enabled: false },
     { id: 'export', label: 'Export', done: false, comingNext: true, enabled: false },
   ];
@@ -99,6 +103,7 @@ export function ProjectScreen({ project, run: runProp, client, media, initialSte
           onRunState={reportRun}
           onSceneState={onSceneState}
           onContinue={() => setStep('motion')}
+          motionWaits={motionReady ? null : MOTION_WAITS}
         />
       )}
     </div>

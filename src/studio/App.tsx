@@ -2,13 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
 import { createProject, deleteProject, getProject, listProjects, type Project } from '../store/projects';
-import { applyPatch, saveEdits } from './projectEdits';
+import { applyPatch, SAVE_FAILED_MESSAGE as SAVE_FAILED, saveEdits } from './projectEdits';
 import { ProjectScreen } from './ProjectScreen';
 import { ProjectsHome, type ProjectSummary } from './ProjectsHome';
 import type { RunClient } from './runClient';
 import type { ProjectPatch } from './ScriptStep';
 
-const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
 
 function hashProjectId(): string | null {
   const m = /^#\/project\/([\w-]+)$/.exec(window.location.hash);
@@ -38,6 +37,8 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
   const current = useRef<string | null>(null);
   current.current = projectId;
   const saving = useRef<Promise<unknown>>(Promise.resolve());
+  /** An edit of the open video failed to save: Make clips refuses until the video is opened again. */
+  const saveFailed = useRef(false);
 
   const open = useCallback((id: string | null) => {
     window.location.hash = id ? `#/project/${id}` : '';
@@ -76,6 +77,7 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
       return;
     }
     let cancelled = false;
+    saveFailed.current = false;
     getProject(projectId).then(
       (p) => {
         if (cancelled) return;
@@ -103,7 +105,11 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
             return;
           }
           const fresh = await getProject(id);
-          if (fresh && fresh.id === current.current) setProject(fresh);
+          if (fresh && fresh.id === current.current) {
+            // What is shown is what is stored again: nothing unsaved is left.
+            setProject(fresh);
+            saveFailed.current = false;
+          }
         })
         .catch(() => undefined);
     };
@@ -120,7 +126,13 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
     const id = current.current;
     if (!id) return;
     // Saves run one after another, in the order the owner made the changes.
-    saving.current = saving.current.then(() => saveEdits(id, patch)).catch(() => setError(SAVE_FAILED));
+    saving.current = saving.current
+      .then(() => saveEdits(id, patch))
+      .catch(() => {
+        // Sticky for this video: a later save carries only its own change, so what failed stays unsaved.
+        if (current.current === id) saveFailed.current = true;
+        setError(SAVE_FAILED);
+      });
   }, []);
 
   if (projectId) {
@@ -141,7 +153,11 @@ export function App({ client, media }: { client: RunClient; media: MediaStore })
             onChange={change}
             onHome={() => open(null)}
             onRunState={setRun}
-            onFlush={() => saving.current}
+            onFlush={() =>
+              saving.current.then(() => {
+                if (saveFailed.current) throw new Error(SAVE_FAILED);
+              })
+            }
             onSceneState={(sceneId, state) =>
               setProject((p) => (p && p.id === project.id ? { ...p, sceneStates: { ...p.sceneStates, [sceneId]: state } } : p))
             }

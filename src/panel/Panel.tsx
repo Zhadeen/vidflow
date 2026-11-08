@@ -5,7 +5,7 @@ import { healthLine } from '../runs/health';
 import { isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import { createProject, getProject, listProjects, type Project } from '../store/projects';
 import { runPhase } from '../studio/progress';
-import { applyPatch, saveEdits } from '../studio/projectEdits';
+import { applyPatch, SAVE_FAILED_MESSAGE as SAVE_FAILED, saveEdits } from '../studio/projectEdits';
 import { openStudio } from '../studio/openStudio';
 import type { RunClient } from '../studio/runClient';
 import type { ProjectPatch } from '../studio/ScriptStep';
@@ -20,7 +20,6 @@ type Summary = Pick<Project, 'id' | 'name' | 'updatedAt'>;
 export type PanelBusy = null | 'start' | 'pause' | 'resume' | 'stop' | 'skip' | 'clips';
 
 const LOAD_FAILED = "VidFlow couldn't load your videos. Close this panel and open it again.";
-const SAVE_FAILED = "VidFlow couldn't save your last change. Check Chrome has free disk space, then make the change again.";
 const REQUEST_FAILED = 'Something went wrong \u2014 try again.';
 const CREATE_FAILED = "VidFlow couldn't make a new video. Check Chrome has free disk space, then try again.";
 
@@ -39,6 +38,10 @@ export function Panel({ client }: { client: RunClient }) {
   const current = useRef<string | null>(null);
   current.current = projectId;
   const saving = useRef<Promise<unknown>>(Promise.resolve());
+  /** An edit of the shown video failed to save: Make clips refuses until the video is read from the store again. */
+  const saveFailed = useRef(false);
+  /** Test one prompt is under way (Checks): Make clips says it waits. */
+  const [testing, setTesting] = useState(false);
   const lastRun = useRef<RunState | null>(null);
   lastRun.current = run;
   const ids = useId();
@@ -92,6 +95,7 @@ export function Panel({ client }: { client: RunClient }) {
       return;
     }
     let cancelled = false;
+    saveFailed.current = false;
     getProject(projectId).then(
       (p) => !cancelled && setProject(p ?? null),
       () => !cancelled && setError("VidFlow couldn't open this video. Pick it again."),
@@ -108,7 +112,11 @@ export function Panel({ client }: { client: RunClient }) {
         const id = current.current;
         const [fresh, list] = await Promise.all([id ? getProject(id) : undefined, listProjects()]);
         setProjects(list);
-        if (fresh && fresh.id === current.current) setProject(fresh);
+        if (fresh && fresh.id === current.current) {
+          // What is shown is what is stored again: nothing unsaved is left.
+          setProject(fresh);
+          saveFailed.current = false;
+        }
       }).catch(() => undefined);
     };
     window.addEventListener('focus', onFocus);
@@ -120,7 +128,13 @@ export function Panel({ client }: { client: RunClient }) {
       setProject((p) => (p ? applyPatch(p, patch) : p));
       const id = current.current;
       if (!id) return;
-      saving.current = saving.current.then(() => saveEdits(id, patch)).catch(() => setError(SAVE_FAILED));
+      saving.current = saving.current
+        .then(() => saveEdits(id, patch))
+        .catch(() => {
+          // Sticky for this video: a later save carries only its own change, so what failed stays unsaved.
+          if (current.current === id) saveFailed.current = true;
+          setError(SAVE_FAILED);
+        });
       // New scenes: a finished run for the old ones must not come back (the background forgets it), as in the studio.
       if (patch.scenes) void client.forget(id).then((reply) => reply.ok && setRun(reply.state));
     },
@@ -245,9 +259,17 @@ export function Panel({ client }: { client: RunClient }) {
                 onRunState={setRun}
                 onStart={() => void act('start', () => client.start(shown.id))}
                 onMakeClips={(limit) =>
-                  // The Motion choice and picks are saved before the background reads them.
-                  void act('clips', () => saving.current.then(() => client.makeClips(shown.id, limit)))
+                  void (async () => {
+                    // The background reads the Motion choice and picks from the store: they must be saved first.
+                    await saving.current;
+                    if (saveFailed.current) {
+                      setError(SAVE_FAILED);
+                      return;
+                    }
+                    await act('clips', () => client.makeClips(shown.id, limit));
+                  })()
                 }
+                testing={testing}
                 onReview={studio}
                 onOpenStudio={studio}
                 locked={running}
@@ -295,6 +317,7 @@ export function Panel({ client }: { client: RunClient }) {
               error={checkError}
               onCheck={() => void check()}
               onRunState={setRun}
+              onTesting={setTesting}
             />
           ) : (
             <p className="vf-pn-sub">Pick a video on Setup first.</p>

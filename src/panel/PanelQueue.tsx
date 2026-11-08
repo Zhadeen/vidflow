@@ -407,10 +407,16 @@ export function PanelQueue(props: Props) {
           <span className="vf-pn-note">
             {picks.size === 0 ? 'Tick the slides that get a clip' : `${project.scenes.filter((s) => picks.has(s.id)).length} picked for clips`}
           </span>
-          <button type="button" className="vf-pn-filter" onClick={() => props.onChange!({ clipPicks: project.scenes.map((s) => s.id) })}>
+          {/* While clips are being made the picks wait (the run's slides were fixed when it started), as in the studio. */}
+          <button
+            type="button"
+            className="vf-pn-filter"
+            disabled={clipping}
+            onClick={() => props.onChange!({ clipPicks: project.scenes.map((s) => s.id) })}
+          >
             Pick all
           </button>
-          <button type="button" className="vf-pn-filter" onClick={() => props.onChange!({ clipPicks: [] })}>
+          <button type="button" className="vf-pn-filter" disabled={clipping} onClick={() => props.onChange!({ clipPicks: [] })}>
             Pick none
           </button>
         </div>
@@ -450,7 +456,7 @@ export function PanelQueue(props: Props) {
               const auto = autoMark(s);
               if (auto) detail.push(auto);
             }
-            const clipNote = clipMark(clipState);
+            const clipNote = clipping && ms?.status === 'pending' && !current ? 'Clip waiting' : clipMark(clipState);
             if (clipNote) detail.push(clipNote);
             const motionTag =
               motionRun && (current || ms?.status === 'submitted')
@@ -506,6 +512,7 @@ export function PanelQueue(props: Props) {
                             type="checkbox"
                             aria-label={`Clip for slide ${n}`}
                             checked={picks.has(scene.id)}
+                            disabled={clipping}
                             onChange={(e) => props.onChange!({ clipPicks: togglePick(project, scene.id, e.target.checked) })}
                           />
                           <span aria-hidden="true">Clip</span>

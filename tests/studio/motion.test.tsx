@@ -3,11 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { useState } from 'react';
 import type { RunReply } from '../../src/flow/messages';
 import { NOT_AUTO_CHECKED } from '../../src/runs/autopick';
-import { BALANCE_NOTE, initClipRun, reduceRun, type RunState } from '../../src/runs/run';
+import { BALANCE_NOTE, initClipRun, initRun, reduceRun, type RunState } from '../../src/runs/run';
 import type { Scene } from '../../src/scenes/types';
 import { memoryMediaStore } from '../../src/store/media';
 import type { Project, SceneState } from '../../src/store/projects';
-import { applyPatch } from '../../src/studio/projectEdits';
+import { applyPatch, SAVE_FAILED_MESSAGE } from '../../src/studio/projectEdits';
 import { ProjectScreen } from '../../src/studio/ProjectScreen';
 import type { RunClient } from '../../src/studio/runClient';
 import type { ProjectPatch } from '../../src/studio/ScriptStep';
@@ -66,7 +66,21 @@ function fakeClient(over: Partial<RunClient> = {}): RunClient {
 }
 
 /** The studio screen with its edits applied, as App does. */
-function Harness({ start, run = null, client, step, onPatch }: { start: Project; run?: RunState | null; client: RunClient; step: 'pictures' | 'motion'; onPatch?(p: ProjectPatch): void }) {
+function Harness({
+  start,
+  run = null,
+  client,
+  step,
+  onPatch,
+  onFlush,
+}: {
+  start: Project;
+  run?: RunState | null;
+  client: RunClient;
+  step: 'pictures' | 'motion';
+  onPatch?(p: ProjectPatch): void;
+  onFlush?(): Promise<unknown>;
+}) {
   const [p, setP] = useState(start);
   return (
     <ProjectScreen
@@ -80,6 +94,7 @@ function Harness({ start, run = null, client, step, onPatch }: { start: Project;
         setP((now) => applyPatch(now, patch));
       }}
       onHome={() => undefined}
+      onFlush={onFlush}
     />
   );
 }
@@ -193,5 +208,55 @@ describe('studio: Pictures step · Auto-pick', () => {
     const p = project(1, {}, { [sceneId(1)]: done(1, { chosenPictureId: 'p1/1-2', choiceSource: 'owner', autoReason: 'old', autoChecked: true }) });
     render(<Harness start={p} client={fakeClient()} step="pictures" />);
     expect(document.querySelector('figure[data-best]')!.textContent).not.toMatch(/auto-picked|auto-checked/i);
+  });
+});
+
+describe('studio: Motion review fixes', () => {
+  it('a failed save stops Make clips and says so', async () => {
+    const client = fakeClient();
+    render(
+      <Harness
+        start={project(3, { motionMode: 'all' })}
+        client={client}
+        step="motion"
+        onFlush={() => Promise.reject(new Error(SAVE_FAILED_MESSAGE))}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Make clips (21 credits)' }));
+    expect(await screen.findByText(SAVE_FAILED_MESSAGE)).toBeTruthy();
+    expect(client.makeClips).not.toHaveBeenCalled();
+  });
+
+  it('the credit limit re-clamps when the estimate drops and on blur; empty shows the estimate; 0 waits with a reason', async () => {
+    render(<Harness start={project(3, { motionMode: 'picked', clipPicks: [sceneId(1), sceneId(2), sceneId(3)] })} client={fakeClient()} step="motion" />);
+    const limit = screen.getByRole('spinbutton', { name: 'Credit limit for this run' }) as HTMLInputElement;
+    expect(limit.value).toBe('21');
+    fireEvent.change(limit, { target: { value: '' } });
+    fireEvent.blur(limit);
+    expect(limit.value).toBe('21');
+    fireEvent.change(limit, { target: { value: '99' } });
+    fireEvent.blur(limit);
+    expect(limit.value).toBe('21');
+
+    fireEvent.change(limit, { target: { value: '20' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Clip for slide 3' }));
+    await waitFor(() => expect(limit.value).toBe('14'));
+
+    fireEvent.change(limit, { target: { value: '0' } });
+    const make = screen.getByRole('button', { name: 'Make clips (14 credits)' }) as HTMLButtonElement;
+    expect(make.disabled).toBe(true);
+    expect(document.getElementById(make.getAttribute('aria-describedby')!)!.textContent).toBe('Set a credit limit above 0.');
+  });
+
+  it('Continue to Motion waits, with the step bar\'s reason, while no slide has a picture', () => {
+    const p = project(3, {}, { [sceneId(1)]: { sceneId: sceneId(1), status: 'pending', pictureIds: [] }, [sceneId(2)]: { sceneId: sceneId(2), status: 'pending', pictureIds: [] }, [sceneId(3)]: { sceneId: sceneId(3), status: 'pending', pictureIds: [] } });
+    const run = reduceRun(reduceRun(initRun(p), { type: 'start' }), { type: 'submitted', sceneId: sceneId(1) });
+    render(<Harness start={p} run={run} client={fakeClient()} step="pictures" />);
+    const next = screen.getByRole('button', { name: 'Continue to Motion →' }) as HTMLButtonElement;
+    expect(next.disabled).toBe(true);
+    const steps = screen.getByRole('navigation', { name: /steps/i });
+    const motion = within(steps).getByText('Motion');
+    expect(motion.getAttribute('title')).toBe('Motion opens once a slide has its picture.');
+    expect(document.getElementById(next.getAttribute('aria-describedby')!)!.textContent).toBe('Motion opens once a slide has its picture.');
   });
 });

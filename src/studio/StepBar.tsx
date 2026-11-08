@@ -10,6 +10,8 @@ export interface StepView {
   comingNext: boolean;
   /** Clickable (built, and reachable from where the project is). */
   enabled: boolean;
+  /** Why a built step can't be opened yet (its tooltip, and the reason a button leading to it waits). */
+  reason?: string;
 }
 
 interface Props {
@@ -35,7 +37,7 @@ export function StepBar({ steps, active, onSelect }: Props) {
                   className="vf-step"
                   data-state={state}
                   aria-disabled="true"
-                  title={step.comingNext ? 'Coming next' : undefined}
+                  title={step.comingNext ? 'Coming next' : step.reason}
                 >
                   {text}
                 </span>

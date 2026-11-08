@@ -24,6 +24,8 @@ interface Props {
   onSceneState?(sceneId: string, state: SceneState): void;
   /** "Continue to Motion →": the Motion step. */
   onContinue(): void;
+  /** Why the Motion step can't be opened yet (Continue to Motion waits and says so); null when it can. */
+  motionWaits?: string | null;
 }
 
 type Busy = null | 'start' | 'pause' | 'resume' | 'stop' | `retry:${string}`;
@@ -31,7 +33,7 @@ type Busy = null | 'start' | 'pause' | 'resume' | 'stop' | `retry:${string}`;
 const SWAP_HINT = "VidFlow uses Flow's first picture. Click another to swap.";
 const SWAP_FAILED = "VidFlow couldn't save that choice. Try again.";
 
-export function PicturesStep({ project, run, client, media, onRunState, onSceneState, onContinue }: Props) {
+export function PicturesStep({ project, run, client, media, onRunState, onSceneState, onContinue, motionWaits = null }: Props) {
   const [picked, setPicked] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
@@ -257,7 +259,12 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
             Start making pictures
           </Button>
         ) : (
-          <Button variant="primary" onClick={onContinue}>
+          <Button
+            variant="primary"
+            onClick={onContinue}
+            disabled={motionWaits !== null}
+            aria-describedby={motionWaits !== null ? 'vf-motion-waits' : undefined}
+          >
             Continue to Motion →
           </Button>
         )}
@@ -272,6 +279,11 @@ export function PicturesStep({ project, run, client, media, onRunState, onSceneS
           </Button>
         )}
       </div>
+      {motionWaits !== null && !(phase === 'paused') && !(phase === 'idle' && remaining > 0) && (
+        <p className="vf-hint" id="vf-motion-waits">
+          {motionWaits}
+        </p>
+      )}
       {phase === 'paused' && (
         <p className="vf-hint">Stop ends this run and keeps every picture. Start carries on later from the first scene without one.</p>
       )}

@@ -1014,7 +1014,7 @@ button.vf-pn-qopen {
   padding: 2px 7px;
   border: 1px solid var(--vf-navy-line-strong);
   border-radius: var(--vf-radius-pill);
-  font-size: 10px;
+  font-size: var(--vf-text-xs);
   white-space: nowrap;
   color: var(--vf-cream-muted);
 }
@@ -1047,4 +1047,15 @@ button.vf-pn-qopen {
 
 .vf-pn .vf-pn-autopick .vf-btn[data-variant].vf-pn-sec {
   align-self: flex-start;
+}
+
+/* While clips are being made: the picks wait */
+.vf-pn-tick:has(input:disabled),
+.vf-pn-picks .vf-pn-filter:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.vf-pn-tick:has(input:disabled) input {
+  cursor: default;
 }

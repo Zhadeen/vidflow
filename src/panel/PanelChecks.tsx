@@ -127,13 +127,15 @@ interface Props {
   onCheck(): void;
   /** The run as the background reported it after Auto-pick now. */
   onRunState?(state: RunState | null): void;
+  /** Test one prompt started (true) or ended (false), even after this tab is left. */
+  onTesting?(on: boolean): void;
 }
 
 /**
  * Checks (spec §19): what VidFlow read from its own Flow tab, row by row, the automation switches, Show me in
  * Flow, Test one prompt and the coral Check again.
  */
-export function PanelChecks({ project, run = null, client, result, checking, error, onCheck, onRunState }: Props) {
+export function PanelChecks({ project, run = null, client, result, checking, error, onCheck, onRunState, onTesting }: Props) {
   const ids = useId();
   const [notices, setNotices] = useStoredSwitch(ACCEPT_NOTICES_KEY, getAcceptNotices);
   const [awake, setAwake] = useStoredSwitch(KEEP_AWAKE_KEY, getKeepAwake);
@@ -170,7 +172,8 @@ export function PanelChecks({ project, run = null, client, result, checking, err
           setMessage({ text: 'Look at Flow: the prompt box, Generate and the ingredients button are ringed.', problem: false });
         else setMessage({ text: `Look at Flow: VidFlow couldn't find ${names(reply.missing)}.`, problem: false });
       } else {
-        const reply = await client.testPrompt(project.id);
+        onTesting?.(true);
+        const reply = await client.testPrompt(project.id).finally(() => onTesting?.(false));
         setMessage({ text: reply.message, problem: !reply.ok });
         onCheck();
       }

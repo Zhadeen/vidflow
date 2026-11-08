@@ -3,8 +3,8 @@ import { CLIP_ASPECT_MESSAGE, type RunReply } from '../flow/messages';
 import { liveView } from '../flow/live';
 import { pillLine } from '../flow/pill';
 import { estimate } from '../motion/clips';
+import { LIMIT_ZERO_MESSAGE, useClipLimit } from '../motion/useClipLimit';
 import {
-  clampLimit,
   clipMark,
   estimateLine,
   MOTION_CHOICES,
@@ -13,11 +13,12 @@ import {
   pausedOnSlide,
   togglePick,
 } from '../motion/view';
-import { isClipRun, isLive, type RunState } from '../runs/run';
+import { isClipRun, isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import type { MediaStore } from '../store/media';
 import type { Project, SceneState } from '../store/projects';
 import { Button } from './Button';
 import { chosenPicture } from './chosen';
+import { SAVE_FAILED_MESSAGE } from './projectEdits';
 import { runPhase, sceneStatesFor } from './progress';
 import type { RunClient } from './runClient';
 import { aspectCss } from './SceneGrid';
@@ -48,7 +49,6 @@ const REQUEST_FAILED = 'Something went wrong — try again.';
  */
 export function MotionStep({ project, run, client, media, onChange, onRunState, flush }: Props) {
   const ids = useId();
-  const [limit, setLimit] = useState<string | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +59,7 @@ export function MotionStep({ project, run, client, media, onChange, onRunState, 
   const picking = mode === 'picked' && !square;
   const picks = new Set(project.clipPicks ?? []);
   const needed = estimate(project, states);
+  const limit = useClipLimit(needed.credits);
 
   const mine = motionRunFor(project, run);
   const motionOn = !!mine && (mine.status === 'running' || mine.status === 'paused');
@@ -91,11 +92,16 @@ export function MotionStep({ project, run, client, media, onChange, onRunState, 
     }
   }
 
-  const make = () =>
-    act('clips', async () => {
+  async function make() {
+    // The background reads the Motion choice and picks from the store: a failed save stops here, nothing is spent.
+    try {
       await flush?.();
-      return client.makeClips(project.id, clampLimit(limit ?? '', needed.credits));
-    });
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : SAVE_FAILED_MESSAGE);
+      return;
+    }
+    await act('clips', () => client.makeClips(project.id, limit.value));
+  }
 
   // Why Make clips waits (it stays the one coral on this screen).
   const why =
@@ -106,12 +112,16 @@ export function MotionStep({ project, run, client, media, onChange, onRunState, 
         : picturesLive
           ? 'Make clips once VidFlow has finished making pictures.'
           : isLive(run)
-            ? 'Make clips once the run going now has finished or is stopped.'
-            : needed.clips > 0
-              ? null
-              : mode === 'picked' && picks.size === 0
+            ? isHeroSheetRun(run)
+              ? 'Make clips once the model sheet is made.'
+              : 'Make clips once the run going now has finished or is stopped.'
+            : needed.clips === 0
+              ? mode === 'picked' && picks.size === 0
                 ? 'Tick the slides that get a clip.'
-                : 'Every chosen slide has an up-to-date clip.';
+                : 'Every chosen slide has an up-to-date clip.'
+              : limit.value <= 0
+                ? LIMIT_ZERO_MESSAGE
+                : null;
   const whyId = `${ids}-why`;
   const view = motionOn && run ? liveView(run, null, project) : null;
   const progressLine = view
@@ -159,9 +169,10 @@ export function MotionStep({ project, run, client, media, onChange, onRunState, 
               max={needed.credits}
               step={1}
               inputMode="numeric"
-              value={limit ?? String(needed.credits)}
+              value={limit.text}
               disabled={motionOn}
-              onChange={(e) => setLimit(e.target.value)}
+              onChange={(e) => limit.onChange(e.target.value)}
+              onBlur={limit.onBlur}
             />
           </label>
         )}

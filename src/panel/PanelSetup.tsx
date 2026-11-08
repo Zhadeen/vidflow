@@ -2,8 +2,9 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { buildClaudePrompt, buildRapidBeatPrompt } from '../prompts/claude';
 import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { estimate } from '../motion/clips';
-import { clampLimit, motionLive } from '../motion/view';
-import { isClipRun, isHeroSheetRun, type RunState } from '../runs/run';
+import { LIMIT_ZERO_MESSAGE, useClipLimit } from '../motion/useClipLimit';
+import { motionLive } from '../motion/view';
+import { isClipRun, isHeroSheetRun, isLive, type RunState } from '../runs/run';
 import { fileToText, SCENE_FILE_ACCEPT } from '../scenes/fileText';
 import type { AspectRatio, Project } from '../store/projects';
 import { Button } from '../studio/Button';
@@ -192,6 +193,8 @@ interface Props {
   locked?: boolean;
   /** "Go to Queue", the coral action while locked. */
   onGoToQueue(): void;
+  /** Test one prompt is under way: Make clips waits. */
+  testing?: boolean;
 }
 
 /** The Setup tab (spec §19): get the scenes, choose the look, the hero, start. */
@@ -209,6 +212,7 @@ export function PanelSetup({
   onOpenStudio,
   locked = false,
   onGoToQueue,
+  testing = false,
 }: Props) {
   const ids = useId();
   const draft = useScriptDraft(project, (scenes) => onChange({ scenes }));
@@ -223,10 +227,21 @@ export function PanelSetup({
   // Flow is drawing this video's model sheet: the look and Start wait until it's done (as in the studio).
   const sheetLive = !!run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused');
   const lookFrozen = locked || sheetLive;
-  const [limit, setLimit] = useState<string | null>(null);
   // Clips are made once every scene has its pictures; the coral is Make clips while some are left to make.
   const clips = estimate(project, states);
+  const limit = useClipLimit(clips.credits);
   const canMakeClips = sceneCount > 0 && remaining === 0 && !draft.pending && clips.clips > 0;
+  // Why Make clips waits, said before it is pressed (the background would refuse it).
+  const clipsWhy = !isLive(run)
+    ? testing
+      ? 'Make clips once VidFlow has finished testing the prompt.'
+      : limit.value <= 0
+        ? LIMIT_ZERO_MESSAGE
+        : null
+    : isHeroSheetRun(run)
+      ? 'Make clips once the model sheet is made.'
+      : 'Make clips once the run going now has finished or is stopped.';
+  const clipsWhyId = `${ids}-clips-why`;
   const makingWhat = motionLive(project, run) ? (isClipRun(run) ? 'making clips' : 'auto-picking pictures') : 'making pictures';
 
   async function upload(file: File | undefined) {
@@ -388,9 +403,9 @@ export function PanelSetup({
         project={project}
         states={states}
         run={run}
-        needed={clips.credits}
         limit={limit}
-        onLimit={setLimit}
+        needed={clips.credits}
+        picturesLeft={sceneCount > 0 ? remaining : 0}
         disabled={lookFrozen}
         onChange={onChange}
       />
@@ -416,7 +431,13 @@ export function PanelSetup({
         </p>
       )}
 
-      <div className="vf-pn-actions vf-pn-end">
+      {/* The reason sits right above the coral it is about (and takes the push to the bottom). */}
+      {!locked && !draft.needsConfirm && canMakeClips && clipsWhy && (
+        <p className="vf-pn-note vf-pn-end" id={clipsWhyId}>
+          {clipsWhy}
+        </p>
+      )}
+      <div className={!locked && !draft.needsConfirm && canMakeClips && clipsWhy ? 'vf-pn-actions' : 'vf-pn-actions vf-pn-end'}>
         {locked ? (
           <Button variant="primary" onClick={onGoToQueue}>
             Go to Queue
@@ -429,7 +450,13 @@ export function PanelSetup({
             <Button onClick={draft.cancel}>Keep the old scenes</Button>
           </>
         ) : canMakeClips ? (
-          <Button variant="primary" onClick={() => onMakeClips(clampLimit(limit ?? '', clips.credits))} loading={busy === 'clips'} disabled={sheetLive}>
+          <Button
+            variant="primary"
+            onClick={() => onMakeClips(limit.value)}
+            loading={busy === 'clips'}
+            disabled={clipsWhy !== null}
+            aria-describedby={clipsWhy !== null ? clipsWhyId : undefined}
+          >
             Make clips ({clips.credits} {clips.credits === 1 ? 'credit' : 'credits'})
           </Button>
         ) : sceneCount > 0 && remaining === 0 && !draft.pending ? (

@@ -6,12 +6,25 @@ import { CLIP_ASPECT_MESSAGE } from '../../src/flow/messages';
 import { Panel } from '../../src/panel/Panel';
 import { STEP_KEY, type Step } from '../../src/runs/activity';
 import { NOT_AUTO_CHECKED } from '../../src/runs/autopick';
-import { BALANCE_NOTE, CREDIT_LIMIT_NOTE, initAutoPickRun, initClipRun, reduceRun, type RunState } from '../../src/runs/run';
+import { BALANCE_NOTE, CREDIT_LIMIT_NOTE, initAutoPickRun, initClipRun, initHeroSheetRun, reduceRun, type RunState } from '../../src/runs/run';
 import { AUTO_PICK_KEY } from '../../src/settings';
 import { getProject, type Project, type SceneState } from '../../src/store/projects';
+import { SAVE_FAILED_MESSAGE } from '../../src/studio/projectEdits';
 import { clearProjects, fakeBackground, runningState, sceneId, seed, stubChrome } from './helpers';
 
+// Saves go through the real store unless a test makes them fail (a full disk).
+const save = vi.hoisted(() => ({ fail: false }));
+vi.mock('../../src/studio/projectEdits', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/studio/projectEdits')>();
+  return {
+    ...real,
+    saveEdits: (id: string, patch: Parameters<typeof real.saveEdits>[1]) =>
+      save.fail ? Promise.reject(new Error('disk full')) : real.saveEdits(id, patch),
+  };
+});
+
 beforeEach(async () => {
+  save.fail = false;
   await clearProjects();
   vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: (b: Blob) => `blob:${b.size}`, revokeObjectURL: () => undefined }));
 });
@@ -340,5 +353,114 @@ describe('side panel: Checks · Auto-pick', () => {
     await waitFor(() => expect(waiting.disabled).toBe(true));
     const why = document.getElementById(waiting.getAttribute('aria-describedby')!)!;
     expect(why.textContent).toBe('Auto-pick now works once the current run has finished or is stopped.');
+  });
+});
+
+describe('side panel: Motion review fixes', () => {
+  it('a failed save stops Make clips: nothing is spent on settings that were not saved', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 3, withPictures(3));
+    const client = fakeBackground(null).client();
+    render(<Panel client={client} />);
+    const group = await screen.findByRole('radiogroup', { name: 'Motion' });
+
+    save.fail = true;
+    fireEvent.click(within(group).getByRole('radio', { name: 'Clips for every slide' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Make clips (21 credits)' }));
+    await waitFor(() => expect(screen.getAllByRole('alert').map((a) => a.textContent)).toContain(SAVE_FAILED_MESSAGE));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(client.makeClips).not.toHaveBeenCalled();
+  });
+
+  it('the credit limit re-clamps when the estimate drops and on blur; empty shows the estimate; 0 waits with a reason', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 3, withPictures(3, (p) => Object.assign(p, { motionMode: 'all', clipPicks: [sceneId(1)] })));
+    render(<Panel client={fakeBackground(null).client()} />);
+    const limit = (await screen.findByRole('spinbutton', { name: 'Credit limit for this run' })) as HTMLInputElement;
+    expect(limit.value).toBe('21');
+
+    fireEvent.change(limit, { target: { value: '' } });
+    fireEvent.blur(limit);
+    expect(limit.value).toBe('21');
+
+    fireEvent.change(limit, { target: { value: '99' } });
+    fireEvent.blur(limit);
+    expect(limit.value).toBe('21');
+
+    fireEvent.change(limit, { target: { value: '20' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Clips for the slides I pick' }));
+    // One clip now (7 credits): the limit can't stay above it.
+    await waitFor(() => expect(limit.value).toBe('7'));
+
+    fireEvent.change(limit, { target: { value: '0' } });
+    const make = screen.getByRole('button', { name: 'Make clips (7 credits)' }) as HTMLButtonElement;
+    expect(make.disabled).toBe(true);
+    expect(document.getElementById(make.getAttribute('aria-describedby')!)!.textContent).toBe('Set a credit limit above 0.');
+  });
+
+  it('clips chosen while some scenes still need pictures: says when clips can be made', async () => {
+    stubChrome();
+    await seed('Phone Bill Story', 3, (p) => {
+      p.motionMode = 'all';
+      p.sceneStates[sceneId(1)] = done(1);
+    });
+    render(<Panel client={fakeBackground(null).client()} />);
+    expect(await screen.findByText("Clips can be made once every scene has its picture — or use the studio's Motion step.")).toBeTruthy();
+    expect(primaries()).toEqual(['Start making pictures']);
+  });
+
+  it('Make clips says in advance why it waits: another run, the model sheet, a prompt being tested', async () => {
+    const reason = () => {
+      const make = screen.getByRole('button', { name: /^Make clips/ }) as HTMLButtonElement;
+      expect(make.disabled).toBe(true);
+      return document.getElementById(make.getAttribute('aria-describedby')!)!.textContent;
+    };
+
+    // Another video is making pictures.
+    stubChrome();
+    const other = await seed('Other Story', 3);
+    const p = await seed('Phone Bill Story', 3, withPictures(3, (p) => (p.motionMode = 'all')));
+    let view = render(<Panel client={fakeBackground(runningState(other, 1, 1)).client()} />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Queue/ }).getAttribute('aria-selected')).toBe('true'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Setup' }));
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Video' }), { target: { value: p.id } });
+    await screen.findByRole('button', { name: /^Make clips/ });
+    expect(reason()).toBe('Make clips once the run going now has finished or is stopped.');
+    view.unmount();
+
+    // This video's model sheet is being made.
+    const sheet = reduceRun(initHeroSheetRun(p), { type: 'start' });
+    view = render(<Panel client={fakeBackground(sheet).client()} />);
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Video' }), { target: { value: p.id } });
+    await screen.findByRole('button', { name: /^Make clips/ });
+    await waitFor(() => expect(reason()).toBe('Make clips once the model sheet is made.'));
+    view.unmount();
+
+    // Test one prompt is under way.
+    const client = fakeBackground(null).client();
+    client.testPrompt = vi.fn(() => new Promise<never>(() => undefined));
+    render(<Panel client={client} />);
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Video' }), { target: { value: p.id } });
+    fireEvent.click(await screen.findByRole('tab', { name: 'Checks' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Test one prompt' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Setup' }));
+    await screen.findByRole('button', { name: /^Make clips/ });
+    expect(reason()).toBe('Make clips once VidFlow has finished testing the prompt.');
+  });
+
+  it('while a clip run is live: Clip ticks and Pick all / Pick none wait; pending slides say "Clip waiting"', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 3, withPictures(3, (p) => Object.assign(p, { motionMode: 'picked', clipPicks: [sceneId(1), sceneId(3)] })));
+    let run = reduceRun(initClipRun(p, [sceneId(1), sceneId(3)], 14), { type: 'start' });
+    run = reduceRun(run, { type: 'submitted', sceneId: sceneId(1) });
+    render(<Panel client={fakeBackground(run).client()} />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Queue/ }).getAttribute('aria-selected')).toBe('true'));
+    await screen.findByRole('list', { name: 'Scenes' });
+
+    for (const n of [1, 2, 3]) expect((within(row(n)).getByRole('checkbox', { name: `Clip for slide ${n}` }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Pick all' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Pick none' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(row(3).textContent).toContain('Clip waiting');
+    expect(row(2).textContent).not.toContain('Clip waiting');
   });
 });
