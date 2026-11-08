@@ -1609,8 +1609,16 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
     const closes = vi.fn();
     const newSessions = vi.fn();
     const list = () => $('.messages-list');
+    /** Earlier questions and answers: Flow keeps the conversation, and shows it when the panel opens (live, 8 Nov 2026). */
+    const history: Array<{ question: string; answer: string }> = [];
     function openPanel() {
       document.body.insertAdjacentHTML('beforeend', fixture('agent-panel.html'));
+      for (const h of history) {
+        list().insertAdjacentHTML(
+          'beforeend',
+          `<div class="message-row user-row"><span class="structured-prompt-text">${h.question}</span></div><div class="message-row agent-row"><div class="markdown-container">${h.answer}</div></div>`,
+        );
+      }
       $('.agent-prompt-bar').append($(SEL.promptBar)); // the prompt bar moves into the panel
       $('[aria-label="Close"]').addEventListener('click', () => {
         closes();
@@ -1634,11 +1642,12 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
           `<div class="message-row agent-row"><flow-chat-bubble><div class="agent-bubble"><button>Show thinking</button><div class="agent-message-content"><flow-a2ui-message-renderer><flow-markdown-content><div class="markdown-container"></div></flow-markdown-content></flow-a2ui-message-renderer></div><button aria-label="Good response">thumb_up</button><button aria-label="Copy">content_copy</button></div></flow-chat-bubble></div>`,
         );
         setTimeout(() => {
-          list().lastElementChild!.querySelector('.markdown-container')!.innerHTML = `<p>${reply}</p>`;
+          // A reply starting with "<" is Flow's own markup (e.g. "2. reason" drawn as <ol start="2">).
+          list().lastElementChild!.querySelector('.markdown-container')!.innerHTML = reply.startsWith('<') ? reply : `<p>${reply}</p>`;
         }, 15);
       }, 15);
     }
-    return { attached, chip, send, closes, newSessions, clears, triggers, openPanel, list };
+    return { attached, chip, send, closes, newSessions, clears, triggers, openPanel, list, history };
   }
 
   const ready = () => {
@@ -1668,6 +1677,59 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
     const agent = fakeAgent(['vidflow-s02-a.png', 'vidflow-s02-b.png'], { newest: 'vidflow-s02-b.png', redrawMs: 40 });
     await driver().prepareAgentQuestion(['vidflow-s02-a.png', 'vidflow-s02-b.png'], QUESTION);
     expect(agent.attached).toEqual(['vidflow-s02-a.png', 'vidflow-s02-b.png']);
+  });
+
+  it('reads "2. reason" that Flow draws as a numbered list (<ol start="2">); a list without start is 1', async () => {
+    // Live (8 Nov 2026): the list number isn't text, so every answer read as unusable.
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send('<ol start="2">\n<li>Image 2 shows the shoulder bag.</li>\n</ol>\n');
+    await expect(d.readAgentReply(1_000)).resolves.toBe('2. Image 2 shows the shoulder bag.');
+    await d.finishAgent();
+    agent.attached.length = 0; // the same two pictures, asked again
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send('<ol>\n<li>Image 1 shows it.</li>\n</ol>');
+    await expect(d.readAgentReply(1_000)).resolves.toBe('1. Image 1 shows it.');
+  });
+
+  it('never makes a pick out of a list of several items', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send('<ol><li>Image 1 shows a bag.</li><li>Image 2 shows a hat.</li></ol>');
+    const text = await d.readAgentReply(1_000);
+    expect(text).not.toMatch(/^\s*[1-9]/);
+  });
+
+  it("never reads an earlier question's answer that Flow shows again when the panel opens", async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    agent.history.push({ question: 'An earlier question. Answer 1 or 2.', answer: '<ol><li>an old answer</li></ol>' });
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send(null); // no answer to this question yet
+    await expect(d.readAgentReply(200)).resolves.toBeNull();
+    agent.list().insertAdjacentHTML('beforeend', '<div class="message-row agent-row"><div class="markdown-container"><p>2 the bag</p></div></div>');
+    await expect(d.readAgentReply(1_000)).resolves.toBe('2 the bag');
+  });
+
+  it('starts a new session before closing the panel, so the next question starts a fresh conversation', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['a.png', 'b.png']);
+    const d = driver();
+    await d.prepareAgentQuestion(['a.png', 'b.png'], QUESTION);
+    agent.send('1 the bag');
+    await d.readAgentReply(1_000);
+    await d.finishAgent();
+    expect(agent.newSessions).toHaveBeenCalledTimes(1);
+    expect(agent.closes).toHaveBeenCalledTimes(1);
   });
 
   it('never presses Add to prompt while another picture stays highlighted: it pauses, with nothing attached', async () => {
@@ -1936,7 +1998,8 @@ describe('FlowDriver review fixes (round 2)', () => {
     expect(d.agentQuestionPending()).toBe(true);
     $('.messages-list').insertAdjacentHTML(
       'beforeend',
-      '<div class="message-row agent-row"><div class="markdown-container"><p>Working through both: 2 has the bag</p></div></div>',
+      // As Flow shows it: the question's row, then the Agent's.
+      '<div class="message-row user-row"><span class="structured-prompt-text">Which one?</span></div><div class="message-row agent-row"><div class="markdown-container"><p>Working through both: 2 has the bag</p></div></div>',
     );
     await expect(d.readAgentReply(500)).resolves.toBe('Working through both: 2 has the bag');
   });

@@ -5,6 +5,7 @@ import { STYLE_PRESETS, type StyleId } from '../prompts/styles';
 import { parseSceneFile } from '../scenes/parse';
 import { chooseScenePicture, getLastSendError, getRunState, resumeRun, startClipRun, startHeroSheetRun, startRun, stopRun } from '../runs/coordinator';
 import { runSummary } from '../runs/run';
+import { readActivity } from '../runs/activity';
 
 export const E2E_MARKER = 'vidflow-e2e';
 export const E2E_START = 'e2e/start';
@@ -126,7 +127,7 @@ async function status(m: E2eStatus) {
   const flowWindow = (await chrome.storage.local.get('vidflow.flowWindow'))['vidflow.flowWindow'] as { windowId: number; tabId: number } | undefined;
   const flowTab = flowWindow ? await chrome.tabs.get(flowWindow.tabId).catch(() => null) : null;
   const tab = flowTab && { id: flowTab.id, windowId: flowTab.windowId, url: flowTab.url, active: flowTab.active, status: flowTab.status };
-  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, heroSheet: project?.heroSheet ?? null, character: project?.character ?? null, lastSendError: await getLastSendError(), flowWindow, flowTab: tab };
+  return { run, runSummary: run ? runSummary(run) : null, projectId: projectId ?? null, scenes, heroSheet: project?.heroSheet ?? null, character: project?.character ?? null, lastSendError: await getLastSendError(), flowWindow, flowTab: tab, activity: projectId ? (await readActivity(projectId, 25)).map((e) => e.text) : [] };
 }
 
 async function picture(m: E2ePicture) {

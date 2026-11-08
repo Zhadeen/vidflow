@@ -52,6 +52,9 @@ export const SEL = {
    */
   agentPanel: 'flow-agent-panel',
   agentRow: '.message-row.agent-row',
+  /** Every message in the Agent panel, the owner's (.user-row) and the Agent's, in order. */
+  messageRow: '.message-row',
+  userRow: '.message-row.user-row',
   agentReplyText: '.markdown-container',
   agentNewSession: '[aria-label="Start new session"]',
   agentPanelClose: '[aria-label="Close"]',

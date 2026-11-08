@@ -887,9 +887,38 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
 
   // ---- Agent questions (spike S8, Agent panel recorded live) ---------------------------
   /** The question waiting for its reply: Agent rows already in the panel before it, and the settle state. */
-  let asked: { baseline: number; question: string; last: string; since: number; pictures: number } | null = null;
+  let asked: { question: string; last: string; since: number; pictures: number } | null = null;
   const agentPanel = () => q(SEL.agentPanel);
   const agentRows = () => [...(agentPanel()?.querySelectorAll(SEL.agentRow) ?? [])];
+  /** Quotes as typed: Flow may show ’ “ ” for ' ". */
+  const plainQuotes = (s: string) => s.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"');
+  /**
+   * The Agent's row answering this question: the first agent row after the last owner row that asked it. Flow keeps the
+   * conversation and shows earlier questions and answers again when the panel opens (live, 8 Nov 2026), so a count of
+   * rows taken before sending can't tell the new answer from an old one.
+   */
+  function replyRow(question: string): Element | null {
+    const rows = [...(agentPanel()?.querySelectorAll(SEL.messageRow) ?? [])];
+    const want = plainQuotes(question);
+    let at = -1;
+    rows.forEach((row, i) => {
+      if (row.matches(SEL.userRow) && plainQuotes(squash(textNodes(row, true).join(' '))).includes(want)) at = i;
+    });
+    if (at < 0) return null;
+    return rows.slice(at + 1).find((row) => row.matches(SEL.agentRow)) ?? null;
+  }
+  /**
+   * An answer's text as the Agent wrote it. Flow draws "2. reason" as a numbered list (<ol start="2"><li>reason</li>;
+   * no start is 1), whose number isn't text (live, 8 Nov 2026): a one-item list leading the answer gets it back. A list
+   * of several items stays as text only, so it never reads as a pick.
+   */
+  function answerText(el: Element): string {
+    const text = squash(textNodes(el, true).join(' '));
+    const lead = [...el.childNodes].find((n) => n.nodeType !== Node.COMMENT_NODE && !(n.nodeType === Node.TEXT_NODE && !squash(n.textContent)));
+    if (!(lead instanceof HTMLOListElement) || lead.querySelectorAll(':scope > li').length !== 1) return text;
+    const start = Number(lead.getAttribute('start') ?? '1');
+    return Number.isInteger(start) ? `${start}. ${text}` : text;
+  }
   /** Pictures attached to an Agent question show as Image ingredient chips (plain Ingredient ones are counted too). */
   const agentChips = () => doc.querySelectorAll(`${SEL.ingredientChip}, ${SEL.startFrameChip}`).length;
   /** The panel's own control when the panel is open (the prompt bar moves into it), else the page's. */
@@ -906,6 +935,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   async function finishAgent(): Promise<boolean> {
     asked = null;
     const panelGone = async () => {
+      // A new session first: Flow keeps the conversation, and the next question must start a fresh one (spike S8).
+      agentPanel()?.querySelector<HTMLElement>(SEL.agentNewSession)?.click();
       agentPanel()?.querySelector<HTMLElement>(SEL.agentPanelClose)?.click();
       await until(() => !agentPanel(), CLOSE_WAIT_MS, 'still open').catch(() => undefined);
     };
@@ -951,9 +982,8 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
         (await highlightForAdd(name, wait, AGENT_ASK_MESSAGE)).click();
         await untilOrBlocked(() => agentChips() === i + 1, wait, AGENT_ASK_MESSAGE);
       }
-      const baseline = agentRows().length;
       const at = await prepareSubmit(question, { ingredients: names.length });
-      asked = { baseline, question: squash(question), last: '', since: 0, pictures: names.length };
+      asked = { question: squash(question), last: '', since: 0, pictures: names.length };
       return at;
     } catch (err) {
       await finishAgent();
@@ -967,10 +997,10 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const probe = (): string | null => {
       const ask = asked;
       if (!ask) return null;
-      // Only a NEW Agent row counts, and only its answer text (not Show thinking or the response buttons).
-      const row = agentRows().slice(ask.baseline).pop();
+      // Only the row answering this question counts, and only its answer text (not Show thinking or the buttons).
+      const row = replyRow(ask.question);
       const answer = row ? [...row.querySelectorAll(SEL.agentReplyText)].pop() : undefined;
-      const text = answer ? squash(textNodes(answer, true).join(' ')) : '';
+      const text = answer ? answerText(answer) : '';
       // No guessing at "thinking" wording: an answer counts once its text has stayed the same for the settle time.
       if (!text || text === ask.question) {
         ask.last = '';
