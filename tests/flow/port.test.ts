@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_AGENT_FINISH, FLOW_AGENT_PREPARE, FLOW_AGENT_REPLY, FLOW_CLIP_FILE, FLOW_CREDIT_BALANCE, FLOW_GENERATE_COST, FLOW_PREPARE_CLIP, FLOW_UPLOAD_START_FRAME, FLOW_VIDEO_DETAIL, FLOW_VIDEO_TILES_NOW, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
+import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_AGENT_FINISH, FLOW_AGENT_PREPARE, FLOW_AGENT_READY, FLOW_AGENT_REPLY, FLOW_CLIP_FILE, FLOW_CREDIT_BALANCE, FLOW_GENERATE_COST, FLOW_PREPARE_CLIP, FLOW_UPLOAD_START_FRAME, FLOW_VIDEO_DETAIL, FLOW_VIDEO_TILES_NOW, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
 import { createFlowPort } from '../../src/flow/port';
 
 function setup(responses: unknown[], zoom = 1) {
@@ -242,6 +242,7 @@ describe('Flow port: clips and Agent questions', () => {
   it('asks the Agent: prepares, presses send itself, polls for the reply, and always finishes', async () => {
     const { send, press, port } = setup([
       { kind: 'ready', x: 110, y: 610 },
+      { ready: true },
       { kind: 'waiting' },
       { kind: 'reply', text: '2 — the shoulder bag' },
       { done: true },
@@ -251,8 +252,9 @@ describe('Flow port: clips and Agent questions', () => {
     expect(press).toHaveBeenCalledWith(7, 110, 610);
     const messages = send.mock.calls.map(([, m]) => m as { type: string; waitMs?: number });
     expect(messages[0]).toEqual({ type: FLOW_AGENT_PREPARE, names: ['a.png', 'b.png'], question: 'Which one? 1 or 2' });
-    expect(messages[1]!.type).toBe(FLOW_AGENT_REPLY);
-    expect(messages[1]!.waitMs).toBeLessThanOrEqual(10_000);
+    expect(messages[1]).toEqual({ type: FLOW_AGENT_READY });
+    expect(messages[2]!.type).toBe(FLOW_AGENT_REPLY);
+    expect(messages[2]!.waitMs).toBeLessThanOrEqual(10_000);
     expect(messages.at(-1)).toEqual({ type: FLOW_AGENT_FINISH });
   });
 
@@ -263,6 +265,7 @@ describe('Flow port: clips and Agent questions', () => {
     send.mockImplementation(async (_tab: number, message: unknown) => {
       const m = message as { type: string; waitMs?: number };
       if (m.type === FLOW_AGENT_PREPARE) return { kind: 'ready', x: 1, y: 2 };
+      if (m.type === FLOW_AGENT_READY) return { ready: true };
       if (m.type === FLOW_AGENT_REPLY) {
         now += m.waitMs!;
         return { kind: 'waiting' };
@@ -276,11 +279,11 @@ describe('Flow port: clips and Agent questions', () => {
 
   it('finishes the Agent when pressing send or reading fails, and passes a block on', async () => {
     const event = { type: 'needsOwner', reason: 'policy-dialog', message: 'Read it.' } as const;
-    const failing = setup([{ kind: 'ready', x: 1, y: 2 }, { done: true }]);
+    const failing = setup([{ kind: 'ready', x: 1, y: 2 }, { ready: true }, { done: true }]);
     failing.press.mockRejectedValueOnce(new Error('debugger detached'));
     await expect(failing.port.askAgent(7, ['a.png'], 'q', 1_000)).rejects.toThrow('debugger detached');
     expect(failing.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
-    const blocked = setup([{ kind: 'ready', x: 1, y: 2 }, { kind: 'blocked', event, notice: true }, { done: true }]);
+    const blocked = setup([{ kind: 'ready', x: 1, y: 2 }, { ready: true }, { kind: 'blocked', event, notice: true }, { done: true }]);
     const err = await blocked.port.askAgent(7, ['a.png'], 'q', 1_000).catch((e: unknown) => e);
     expect((err as FlowBlockedError).notice).toBe(true);
     expect(blocked.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
@@ -334,7 +337,7 @@ describe('Flow port: panels Flow left open (Task 4)', () => {
 
   it("tells the background when the Agent couldn't be finished after a question", async () => {
     const onLeftOpen = vi.fn();
-    const responses: unknown[] = [{ kind: 'ready', x: 1, y: 2 }, { kind: 'reply', text: '1' }, { done: false }];
+    const responses: unknown[] = [{ kind: 'ready', x: 1, y: 2 }, { ready: true }, { kind: 'reply', text: '1' }, { done: false }];
     const port = createFlowPort({ send: async () => responses.shift(), press: async () => undefined, wait: async () => undefined, getZoom: async () => 1, onLeftOpen });
     expect(await port.askAgent(7, ['a.png'], 'q', 1_000)).toBe('1');
     expect(onLeftOpen.mock.calls).toEqual([[7, 'agent']]);
@@ -381,5 +384,37 @@ describe('Flow port: review fixes (round 2)', () => {
     const unreachable = setup([new Error('No tab with id: 7'), { done: true }]);
     await expect(unreachable.port.askAgent(7, ['a.png'], 'q', 1_000)).rejects.toThrow(/No tab/);
     expect(unreachable.send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
+  });
+});
+
+describe('Flow port: Auto-pick review fixes (round 1)', () => {
+  it('agentReady asks the tab whether the question is ready to send; no answer or an error is "not ready"', async () => {
+    const { send, port } = setup([{ ready: true }, { ready: false }, undefined, new Error('No tab')]);
+    expect(await port.agentReady(7)).toBe(true);
+    expect(await port.agentReady(7)).toBe(false);
+    expect(await port.agentReady(7)).toBe(false);
+    expect(await port.agentReady(7)).toBe(false);
+    expect(send).toHaveBeenCalledWith(7, { type: FLOW_AGENT_READY });
+  });
+
+  it('askAgent re-prepares once when the Agent is not ready, then presses', async () => {
+    const { send, press, port } = setup([
+      { kind: 'ready', x: 1, y: 2 },
+      { ready: false },
+      { kind: 'ready', x: 3, y: 4 },
+      { ready: true },
+      { kind: 'reply', text: '1' },
+      { done: true },
+    ]);
+    expect(await port.askAgent(7, ['a.png'], 'q', 1_000)).toBe('1');
+    expect(press.mock.calls).toEqual([[7, 3, 4]]);
+    expect(send.mock.calls.filter(([, m]) => (m as { type: string }).type === FLOW_AGENT_PREPARE)).toHaveLength(2);
+  });
+
+  it('askAgent never presses when the Agent is still not ready: no answer, and the Agent is finished', async () => {
+    const { send, press, port } = setup([{ kind: 'ready', x: 1, y: 2 }, { ready: false }, { kind: 'ready', x: 1, y: 2 }, { ready: false }, { done: true }]);
+    expect(await port.askAgent(7, ['a.png'], 'q', 1_000)).toBeNull();
+    expect(press).not.toHaveBeenCalled();
+    expect(send).toHaveBeenLastCalledWith(7, { type: FLOW_AGENT_FINISH });
   });
 });

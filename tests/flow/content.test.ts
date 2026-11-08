@@ -201,6 +201,13 @@ describe('Flow helper: clips and Agent questions (Plan 3)', () => {
   });
 });
 
+describe('Flow helper: Auto-pick review fixes (round 1)', () => {
+  it('says the Agent is not ready to send when no question was prepared in this page', async () => {
+    await boot();
+    expect(await ask({ type: 'flow/agent-ready' })).toEqual({ ready: false });
+  });
+});
+
 describe("Flow helper: Flow's announcements", () => {
   it('closes a "What\'s new" announcement before a step and says so in the answer', async () => {
     await boot({ fixture: 'video-prompt-bar.html' });

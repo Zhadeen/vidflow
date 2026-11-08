@@ -5,6 +5,7 @@ import {
   FlowBlockedError,
   FLOW_ACCEPT_NOTICE,
   FLOW_AGENT_FINISH,
+  FLOW_AGENT_READY,
   FLOW_AGENT_PREPARE,
   FLOW_AGENT_REPLY,
   FLOW_CLIP_FILE,
@@ -15,6 +16,7 @@ import {
   FLOW_VIDEO_DETAIL,
   FLOW_VIDEO_TILES_NOW,
   type AgentFinishResponse,
+  type AgentReadyResponse,
   type AgentReplyResponse,
   type ClipFileResponse,
   type ClipOptions,
@@ -84,6 +86,11 @@ export interface FlowMotionPort {
   readAgentReply(tabId: number, timeoutMs: number): Promise<string | null>;
   /** Closes the Agent panel and turns Agent mode off; true when both are done. Never throws. */
   finishAgent(tabId: number): Promise<boolean>;
+  /**
+   * Right before the send press: true only while Agent mode is on and the prompt holds the prepared question (else the
+   * press could be a real Generate). No answer or an error is false. Never throws.
+   */
+  agentReady(tabId: number): Promise<boolean>;
   /** prepare → press send → read the reply, always finishing the Agent afterwards (also on timeout or error). */
   askAgent(tabId: number, names: string[], question: string, timeoutMs: number): Promise<string | null>;
 }
@@ -177,6 +184,15 @@ export function createFlowPort(over: Partial<PortDeps> = {}): FlowPort & FlowMot
     }
   }
 
+  async function agentReady(tabId: number): Promise<boolean> {
+    try {
+      const reply = (await ask(tabId, { type: FLOW_AGENT_READY })) as AgentReadyResponse | undefined;
+      return reply?.ready === true;
+    } catch {
+      return false;
+    }
+  }
+
   async function finishAgent(tabId: number): Promise<boolean> {
     try {
       const reply = (await ask(tabId, { type: FLOW_AGENT_FINISH })) as AgentFinishResponse | undefined;
@@ -230,11 +246,18 @@ export function createFlowPort(over: Partial<PortDeps> = {}): FlowPort & FlowMot
     prepareAgentQuestion,
     readAgentReply,
     finishAgent,
+    agentReady,
 
     async askAgent(tabId, names, question, timeoutMs) {
       // Every way out finishes the Agent, also when preparing failed (no answer, the tab unreachable).
       try {
-        const at = await prepareAgentQuestion(tabId, names, question);
+        let at = await prepareAgentQuestion(tabId, names, question);
+        // Send is pressed only while the Agent is on with the question in its prompt (else it could be Generate):
+        // prepared once more if not, and never pressed when it still isn't (no answer).
+        if (!(await agentReady(tabId))) {
+          at = await prepareAgentQuestion(tabId, names, question);
+          if (!(await agentReady(tabId))) return null;
+        }
         await press(tabId, at.x, at.y);
         return await readAgentReply(tabId, timeoutMs);
       } finally {

@@ -35,6 +35,8 @@ export const FLOW_CLIP_FILE = 'flow/clip-file';
 export const FLOW_AGENT_PREPARE = 'flow/agent-prepare';
 export const FLOW_AGENT_REPLY = 'flow/agent-reply';
 export const FLOW_AGENT_FINISH = 'flow/agent-finish';
+/** Right before the send press: is the Agent still on with the question in its prompt (else send would be Generate)? */
+export const FLOW_AGENT_READY = 'flow/agent-ready';
 
 /** Said whenever VidFlow can't upload or attach the hero reference: a prompt that names it is never sent without it. */
 export const REFERENCE_ATTACH_MESSAGE =
@@ -300,6 +302,14 @@ export interface AgentFinishResponse {
   done: boolean;
 }
 
+/** background → Flow tab, right before pressing send: Agent mode still on, the question and its pictures in the prompt. */
+export interface AgentReadyRequest {
+  type: typeof FLOW_AGENT_READY;
+}
+export interface AgentReadyResponse {
+  ready: boolean;
+}
+
 const CHUNK = 0x8000;
 
 /** Bytes → base64, a chunk at a time (spreading 10 MB into one String.fromCharCode call overflows the stack). */
@@ -346,7 +356,8 @@ export type ToFlowTab =
   | ClipFileRequest
   | AgentPrepareRequest
   | AgentReplyRequest
-  | AgentFinishRequest;
+  | AgentFinishRequest
+  | AgentReadyRequest;
 
 export type BlockingEvent = Extract<RunEvent, { type: 'needsOwner' } | { type: 'limit' }>;
 

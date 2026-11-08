@@ -27,6 +27,7 @@ import {
   FLOW_TILES_NOW,
   FLOW_UPLOAD_REFERENCE,
   FLOW_AGENT_FINISH,
+  FLOW_AGENT_READY,
   FLOW_AGENT_PREPARE,
   FLOW_AGENT_REPLY,
   FLOW_CLIP_FILE,
@@ -39,6 +40,7 @@ import {
   FlowBlockedError,
   CLIP_ASPECT_MESSAGE,
   type AgentFinishResponse,
+  type AgentReadyResponse,
   type AgentPrepareRequest,
   type AgentReplyRequest,
   type AgentReplyResponse,
@@ -397,6 +399,7 @@ export default defineContentScript({
         [FLOW_AGENT_PREPARE]: () => agentPrepare(message as AgentPrepareRequest),
         [FLOW_AGENT_REPLY]: () => agentReply(message as AgentReplyRequest),
         [FLOW_AGENT_FINISH]: async (): Promise<AgentFinishResponse> => ({ done: await driver.finishAgent() }),
+        [FLOW_AGENT_READY]: async (): Promise<AgentReadyResponse> => ({ ready: driver.agentReady() }),
       };
       const handle = message?.type ? handlers[message.type] : undefined;
       if (!handle) return;

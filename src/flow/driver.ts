@@ -197,6 +197,11 @@ export interface FlowDriver {
   finishAgent(): Promise<boolean>;
   /** True while a question sent by this helper waits for its reply (false after a page reload). */
   agentQuestionPending(): boolean;
+  /**
+   * Right before the background presses send: true only while Agent mode is on and the prompt still holds the prepared
+   * question with its pictures. Otherwise the press could be a real Generate, so it must not happen.
+   */
+  agentReady(): boolean;
 }
 
 export interface FlowSettingsRead {
@@ -854,7 +859,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
 
   // ---- Agent questions (spike S8, Agent panel recorded live) ---------------------------
   /** The question waiting for its reply: Agent rows already in the panel before it, and the settle state. */
-  let asked: { baseline: number; question: string; last: string; since: number } | null = null;
+  let asked: { baseline: number; question: string; last: string; since: number; pictures: number } | null = null;
   const agentPanel = () => q(SEL.agentPanel);
   const agentRows = () => [...(agentPanel()?.querySelectorAll(SEL.agentRow) ?? [])];
   /** Pictures attached to an Agent question show as Image ingredient chips (plain Ingredient ones are counted too). */
@@ -890,6 +895,10 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
     try {
       stopForDialog();
+      // Pictures cost 0 credits: Flow is set to Image before the Agent is turned on, so even a press that somehow
+      // reached Generate couldn't spend any. A leftover Agent mode goes off first (it hides the settings).
+      await turnOffAgentMode();
+      await chooseSetting('Image', () => findRadio('Image')?.getAttribute('aria-checked') === 'true');
       await turnOnAgentMode();
       // A fresh conversation per question, so earlier answers can't sway this one (spike S8).
       const fresh = agentPanel()?.querySelector<HTMLElement>(SEL.agentNewSession);
@@ -916,7 +925,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       }
       const baseline = agentRows().length;
       const at = await prepareSubmit(question, { ingredients: names.length });
-      asked = { baseline, question: squash(question), last: '', since: 0 };
+      asked = { baseline, question: squash(question), last: '', since: 0, pictures: names.length };
       return at;
     } catch (err) {
       await finishAgent();
@@ -1126,6 +1135,12 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     readAgentReply,
     finishAgent,
     agentQuestionPending: () => asked !== null,
+    agentReady() {
+      const ask = asked;
+      if (!ask || !q(SEL.agentModeOn)) return false;
+      const box = inPanel(SEL.promptBox);
+      return !!box && squash(box.textContent) === ask.question && agentChips() === ask.pictures;
+    },
   };
 
   async function prepareSubmit(prompt: string, submitOpts: SubmitCheck = {}): Promise<{ x: number; y: number }> {

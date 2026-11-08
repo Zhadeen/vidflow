@@ -239,10 +239,10 @@ function motionPort(): (FlowPort & FlowMotionPort) | null {
 }
 
 /** The port with its Agent methods, or null when it has none (an Auto-pick run then pauses). */
-function agentPort(): (FlowPort & Pick<FlowMotionPort, 'uploadStartFrame' | 'prepareAgentQuestion' | 'readAgentReply' | 'finishAgent'>) | null {
+function agentPort(): (FlowPort & Pick<FlowMotionPort, 'uploadStartFrame' | 'prepareAgentQuestion' | 'agentReady' | 'readAgentReply' | 'finishAgent'>) | null {
   const p = port;
   if (!p) return null;
-  const needed: Array<keyof FlowMotionPort> = ['uploadStartFrame', 'prepareAgentQuestion', 'readAgentReply', 'finishAgent'];
+  const needed: Array<keyof FlowMotionPort> = ['uploadStartFrame', 'prepareAgentQuestion', 'agentReady', 'readAgentReply', 'finishAgent'];
   return needed.every((k) => typeof p[k] === 'function') ? (p as FlowPort & FlowMotionPort) : null;
 }
 
@@ -1142,14 +1142,24 @@ async function autoPickSlide(tabId: number, project: Project, sceneId: string): 
     if (!stillRunning(projectId)) return 'stop';
     if (!stillPending(sceneId)) return 'next';
     const question = AUTO_PICK_QUESTION(scene.imagePrompt, pictureIds.length);
-    let reply: string | null | typeof NOT_WAITING;
+    let reply: string | null | typeof NOT_WAITING = null;
     try {
-      const at = await pastNotice(tabId, projectId, sceneId, () => m.prepareAgentQuestion(tabId, names, question));
-      // The last look before pressing the Agent's send: the tab is brought forward first.
-      await frontTab(tabId);
-      if (!stillRunning(projectId) || !stillPending(sceneId)) return after();
-      await port!.press(tabId, at.x, at.y);
-      reply = await waitForAgentReply(tabId, m, projectId, sceneId);
+      const prepare = () => pastNotice(tabId, projectId, sceneId, () => m.prepareAgentQuestion(tabId, names, question));
+      let at: Point | null = await prepare();
+      // Send is pressed only while Flow's Agent is on with this question in its prompt: otherwise the press could be a
+      // real Generate. Prepared once more if not; still not → never pressed, and the slide counts as unanswered.
+      if (!(await m.agentReady(tabId))) {
+        if (!stillRunning(projectId) || !stillPending(sceneId)) return after();
+        at = await prepare();
+        if (!(await m.agentReady(tabId))) at = null;
+      }
+      if (at) {
+        // The last look before pressing the Agent's send: the tab is brought forward first.
+        await frontTab(tabId);
+        if (!stillRunning(projectId) || !stillPending(sceneId)) return after();
+        await port!.press(tabId, at.x, at.y);
+        reply = await waitForAgentReply(tabId, m, projectId, sceneId);
+      } else note(project, sceneId, `Flow's Agent wasn't ready to ask about slide ${slide}`);
     } finally {
       // Agent mode off and its panel closed after every question, whatever happened.
       if (!(await m.finishAgent(tabId).catch(() => false))) noteFlowTab("Flow's Agent panel didn't close");
@@ -1166,7 +1176,9 @@ async function autoPickSlide(tabId: number, project: Project, sceneId: string): 
     return after();
   } catch (err) {
     if (err instanceof FlowBlockedError) {
-      await dispatch(err.event);
+      // A pause about the page is about this slide too: Skip passes it while paused (spec §19).
+      const event = err.event.type === 'needsOwner' && !err.event.sceneId ? { ...err.event, sceneId } : err.event;
+      await dispatch(event);
       return 'stop';
     }
     lastSendError = { sceneId, error: err instanceof Error ? err.message : String(err), at: Date.now() };

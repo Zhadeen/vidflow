@@ -46,13 +46,15 @@ const REASON_MAX = 140;
  * alternative ("1 or 2", "1-2", "1, 2"). The reason is the rest, trimmed, at most 140 characters. Anything else → null.
  */
 export function parseAgentAnswer(text: string, count: number): { pick: number; reason: string } | null {
-  const m = /^\s*([1-9])(?![0-9A-Za-z])([.):;,!—–-]*)(.*)$/s.exec(text);
+  // A keycap emoji ("2️⃣": U+FE0F / U+20E3 after the digit) isn't a plain answer.
+  const m = /^\s*([1-9])(?![0-9A-Za-z\uFE0F\u20E3])([.):;,!—–-]*)(.*)$/su.exec(text);
   if (!m) return null;
   const pick = Number(m[1]);
   if (pick < 1 || pick > count) return null;
   const rest = m[3]!.trim();
   // "1 or 2", "1 and 2", "1/2", "1, 2", "1-2": not one answer.
-  if (/^\d/.test(rest) || /^(or|and|to|&|\/)\s*\d/i.test(rest)) return null;
+  // "2 vs 1", "1 or both", "2 (or 1)": not one answer either.
+  if (/^\d/.test(rest) || /^(or|and|to|&|\/)\s*\d/i.test(rest) || /^(vs\b|or\b|\(\s*or\b)/i.test(rest)) return null;
   const reason = rest.replace(/^[\s.):;,!—–-]+/, '').trim();
   return { pick, reason: reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX - 1).trimEnd()}…` : reason };
 }

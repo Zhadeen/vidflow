@@ -121,6 +121,7 @@ function fakePort(chromeMock: ReturnType<typeof mockChrome>) {
       if (reply === null) await new Promise((r) => setTimeout(r, timeoutMs)); // no answer within the time asked
       return reply;
     }),
+    agentReady: vi.fn(async (_tabId: number) => agent.open),
     finishAgent: vi.fn(async () => ((agent.open = false), true)),
     askAgent: vi.fn(async () => null),
   };
@@ -217,7 +218,7 @@ describe('parseAgentAnswer', () => {
     expect(parseAgentAnswer('2: moon window', 2)).toEqual({ pick: 2, reason: 'moon window' });
     expect(parseAgentAnswer('2', 2)).toEqual({ pick: 2, reason: '' });
     expect(parseAgentAnswer('3 - third one', 4)).toEqual({ pick: 3, reason: 'third one' });
-    for (const bad of ['Both are good', '3', '1 or 2', '12', '1-2', '1, 2', '0', 'Image 2 is better', '', '2nd one']) {
+    for (const bad of ['Both are good', '3', '1 or 2', '12', '1-2', '1, 2', '0', 'Image 2 is better', '', '2nd one', '2 vs 1', '1 or both', '2 (or 1)', '2️⃣', '2\u20e3 the bag', '1 vs. 2']) {
       expect(parseAgentAnswer(bad, 2), bad).toBeNull();
     }
     expect(parseAgentAnswer(`1 ${'x'.repeat(300)}`, 2)!.reason.length).toBeLessThanOrEqual(140);
@@ -243,6 +244,59 @@ describe('settings', () => {
     await setAutoPick(false);
     expect(await getAutoPick()).toBe(false);
     expect((globalThis as unknown as { chrome: ReturnType<typeof mockChrome> }).chrome.storage.local.data['vidflow.autoPick']).toBe(false);
+  });
+});
+
+describe('Auto-pick review fixes (round 1)', () => {
+  it("Skip passes a slide whose question can't be prepared, and Resume moves on to the next", async () => {
+    const ctx = await setup({ slides: 2 });
+    const { FlowBlockedError } = await import('../../src/flow/messages');
+    ctx.agent.replies = ['2 — next one']; // s1's prepare fails before it is asked
+    vi.mocked(ctx.port.prepareAgentQuestion).mockImplementationOnce(async () => {
+      throw new FlowBlockedError({ type: 'needsOwner', reason: 'page-not-recognised', message: "VidFlow couldn't ask Flow's Agent." });
+    });
+    await ctx.coordinator.startAutoPick(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'paused', 'paused on s1');
+    expect(ctx.coordinator.getRunState()!.pauseSceneId).toBe('s1');
+    await ctx.coordinator.skipCurrent();
+    expect(ctx.coordinator.getRunState()!.sceneStates.s1!.status).toBe('failed');
+    await ctx.coordinator.resumeRun();
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'finished', 'the pass finished');
+    expect(ctx.agent.questions.map((q) => q.names[0])).toEqual(['vidflow-s02-a.png']);
+    const after = (await ctx.saved()).sceneStates;
+    expect(after.s1!.autoChecked).toBeUndefined();
+    expect(after.s2).toMatchObject({ choiceSource: 'auto', autoReason: 'next one' });
+  });
+
+  it("re-prepares once when the Agent isn't ready right before the send press", async () => {
+    const ctx = await setup({ slides: 1 });
+    ctx.agent.replies = [null, '2 — after the second try'];
+    vi.mocked(ctx.port.agentReady).mockResolvedValueOnce(false);
+    await ctx.coordinator.startAutoPick(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'finished', 'the pass finished');
+    expect(ctx.port.prepareAgentQuestion).toHaveBeenCalledTimes(2);
+    const sends = vi.mocked(ctx.port.press).mock.calls.filter(([, x, y]) => x === AGENT_SEND.x && y === AGENT_SEND.y);
+    expect(sends).toHaveLength(1);
+    // The probe came right before the one press.
+    const probe = vi.mocked(ctx.port.agentReady).mock.invocationCallOrder.at(-1)!;
+    const press = vi.mocked(ctx.port.press).mock.invocationCallOrder.at(-1)!;
+    expect(probe).toBeLessThan(press);
+    expect((await ctx.saved()).sceneStates.s1).toMatchObject({ choiceSource: 'auto', autoReason: 'after the second try' });
+  });
+
+  it('never presses when the Agent still isn\'t ready: the slide is unanswered', async () => {
+    const ctx = await setup({ slides: 2 });
+    ctx.agent.replies = ['1 — x', '1 — x', '2 — second slide'];
+    vi.mocked(ctx.port.agentReady).mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    await ctx.coordinator.startAutoPick(ctx.project.id);
+    await waitFor(() => ctx.coordinator.getRunState()?.status === 'finished', 'the pass finished');
+    const sends = vi.mocked(ctx.port.press).mock.calls.filter(([, x, y]) => x === AGENT_SEND.x && y === AGENT_SEND.y);
+    expect(sends).toHaveLength(1); // s2's only
+    const after = (await ctx.saved()).sceneStates;
+    expect(after.s1).toMatchObject({ autoChecked: true, autoReason: 'not auto-checked' });
+    expect(after.s1!.chosenPictureId).toBeUndefined();
+    expect(ctx.coordinator.getRunState()!.misses).toBe(0); // s2 answered after s1's miss
+    expect(ctx.agent.open).toBe(false);
   });
 });
 

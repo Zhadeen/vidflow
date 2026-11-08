@@ -1678,6 +1678,61 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
   });
 });
 
+describe('FlowDriver Agent: review fixes (round 1)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const QUESTION = 'Which one? Answer with just 1 or 2.';
+  function agentPage() {
+    load('prompt-bar.html');
+    fakeEditor();
+    fakeRadios();
+    $(SEL.generate).removeAttribute('disabled');
+    $(SEL.generate).getBoundingClientRect = () => ({ left: 0, top: 0, width: 10, height: 10 }) as DOMRect;
+    const order: string[] = [];
+    const chip = $('.agent-mode-chip');
+    chip.addEventListener('click', () => {
+      order.push(chip.getAttribute('aria-pressed') === 'true' ? 'agent off' : 'agent on');
+      chip.setAttribute('aria-pressed', chip.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    });
+    const radios = [...document.querySelectorAll<HTMLElement>('[role="radio"]')];
+    const image = radios.find((r) => r.textContent!.includes('Image'))!;
+    const video = radios.find((r) => r.textContent!.includes('Video'))!;
+    image.addEventListener('click', () => order.push('image'));
+    return { chip, image, video, order };
+  }
+  const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 300, settleMs: 30 });
+
+  it('sets Flow to Image (0 credits) before turning Agent mode on, so a stray press makes no clip', async () => {
+    const page = agentPage();
+    page.image.setAttribute('aria-checked', 'false');
+    page.video.setAttribute('aria-checked', 'true');
+    await driver().prepareAgentQuestion([], QUESTION);
+    expect(page.image.getAttribute('aria-checked')).toBe('true');
+    expect(page.order).toEqual(['image', 'agent on']);
+  });
+
+  it('turns a leftover Agent mode off first, so the settings can be set', async () => {
+    const page = agentPage();
+    page.chip.setAttribute('aria-pressed', 'true');
+    page.image.setAttribute('aria-checked', 'false');
+    page.video.setAttribute('aria-checked', 'true');
+    await driver().prepareAgentQuestion([], QUESTION);
+    expect(page.order).toEqual(['agent off', 'image', 'agent on']);
+  });
+
+  it('is ready to send only while Agent mode is on and the prompt holds the question', async () => {
+    const page = agentPage();
+    const d = driver();
+    expect(d.agentReady()).toBe(false); // nothing prepared
+    await d.prepareAgentQuestion([], QUESTION);
+    expect(d.agentReady()).toBe(true);
+    page.chip.setAttribute('aria-pressed', 'false'); // Agent mode went off: send would be Generate
+    expect(d.agentReady()).toBe(false);
+    page.chip.setAttribute('aria-pressed', 'true');
+    $(SEL.promptBox).textContent = 'Something else';
+    expect(d.agentReady()).toBe(false);
+  });
+});
+
 describe("FlowDriver Flow's announcements (spike S8)", () => {
   afterEach(() => vi.unstubAllGlobals());
   const announce = () => {
