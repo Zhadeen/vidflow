@@ -81,6 +81,8 @@ const scene = (n: number): Scene => ({
  */
 function fakePort(chromeMock: ReturnType<typeof mockChrome>) {
   const uploads: string[] = [];
+  /** Uploads through the clip Start slot: Auto-pick never uses it (Flow is in Image mode, with no Start slot). */
+  const frameUploads: string[] = [];
   const agent = {
     replies: [] as Array<string | null>,
     open: false,
@@ -104,7 +106,8 @@ function fakePort(chromeMock: ReturnType<typeof mockChrome>) {
     uploadReference: vi.fn(async (): Promise<string | null> => 'ref'),
     acceptNotice: vi.fn(async (): Promise<boolean | null | 'gone'> => true),
     prepareClip: vi.fn(async () => ({ ...GENERATE })),
-    uploadStartFrame: vi.fn(async (_tabId: number, name: string, _image: Blob) => void uploads.push(name)),
+    uploadStartFrame: vi.fn(async (_tabId: number, name: string, _image: Blob) => void frameUploads.push(name)),
+    uploadAgentPicture: vi.fn(async (_tabId: number, name: string, _image: Blob) => void uploads.push(name)),
     generateCost: vi.fn(async (): Promise<number | null> => 7),
     creditBalance: vi.fn(async () => ({ credits: 1000, resets: null }) as { credits: number; resets: string | null } | null),
     videoTiles: vi.fn(async (): Promise<FlowResultCard[]> => []),
@@ -125,7 +128,7 @@ function fakePort(chromeMock: ReturnType<typeof mockChrome>) {
     finishAgent: vi.fn(async () => ((agent.open = false), true)),
     askAgent: vi.fn(async () => null),
   };
-  return { port, uploads, agent };
+  return { port, uploads, frameUploads, agent };
 }
 
 /** Every coordinator a test loaded; each is stopped afterwards so it can't act on the next test's chrome. */
@@ -387,8 +390,10 @@ describe('Auto-pick run', () => {
     expect(ctx.uploads).toEqual(['vidflow-s01-a.png', 'vidflow-s01-b.png']);
     expect(ctx.agent.questions).toEqual([{ names: ['vidflow-s01-a.png', 'vidflow-s01-b.png'], question: AUTO_PICK_QUESTION('A stickman in scene 1', 2) }]);
     // The uploads are this slide's own pictures, in pictureIds order.
-    const blobs = vi.mocked(ctx.port.uploadStartFrame).mock.calls.map((c) => c[2]);
+    const blobs = vi.mocked(ctx.port.uploadAgentPicture).mock.calls.map((c) => c[2]);
     expect(await Promise.all(blobs.map((b) => b.text()))).toEqual(['picture s1 1', 'picture s1 2']);
+    // Live (8 Nov 2026): after a picture run Flow is in Image mode, with no clip Start slot to upload through.
+    expect(ctx.frameUploads).toEqual([]);
     await waitFor(() => activity(ctx.chromeMock).includes('Auto-picked slide 1: shows the shoulder bag'), 'the activity line');
   });
 

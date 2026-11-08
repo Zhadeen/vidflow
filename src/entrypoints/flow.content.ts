@@ -35,6 +35,7 @@ import {
   FLOW_GENERATE_COST,
   FLOW_PREPARE_CLIP,
   FLOW_UPLOAD_START_FRAME,
+  FLOW_UPLOAD_AGENT_PICTURE,
   FLOW_VIDEO_DETAIL,
   FLOW_VIDEO_TILES_NOW,
   FlowBlockedError,
@@ -50,6 +51,8 @@ import {
   type GenerateCostResponse,
   type PrepareClipRequest,
   type UploadStartFrameRequest,
+  type UploadAgentPictureRequest,
+  type UploadAgentPictureResponse,
   type UploadStartFrameResponse,
   type VideoDetailResponse,
   TEST_PROMPT_TEXT,
@@ -183,6 +186,16 @@ export default defineContentScript({
         return { kind: 'done' };
       } catch (err) {
         return failure(err) as UploadStartFrameResponse;
+      }
+    }
+
+    async function uploadAgentPicture(req: UploadAgentPictureRequest): Promise<UploadAgentPictureResponse> {
+      try {
+        await driver.waitUntilReady(READY_WAIT_MS);
+        await driver.uploadAgentPicture(new File([decodeBytes(req.data)], req.name, { type: req.mimeType }));
+        return { kind: 'done' };
+      } catch (err) {
+        return failure(err) as UploadAgentPictureResponse;
       }
     }
 
@@ -389,6 +402,7 @@ export default defineContentScript({
         [FLOW_TEST_PROMPT]: () => testPrompt(message as TestPromptRequest),
         [FLOW_PREPARE_CLIP]: () => prepareClip(message as PrepareClipRequest),
         [FLOW_UPLOAD_START_FRAME]: () => uploadStartFrame(message as UploadStartFrameRequest),
+        [FLOW_UPLOAD_AGENT_PICTURE]: () => uploadAgentPicture(message as UploadAgentPictureRequest),
         [FLOW_GENERATE_COST]: async (): Promise<GenerateCostResponse> => ({ cost: await driver.readGenerateCost().catch(() => null) }),
         [FLOW_CREDIT_BALANCE]: () => creditBalance(),
         [FLOW_VIDEO_TILES_NOW]: async (): Promise<TilesNowResponse> => ({ cards: driver.videoResultCards() }),

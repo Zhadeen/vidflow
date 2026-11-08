@@ -13,6 +13,7 @@ import {
   FLOW_GENERATE_COST,
   FLOW_PREPARE_CLIP,
   FLOW_UPLOAD_START_FRAME,
+  FLOW_UPLOAD_AGENT_PICTURE,
   FLOW_VIDEO_DETAIL,
   FLOW_VIDEO_TILES_NOW,
   type AgentFinishResponse,
@@ -23,6 +24,7 @@ import {
   type CreditBalanceResponse,
   type GenerateCostResponse,
   type UploadStartFrameResponse,
+  type UploadAgentPictureResponse,
   type VideoDetailResponse,
   FLOW_CONFIRM,
   FLOW_DETAIL,
@@ -70,6 +72,8 @@ export interface FlowMotionPort {
   prepareClip(tabId: number, prompt: string, options: ClipOptions): Promise<Point>;
   /** Uploads a clip's start picture into the Flow project (skipped when it's already there). */
   uploadStartFrame(tabId: number, name: string, image: Blob): Promise<void>;
+  /** Uploads one of a slide's pictures for Auto-pick through the ingredients picker (skipped when it's already there). */
+  uploadAgentPicture(tabId: number, name: string, image: Blob): Promise<void>;
   /** "Generating will use N credits" as Flow shows it now; null when it doesn't. */
   generateCost(tabId: number): Promise<number | null>;
   /** The Account details balance (project grid page; the panel is closed again); null when unreadable. */
@@ -213,6 +217,16 @@ export function createFlowPort(over: Partial<PortDeps> = {}): FlowPort & FlowMot
       settled(
         (await ask(tabId, { type: FLOW_UPLOAD_START_FRAME, name, mimeType: image.type || 'image/png', data })) as
           | UploadStartFrameResponse
+          | undefined,
+      );
+    },
+
+    async uploadAgentPicture(tabId, name, image) {
+      // Retrying after a dropped channel is safe: the helper skips the upload when the asset is already there.
+      const data = encodeBytes(new Uint8Array(await image.arrayBuffer()));
+      settled(
+        (await ask(tabId, { type: FLOW_UPLOAD_AGENT_PICTURE, name, mimeType: image.type || 'image/png', data })) as
+          | UploadAgentPictureResponse
           | undefined,
       );
     },

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_AGENT_FINISH, FLOW_AGENT_PREPARE, FLOW_AGENT_READY, FLOW_AGENT_REPLY, FLOW_CLIP_FILE, FLOW_CREDIT_BALANCE, FLOW_GENERATE_COST, FLOW_PREPARE_CLIP, FLOW_UPLOAD_START_FRAME, FLOW_VIDEO_DETAIL, FLOW_VIDEO_TILES_NOW, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
+import { FlowBlockedError, FLOW_ACCEPT_NOTICE, FLOW_AGENT_FINISH, FLOW_AGENT_PREPARE, FLOW_AGENT_READY, FLOW_AGENT_REPLY, FLOW_CLIP_FILE, FLOW_CREDIT_BALANCE, FLOW_GENERATE_COST, FLOW_PREPARE_CLIP, FLOW_UPLOAD_START_FRAME, FLOW_UPLOAD_AGENT_PICTURE, FLOW_VIDEO_DETAIL, FLOW_VIDEO_TILES_NOW, FLOW_CONFIRM, FLOW_DETAIL, FLOW_NEW_PROJECT, FLOW_PREPARE, FLOW_TILE_POINT, FLOW_TILES_NOW, FLOW_UPLOAD_REFERENCE, decodeBytes } from '../../src/flow/messages';
 import { createFlowPort } from '../../src/flow/port';
 
 function setup(responses: unknown[], zoom = 1) {
@@ -195,6 +195,18 @@ describe('Flow port: clips and Agent questions', () => {
     expect(decodeBytes(message.data)).toEqual(bytes);
     await expect(port.uploadStartFrame(7, 'x.png', new Blob(['x']))).rejects.toBeInstanceOf(FlowBlockedError);
     await expect(port.uploadStartFrame(7, 'x.png', new Blob(['x']))).rejects.toThrow('gone');
+  });
+
+  it("uploads an Auto-pick picture's bytes through its own message; blocks and errors come back as such", async () => {
+    const event = { type: 'needsOwner', reason: 'page-not-recognised', message: 'Check Flow' } as const;
+    const { send, port } = setup([{ kind: 'done' }, { kind: 'blocked', event }, { kind: 'error', message: 'gone' }]);
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    await port.uploadAgentPicture(7, 'vidflow-s01-a.png', new Blob([bytes], { type: 'image/png' }));
+    const [, message] = send.mock.calls[0]! as [number, { type: string; name: string; mimeType: string; data: string }];
+    expect(message).toMatchObject({ type: FLOW_UPLOAD_AGENT_PICTURE, name: 'vidflow-s01-a.png', mimeType: 'image/png' });
+    expect(decodeBytes(message.data)).toEqual(bytes);
+    await expect(port.uploadAgentPicture(7, 'x.png', new Blob(['x']))).rejects.toBeInstanceOf(FlowBlockedError);
+    await expect(port.uploadAgentPicture(7, 'x.png', new Blob(['x']))).rejects.toThrow('gone');
   });
 
   it('reads the Generate cost and the credit balance', async () => {

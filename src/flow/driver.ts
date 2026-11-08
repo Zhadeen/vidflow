@@ -166,6 +166,11 @@ export interface FlowDriver {
    * window), unless an asset with its name is already there; waits until it is ready, then closes the picker.
    */
   uploadStartFrame(file: File): Promise<void>;
+  /**
+   * Uploads one of a slide's pictures for Auto-pick through the ingredients picker (Flow is in Image mode then, with no
+   * Start slot), unless an asset with its name is already there. Pauses with the Agent message when it can't.
+   */
+  uploadAgentPicture(file: File): Promise<void>;
   /** Attaches the asset with this name to the Start slot (Generate clears it, so once per clip); End stays empty. */
   attachStartFrame(name: string): Promise<void>;
   /** True while the Start slot holds a picture and End is empty. */
@@ -738,6 +743,11 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     await uploadThroughPicker(file, openFramePicker, START_FRAME_MESSAGE);
   }
 
+  async function uploadAgentPicture(file: File): Promise<void> {
+    stopForDialog();
+    await uploadThroughPicker(file, () => openPicker(AGENT_ASK_MESSAGE), AGENT_ASK_MESSAGE);
+  }
+
   async function attachStartFrame(name: string): Promise<void> {
     stopForDialog();
     const wait = opts.timeoutMs ?? PICKER_TIMEOUT_MS;
@@ -1123,6 +1133,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
     },
 
     uploadStartFrame,
+    uploadAgentPicture,
     attachStartFrame,
     hasStartFrame,
     readGenerateCost,

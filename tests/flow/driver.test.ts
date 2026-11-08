@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { checkCanStart, createFlowDriver, tileContainer, tileImage, type FlowPageState } from '../../src/flow/driver';
-import { FlowBlockedError, STRAY_INGREDIENT_MESSAGE } from '../../src/flow/messages';
+import { AGENT_ASK_MESSAGE, FlowBlockedError, STRAY_INGREDIENT_MESSAGE } from '../../src/flow/messages';
 import { SEL } from '../../src/flow/selectors';
 
 const fixture = (name: string) => readFileSync(resolve(__dirname, '../fixtures/flow', name), 'utf8');
@@ -811,6 +811,45 @@ describe('FlowDriver hero reference', () => {
     expect((err as Error).message).toBe(ATTACH_MESSAGE);
     $(SEL.promptBar).insertAdjacentHTML('beforeend', '<button class="chip-container" aria-label="Ingredient"></button>');
     await expect(driver().prepareSubmit('Match the reference', { reference: true })).resolves.toEqual({ x: 5, y: 5 });
+  });
+});
+
+describe('FlowDriver Auto-pick picture upload', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const driver = () => createFlowDriver(document, { pollMs: 5, timeoutMs: 300 });
+  const png = (name = 'vidflow-s01-a.png') => new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' });
+
+  it('uploads through the ingredients picker in Image mode, where there is no clip Start slot', async () => {
+    // Live (8 Nov 2026): after a picture run Flow is in Image mode; the Start-slot upload paused every Auto-pick.
+    load('prompt-bar.html');
+    expect(document.querySelector(SEL.startFrameChip)).toBeNull();
+    const picker = fakePicker();
+    await driver().uploadAgentPicture(png());
+    expect(picker.uploaded.map((f) => f.name)).toEqual(['vidflow-s01-a.png']);
+    expect(picker.fileClicks).toEqual([false]); // the Mac file window never opens
+    expect(document.querySelector('[role="listbox"]')).toBeNull(); // the picker was closed
+  });
+
+  it('skips the upload when the picture is already in the project', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker();
+    const d = driver();
+    await d.uploadAgentPicture(png());
+    await d.uploadAgentPicture(png());
+    expect(picker.uploaded.map((f) => f.name)).toEqual(['vidflow-s01-a.png']);
+  });
+
+  it("pauses with the Agent message when the picker can't be opened or the upload never finishes", async () => {
+    load('prompt-bar.html');
+    $(SEL.ingredients).remove();
+    const err = await driver().uploadAgentPicture(png()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(AGENT_ASK_MESSAGE);
+    document.body.innerHTML = '';
+    load('prompt-bar.html');
+    fakePicker({ neverFinishes: true });
+    const late = await driver().uploadAgentPicture(png()).catch((e: unknown) => e);
+    expect((late as Error).message).toBe(AGENT_ASK_MESSAGE);
   });
 });
 

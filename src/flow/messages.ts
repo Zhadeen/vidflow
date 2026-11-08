@@ -27,6 +27,7 @@ export const FLOW_TEST_PROMPT = 'flow/test-prompt';
 // Plan 3: clips (spike S8) and Agent questions (spikes S6/S7).
 export const FLOW_PREPARE_CLIP = 'flow/prepare-clip';
 export const FLOW_UPLOAD_START_FRAME = 'flow/upload-start-frame';
+export const FLOW_UPLOAD_AGENT_PICTURE = 'flow/upload-agent-picture';
 export const FLOW_GENERATE_COST = 'flow/generate-cost';
 export const FLOW_CREDIT_BALANCE = 'flow/credit-balance';
 export const FLOW_VIDEO_TILES_NOW = 'flow/video-tiles-now';
@@ -234,6 +235,18 @@ export type UploadStartFrameResponse =
   | { kind: 'blocked'; event: BlockingEvent; notice?: true }
   | { kind: 'error'; message: string };
 
+/**
+ * background → Flow tab: upload one of a slide's pictures for Auto-pick (vidflow-sNN-a.png …) through the ingredients
+ * picker. Flow is in Image mode then, which has no clip Start slot.
+ */
+export interface UploadAgentPictureRequest {
+  type: typeof FLOW_UPLOAD_AGENT_PICTURE;
+  name: string;
+  mimeType: string;
+  data: string;
+}
+export type UploadAgentPictureResponse = UploadStartFrameResponse;
+
 /** background → Flow tab: "Generating will use N credits" from Flow's settings popover. */
 export interface GenerateCostRequest {
   type: typeof FLOW_GENERATE_COST;
@@ -349,6 +362,7 @@ export type ToFlowTab =
   | TestPromptRequest
   | PrepareClipRequest
   | UploadStartFrameRequest
+  | UploadAgentPictureRequest
   | GenerateCostRequest
   | CreditBalanceRequest
   | VideoTilesNowRequest

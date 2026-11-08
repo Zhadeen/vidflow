@@ -239,10 +239,10 @@ function motionPort(): (FlowPort & FlowMotionPort) | null {
 }
 
 /** The port with its Agent methods, or null when it has none (an Auto-pick run then pauses). */
-function agentPort(): (FlowPort & Pick<FlowMotionPort, 'uploadStartFrame' | 'prepareAgentQuestion' | 'agentReady' | 'readAgentReply' | 'finishAgent'>) | null {
+function agentPort(): (FlowPort & Pick<FlowMotionPort, 'uploadAgentPicture' | 'prepareAgentQuestion' | 'agentReady' | 'readAgentReply' | 'finishAgent'>) | null {
   const p = port;
   if (!p) return null;
-  const needed: Array<keyof FlowMotionPort> = ['uploadStartFrame', 'prepareAgentQuestion', 'agentReady', 'readAgentReply', 'finishAgent'];
+  const needed: Array<keyof FlowMotionPort> = ['uploadAgentPicture', 'prepareAgentQuestion', 'agentReady', 'readAgentReply', 'finishAgent'];
   return needed.every((k) => typeof p[k] === 'function') ? (p as FlowPort & FlowMotionPort) : null;
 }
 
@@ -1136,7 +1136,8 @@ async function autoPickSlide(tabId: number, project: Project, sceneId: string): 
         return after();
       }
       if (!stillRunning(projectId)) return 'stop';
-      await pastNotice(tabId, projectId, sceneId, () => m.uploadStartFrame(tabId, name, image));
+      // Through the ingredients picker: Flow is in Image mode here, which has no clip Start slot (live, 8 Nov 2026).
+      await pastNotice(tabId, projectId, sceneId, () => m.uploadAgentPicture(tabId, name, image));
       await dispatch({ type: 'uploaded', names: [name] });
     }
     if (!stillRunning(projectId)) return 'stop';
