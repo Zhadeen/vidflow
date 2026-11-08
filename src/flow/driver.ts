@@ -758,6 +758,19 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
 
   async function uploadStartFrame(file: File): Promise<void> {
     stopForDialog();
+    // Only Video · Frames has a Start slot: a new Flow project can open in Image mode (live, 8 Nov 2026, after
+    // Auto-pick). With no slot showing, Flow is switched (Agent mode hides the settings, so it goes off first);
+    // switching settings costs nothing. A page that already shows the slot is left as it is.
+    if (!frameSlot('Start') && !q(SEL.startFrameChip)) {
+      try {
+        await turnOffAgentMode();
+        await chooseSetting('Video', () => findRadio('Video')?.getAttribute('aria-checked') === 'true');
+        await chooseSetting('Frames', () => findRadio('Frames')?.getAttribute('aria-checked') === 'true');
+      } catch (err) {
+        if (err instanceof FlowBlockedError) throw err;
+        throw blocked(START_FRAME_MESSAGE);
+      }
+    }
     await uploadThroughPicker(file, openFramePicker, START_FRAME_MESSAGE);
   }
 

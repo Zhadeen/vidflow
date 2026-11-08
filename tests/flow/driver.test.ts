@@ -1348,6 +1348,23 @@ describe('FlowDriver start frame (spike S8)', () => {
     expect(picker.fileClicks).toEqual([false, true]);
   });
 
+  it('switches Flow to Video · Frames first: Image mode has no Start slot to upload through', async () => {
+    // Live (8 Nov 2026): after Auto-pick, the clips run's new Flow project was in Image mode and the upload paused.
+    load('video-prompt-bar.html');
+    const picker = fakeFramePicker();
+    const radios = [...document.querySelectorAll('[role="radio"]')];
+    radios[0]!.setAttribute('aria-checked', 'true'); // Image on
+    radios[1]!.setAttribute('aria-checked', 'false'); // Video off
+    const clicked = fakeVideoRadios();
+    const slots = $('.frame-slots');
+    slots.remove(); // no Start or End slot until Flow is in Video · Frames
+    const frames = radios.find((r) => r.textContent!.includes('Frames'))!;
+    frames.addEventListener('click', () => $('flow-base-prompt-box').prepend(slots));
+    await driver().uploadStartFrame(png());
+    expect(clicked).toEqual(['Video', 'Frames']);
+    expect(picker.uploaded.map((f) => f.name)).toEqual([START_FRAME]);
+  });
+
   it('uploads into a brand-new project whose picker says "No assets found."', async () => {
     load('video-prompt-bar.html');
     const picker = fakeFramePicker({ emptyProject: true });
