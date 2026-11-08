@@ -325,3 +325,51 @@ describe('choice source in the run', () => {
     expect(out.autoChecked).toBeUndefined();
   });
 });
+
+describe('clip runs: a confirmed clip is never pressed again (fix round 5)', () => {
+  const clipRun = (n: number): RunState => ({ ...initRun(project(n)), kind: 'clips', spent: 0 });
+
+  it('a restart keeps that Flow confirmed the press: the slide goes back unconfirmed with confirmed: true', () => {
+    let s = apply(clipRun(2), { type: 'start' }, { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 5 });
+    s = reduceRun(s, { type: 'restore' });
+    expect(s.sceneStates['scene-01']!.status).toBe('pending');
+    expect(s.sceneStates['scene-01']!.unconfirmed).toMatchObject({ prompt: 'P1', seq: 1, confirmed: true });
+    // A slide never sent has no record.
+    expect(s.sceneStates['scene-02']!.unconfirmed).toBeUndefined();
+    // Recording the record again (the wait path) keeps it.
+    s = reduceRun(s, { type: 'unconfirmed', sceneId: 'scene-01', keysBefore: [], prompt: 'P1' });
+    expect(s.sceneStates['scene-01']!.unconfirmed!.confirmed).toBe(true);
+    // A press that was never confirmed has no such flag.
+    const fresh = reduceRun(apply(clipRun(1), { type: 'start' }), { type: 'unconfirmed', sceneId: 'scene-01', keysBefore: [], prompt: 'P1', at: 1 });
+    expect(fresh.sceneStates['scene-01']!.unconfirmed!.confirmed).toBeUndefined();
+  });
+
+  it('a pause about one slide records it; Resume, a pause by the owner or another pause clear it', () => {
+    const paused = apply(clipRun(2), { type: 'start' }, { type: 'needsOwner', reason: 'page-not-recognised', message: 'Look', sceneId: 'scene-01' });
+    expect(paused).toMatchObject({ status: 'paused', pauseReason: 'Look', pauseSceneId: 'scene-01' });
+    expect(reduceRun(paused, { type: 'resume' }).pauseSceneId).toBeUndefined();
+    expect(reduceRun(paused, { type: 'pause' }).pauseSceneId).toBeUndefined();
+    expect(reduceRun(paused, { type: 'needsOwner', reason: 'policy-dialog', message: 'Other' }).pauseSceneId).toBeUndefined();
+    expect(reduceRun(paused, { type: 'stop' }).pauseSceneId).toBeUndefined();
+  });
+
+  it('Skip while paused about a slide skips that slide only; its press keeps its place; the run stays paused', () => {
+    let s = apply(
+      clipRun(3),
+      { type: 'start' },
+      { type: 'submitted', sceneId: 'scene-01', prompt: 'P1', at: 5 },
+      { type: 'restore' },
+      { type: 'needsOwner', reason: 'page-not-recognised', message: 'Look', sceneId: 'scene-01' },
+    );
+    expect(reduceRun(s, { type: 'skip', sceneId: 'scene-02' })).toBe(s); // never another slide
+    s = reduceRun(s, { type: 'skip', sceneId: 'scene-01' });
+    expect(s.sceneStates['scene-01']).toMatchObject({ status: 'failed', message: SKIPPED_MESSAGE });
+    expect(s.sceneStates['scene-01']!.unconfirmed).toBeUndefined();
+    expect(s.sceneStates['scene-02']!.status).toBe('pending');
+    expect(s.skippedPrompts).toEqual([{ sceneId: 'scene-01', prompt: 'P1', seq: 1, at: expect.any(Number) }]);
+    expect(s.status).toBe('paused');
+    expect(s.pauseSceneId).toBeUndefined();
+    expect(nextSceneToSubmit(s, ids(3), 1)).toBeNull(); // nothing is sent until Resume
+    expect(nextSceneToSubmit(reduceRun(s, { type: 'resume' }), ids(3), 1)).toBe('scene-02');
+  });
+});

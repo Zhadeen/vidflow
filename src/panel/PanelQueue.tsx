@@ -319,6 +319,10 @@ export function PanelQueue(props: Props) {
   const sheetLive = !!run && isHeroSheetRun(run) && run.projectId === project.id && (run.status === 'running' || run.status === 'paused');
   const canStart = !live && total > 0 && remaining > 0 && !sheetLive;
   const pauseReason = ownerPauseReason(project, run);
+  // Paused about one slide (VidFlow couldn't tell whether Flow started its clip): the owner may skip that slide.
+  const pausedOnId = paused && run?.pauseSceneId && states[run.pauseSceneId]?.status === 'pending' ? run.pauseSceneId : null;
+  const pausedOn = pausedOnId ? (project.scenes.find((s) => s.id === pausedOnId)?.slide ?? null) : null;
+  const skipLabel = pausedOn !== null ? `Skip slide ${pausedOn}` : 'Skip';
 
   return (
     <>
@@ -484,7 +488,7 @@ export function PanelQueue(props: Props) {
         </p>
       )}
 
-      {paused && (
+      {paused && pausedOn === null && (
         // Paused, nothing is being worked on: there is no current scene to skip.
         <p className="vf-pn-note vf-pn-end" id={skipWhyId}>
           Skip works while VidFlow is making pictures.
@@ -507,10 +511,10 @@ export function PanelQueue(props: Props) {
           <Button
             onClick={props.onSkip}
             loading={busy === 'skip'}
-            disabled={paused || (busy !== null && busy !== 'skip')}
-            aria-describedby={paused ? skipWhyId : undefined}
+            disabled={(paused && pausedOn === null) || (busy !== null && busy !== 'skip')}
+            aria-describedby={paused && pausedOn === null ? skipWhyId : undefined}
           >
-            Skip
+            {skipLabel}
           </Button>
         </div>
       ) : (

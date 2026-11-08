@@ -537,8 +537,9 @@ async function dispatch(event: RunEvent): Promise<void> {
   void clipPoll();
 }
 
-function pauseWith(message: string): Promise<void> {
-  return dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message });
+/** `sceneId`: the slide the pause is about (the owner may Skip it while paused). */
+function pauseWith(message: string, sceneId?: string): Promise<void> {
+  return dispatch({ type: 'needsOwner', reason: 'page-not-recognised', message, ...(sceneId ? { sceneId } : {}) });
 }
 
 // ---- Submitting ----------------------------------------------------------
@@ -714,7 +715,8 @@ const CLIP_UNTRUSTED = "Flow gave VidFlow a clip from an address it doesn't trus
 const CLIP_UNFINISHED = "Flow didn't finish this clip in 10 minutes.";
 /** The press of Generate itself failed: Flow may have taken it. */
 /** Still unsure after the wait limit whether Flow started a slide's clip: never pressed again on a guess. */
-export const CLIP_UNSURE_MESSAGE = "VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume.";
+export const CLIP_UNSURE_MESSAGE =
+  "VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume — or Skip this slide.";
 export const CLIP_PRESS_MESSAGE =
   "VidFlow may have pressed Generate for this clip but couldn't tell. Check the Flow window, then press Resume (VidFlow looks for the clip before pressing again).";
 
@@ -1038,7 +1040,7 @@ async function sendScene(tabId: number, project: Project, sceneId: string, promp
         } else if (Date.now() - unconfirmed.at >= timings.unconfirmedWaitMs) {
           // A clip is never pressed again on a guess (nor failed: its press may be in Flow): the owner looks.
           if (clips) {
-            await pauseWith(CLIP_UNSURE_MESSAGE);
+            await pauseWith(CLIP_UNSURE_MESSAGE, sceneId);
             return 'stop';
           }
           await dispatch({ type: 'failed', sceneId, message: UNCONFIRMED_MESSAGE });
@@ -1177,7 +1179,8 @@ const noClipSeen = new Map<string, number>();
  * Telling the older tiles by place is only safe on a whole grid, and pressing again on a wrong "no" pays twice. So
  * "not started" (false) needs: no fewer tiles than at the press, no checked tile with this prompt left out of the read,
  * no unclaimed tile with this prompt (by its checked prompt, or a drawing tile's caption) anywhere past keysBefore, and
- * the same answer on two looks in a row. Anything less is 'wait' (look again; the run pauses after the wait limit).
+ * the same answer on two looks in a row, and a press Flow never confirmed (a confirmed one is never "not started").
+ * Anything less is 'wait' (look again; the run pauses after the wait limit).
  * null when the run stopped meanwhile. Holds the tab.
  */
 async function findUnconfirmedClip(
@@ -1244,6 +1247,9 @@ async function findUnconfirmedClip(
     noClipSeen.delete(sceneId);
     return 'wait';
   }
+  // Flow confirmed this press started (before a restart): its clip is in Flow even if no read shows it. Never "not
+  // started": look again, and the run pauses for the owner at the wait limit.
+  if (u.confirmed) return 'wait';
   // Nothing of this press in a whole grid: once is not enough (Flow can leave a tile out of one read).
   if (noClipSeen.get(sceneId) !== u.at) {
     noClipSeen.set(sceneId, u.at ?? 0);
@@ -1828,6 +1834,7 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
  * Skip (spec §19): the scene VidFlow is working on now ends as failed "Skipped by you" and the run moves on. "Now" is
  * the scene the step names (what the panel shows), else the one being sent, else the newest in Flow, else the next to
  * send. If it was in Flow already, its pictures are never saved (see the run's skippedPrompts). Nothing live: no-op.
+ * Paused about one slide (pauseSceneId): that slide, never another; the run stays paused until Resume.
  */
 export async function skipCurrent(): Promise<void> {
   await ready;
@@ -1841,7 +1848,9 @@ export async function skipCurrent(): Promise<void> {
       !!id && (run.sceneStates[id]?.status === 'pending' || run.sceneStates[id]?.status === 'submitted');
     const newest = [...run.inFlight].sort((a, b) => (run.sceneStates[b]?.submission?.seq ?? 0) - (run.sceneStates[a]?.submission?.seq ?? 0))[0];
     const next = (project?.scenes ?? []).map((s) => s.id).find((id) => run.sceneStates[id]?.status === 'pending');
-    const target = [step?.projectId === run.projectId ? step.sceneId : null, submitting, newest, next].find(open);
+    // Paused about one slide (a clip VidFlow couldn't tell Flow started): Skip means that slide, and only it.
+    const about = run.status === 'paused' ? run.pauseSceneId : undefined;
+    const target = about !== undefined ? [about].find(open) : [step?.projectId === run.projectId ? step.sceneId : null, submitting, newest, next].find(open);
     if (!target) return;
     await commit(reduceRun(run, { type: 'skip', sceneId: target }));
   });

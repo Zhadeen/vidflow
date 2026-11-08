@@ -947,7 +947,8 @@ describe('Motion run (clips)', () => {
     });
     c2.setFlowPort(ctx.port);
     await waitFor(() => c2.getRunState()?.status === 'paused', 'paused');
-    expect(c2.getRunState()!.pauseReason).toBe("VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume.");
+    expect(c2.getRunState()!.pauseReason).toBe("VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume — or Skip this slide.");
+    expect(c2.getRunState()!.pauseSceneId).toBe('s2');
     expect(c2.getRunState()!.sceneStates.s2!.status).toBe('pending');
     expect(ctx.world.generates).toBe(2);
     expect(c2.getRunState()!.spent).toBe(14);
@@ -1011,6 +1012,111 @@ describe('Motion run (clips)', () => {
     expect(saved.sceneStates.s1!.clip).toBeUndefined();
     expect(saved.sceneStates.s1!.clipNote).toMatch(/file/);
     expect(saved.sceneStates.s2!.clip?.flowMediaId).toBe('m2');
+  });
+
+  const UNSURE = "VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume — or Skip this slide.";
+
+  /** Hides clip n from the grid reads of the first `looks` looks a restart's look for an unconfirmed slide makes. */
+  function hideFromLooks(ctx: Awaited<ReturnType<typeof setup>>, n: number, looks: number) {
+    let made = 0;
+    const read = ctx.port.videoTiles.getMockImplementation()!;
+    ctx.port.videoTiles.mockImplementation(async () => {
+      const look = (new Error().stack ?? '').includes('findUnconfirmedClip');
+      if (!look || made >= looks) return read();
+      made++;
+      ctx.world.clip(n).hidden = true;
+      try {
+        return await read();
+      } finally {
+        ctx.world.clip(n).hidden = false;
+      }
+    });
+    return () => made;
+  }
+
+  for (const looks of [2, 3]) {
+    it(`fix 5 repro 1a: after a restart a confirmed slide's tile is missing from ${looks} looks in a row: never pressed again`, async () => {
+      const ctx = await setup({ picks: ['s1'] });
+      stubFetch();
+      ctx.coordinator.setFlowPort(ctx.port);
+      await ctx.coordinator.startClipRun(ctx.project.id, 100);
+      await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 in Flow');
+      const { c2, store2 } = await restart(ctx);
+      ctx.world.finish();
+      const made = hideFromLooks(ctx, 1, looks);
+      c2.setFlowPort(ctx.port);
+      await waitFor(() => made() >= looks, `${looks} looks made`);
+      await waitFor(() => c2.getRunState()?.status === 'finished', 'the run finished');
+      await c2.settledForTests();
+      expect(ctx.world.generates).toBe(1);
+      expect(c2.getRunState()!.spent).toBe(7);
+      expect((await store2.getProject(ctx.project.id))!.sceneStates.s1!.clip?.flowMediaId).toBe('m1');
+    });
+  }
+
+  /** s1 confirmed in Flow, s2 not yet pressed, then a restart; s1's tile never shows again. Ends paused on s1. */
+  async function pausedOnConfirmedSlide() {
+    const ctx = await setup({ picks: ['s1', 's2'] });
+    stubFetch();
+    const typing = ctx.port.prepareClip.getMockImplementation()!;
+    ctx.port.prepareClip.mockImplementation(async (tabId, prompt, options) => {
+      if (options.startFrame === 'vidflow-s02.png') await new Promise(() => undefined); // s2 is never pressed here
+      return typing(tabId, prompt, options);
+    });
+    ctx.coordinator.setFlowPort(ctx.port);
+    await ctx.coordinator.startClipRun(ctx.project.id, 100);
+    await waitFor(() => ctx.coordinator.getRunState()?.sceneStates.s1?.status === 'submitted', 's1 in Flow');
+    await waitFor(() => ctx.port.prepareClip.mock.calls.length === 2, 's2 being set up');
+    const { c2, store2, chrome2 } = await restart(ctx);
+    ctx.port.prepareClip.mockImplementation(typing);
+    c2.setTimingsForTests({ unconfirmedWaitMs: 40 });
+    ctx.world.finish();
+    ctx.world.clip(1).hidden = true; // Flow never shows s1's clip again
+    c2.setFlowPort(ctx.port);
+    await waitFor(() => c2.getRunState()?.status === 'paused', 'paused');
+    return { ctx, c2, store2, chrome2 };
+  }
+
+  it("fix 5 repro 1b: a confirmed slide's tile missing from every look: it waits, then pauses on that slide; never pressed again", async () => {
+    const { ctx, c2 } = await pausedOnConfirmedSlide();
+    const run = c2.getRunState()!;
+    expect(run.pauseReason).toBe(UNSURE);
+    expect(run.pauseSceneId).toBe('s1');
+    expect(run.sceneStates.s1!.status).toBe('pending');
+    expect(run.sceneStates.s2!.status).toBe('pending');
+    expect(ctx.world.generates).toBe(1);
+    expect(run.spent).toBe(7);
+    // Resume looks again (never presses): the same pause comes back after the wait limit.
+    await c2.resumeRun();
+    await waitFor(() => c2.getRunState()?.status === 'paused', 'paused again');
+    expect(c2.getRunState()!.pauseSceneId).toBe('s1');
+    expect(ctx.world.generates).toBe(1);
+    expect(c2.getRunState()!.spent).toBe(7);
+  });
+
+  it('fix 5: Skip during that pause skips the paused slide only, presses nothing, and the run waits for Resume', async () => {
+    const { ctx, c2, chrome2 } = await pausedOnConfirmedSlide();
+    // The step on screen names another slide: Skip still means the slide the pause is about.
+    chrome2.storage.local.data['vidflow.step'] = { projectId: ctx.project.id, sceneId: 's2', text: 'Typing the prompt', target: 'prompt', at: Date.now() };
+    await c2.skipCurrent();
+    await c2.settledForTests();
+    let run = c2.getRunState()!;
+    expect(run.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you' });
+    expect(run.sceneStates.s2!.status).toBe('pending');
+    expect(run.status).toBe('paused');
+    expect(run.pauseSceneId).toBeUndefined();
+    expect(run.skippedPrompts?.map((x) => x.sceneId)).toEqual(['s1']);
+    expect(run.skippedPrompts![0]!.prompt).toMatch(/Slide 1 moves gently/);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ctx.world.generates).toBe(1);
+    expect(c2.getRunState()!.spent).toBe(7);
+    // Resume: the run carries on with s2 (one press for it).
+    await c2.resumeRun();
+    await waitFor(() => c2.getRunState()?.sceneStates.s2?.status === 'submitted', 's2 in Flow');
+    run = c2.getRunState()!;
+    expect(ctx.world.generates).toBe(2);
+    expect(run.spent).toBe(14);
+    expect(run.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you' });
   });
 
   it("logs Flow's announcement and a panel left open in the run's activity", async () => {

@@ -47,6 +47,11 @@ export interface SceneState {
     othersBefore?: number;
     /** Clip runs: credits already counted for a press Flow answered with its usage notice (not counted again). */
     paid?: number;
+    /**
+     * Clip runs: Flow confirmed this press started (the slide was in Flow before a restart). Its clip is never pressed
+     * again by VidFlow: it is only looked for, and the run pauses for the owner when it can't be found.
+     */
+    confirmed?: true;
   };
 }
 /** The hero's model sheet (made in Flow): kept apart from the scenes, so it is never a scene in the grid or export. */

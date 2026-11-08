@@ -51,6 +51,8 @@ export type RunEvent =
       type: 'needsOwner';
       reason: 'policy-dialog' | 'signed-out' | 'wrong-account' | 'page-not-recognised';
       message: string;
+      /** The slide this pause is about (the owner may Skip it while paused). */
+      sceneId?: string;
     };
 
 export const USER_PAUSE_REASON = 'Paused by you';
@@ -114,6 +116,8 @@ export interface RunState {
   status: 'idle' | 'running' | 'paused' | 'finished';
   pauseReason?: string;
   resumeAt?: number | null;
+  /** The slide a pause is about (a clip VidFlow couldn't tell Flow started): Skip while paused skips it, and only it. */
+  pauseSceneId?: string;
   inFlight: string[];
   sceneStates: Record<string, SceneState>;
   /** The fresh Flow project this run works in (spec §16.5). Unset until the run creates it; a new run starts without. */
@@ -222,6 +226,8 @@ function requeueSubmitted(state: RunState, keepPressed = false): RunState {
                 prompt: submission.prompt,
                 at: Date.now(),
                 seq: submission.seq,
+                // It was in Flow ('submitted'): Flow confirmed the press started. It is never pressed again on its own.
+                confirmed: true as const,
                 ...(submission.othersBefore !== undefined ? { othersBefore: submission.othersBefore } : {}),
               },
             }
@@ -247,7 +253,7 @@ function restartUnconfirmedClocks(state: RunState): RunState {
 }
 
 function clearPause(state: RunState): RunState {
-  const { pauseReason: _r, resumeAt: _t, ...rest } = state;
+  const { pauseReason: _r, resumeAt: _t, pauseSceneId: _s, ...rest } = state;
   return rest;
 }
 
@@ -262,7 +268,7 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       return requeueSubmitted(state, state.kind === 'clips');
     case 'pause':
       if (state.status !== 'running' && state.status !== 'paused') return state; // nothing to pause
-      return { ...state, status: 'paused', pauseReason: USER_PAUSE_REASON, resumeAt: null };
+      return { ...clearPause(state), status: 'paused', pauseReason: USER_PAUSE_REASON, resumeAt: null };
     case 'submitted': {
       const current = state.sceneStates[event.sceneId];
       if (isSkipped(current)) {
@@ -295,12 +301,14 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       if (!current || current.status !== 'pending') return state;
       // What an earlier press Flow answered with its usage notice counted stays counted (it's never paid twice).
       const paid = current.unconfirmed?.paid;
+      const confirmed = current.unconfirmed?.confirmed;
       const unconfirmed = {
         keysBefore: event.keysBefore,
         prompt: event.prompt,
         at: event.at ?? Date.now(),
         ...(event.othersBefore !== undefined ? { othersBefore: event.othersBefore } : {}),
         ...(paid !== undefined ? { paid } : {}),
+        ...(confirmed ? { confirmed } : {}),
       };
       return {
         ...state,
@@ -337,13 +345,24 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
     case 'skip': {
       const current = state.sceneStates[event.sceneId];
       if (!current || (current.status !== 'pending' && current.status !== 'submitted')) return state;
-      const { submission, unconfirmed: _u, ...rest } = current;
+      // Paused about one slide: Skip means that slide, never another.
+      const aboutIt = state.status === 'paused' && state.pauseSceneId !== undefined;
+      if (aboutIt && event.sceneId !== state.pauseSceneId) return state;
+      const { submission, unconfirmed: pressed, ...rest } = current;
+      // A clip slide Flow confirmed started (then a restart) has its clip in Flow, as a submitted one does: it keeps its
+      // place in the order, so it is never matched to a later slide.
+      const pressedSeq = pressed?.confirmed && state.kind === 'clips' ? (pressed.seq ?? (state.nextSeq ?? 0) + 1) : undefined;
       const skipped =
         current.status === 'submitted' && submission
           ? [...(state.skippedPrompts ?? []), { sceneId: event.sceneId, prompt: submission.prompt, seq: submission.seq, at: submission.at }]
-          : state.skippedPrompts;
+          : pressed && pressedSeq !== undefined
+            ? [...(state.skippedPrompts ?? []), { sceneId: event.sceneId, prompt: pressed.prompt, seq: pressedSeq, at: Date.now() }]
+            : state.skippedPrompts;
+      // The pause was about this slide: it now waits for Resume like any pause by the owner.
+      const base = aboutIt ? { ...clearPause(state), pauseReason: USER_PAUSE_REASON, resumeAt: null } : state;
       return settle({
-        ...state,
+        ...base,
+        ...(pressedSeq !== undefined ? { nextSeq: Math.max(pressedSeq, state.nextSeq ?? 0) } : {}),
         ...(skipped ? { skippedPrompts: skipped } : {}),
         inFlight: state.inFlight.filter((id) => id !== event.sceneId),
         sceneStates: { ...state.sceneStates, [event.sceneId]: { ...rest, status: 'failed', message: SKIPPED_MESSAGE } },
@@ -405,9 +424,15 @@ export function reduceRun(state: RunState, event: RunEvent): RunState {
       return settle({ ...state, sceneStates });
     }
     case 'limit':
-      return { ...state, status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };
+      return { ...clearPause(state), status: 'paused', pauseReason: event.message, resumeAt: event.resumeAt };
     case 'needsOwner':
-      return { ...state, status: 'paused', pauseReason: event.message, resumeAt: null };
+      return {
+        ...clearPause(state),
+        status: 'paused',
+        pauseReason: event.message,
+        resumeAt: null,
+        ...(event.sceneId ? { pauseSceneId: event.sceneId } : {}),
+      };
   }
 }
 

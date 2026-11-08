@@ -326,6 +326,25 @@ describe('side panel: the Queue tab', () => {
     expect(client.stop).toHaveBeenCalled();
   });
 
+  it('paused about one slide: Skip is offered for that slide, named, and calls the client', async () => {
+    stubChrome();
+    const p = await seed('Phone Bill Story', 9);
+    const paused = reduceRun(runningState(p, 6), {
+      type: 'needsOwner',
+      reason: 'page-not-recognised',
+      message: "VidFlow couldn't tell whether Flow started this clip. Check the Flow window, then press Resume — or Skip this slide.",
+      sceneId: sceneId(7),
+    });
+    const client = fakeBackground(paused).client();
+    render(<Panel client={client} />);
+    const skip = (await screen.findByRole('button', { name: 'Skip slide 7' })) as HTMLButtonElement;
+    expect(skip.disabled).toBe(false);
+    expect(skip.textContent).toContain('Skip slide 7');
+    expect(screen.queryByText('Skip works while VidFlow is making pictures.')).toBeNull();
+    await act(async () => fireEvent.click(skip));
+    expect(client.skip).toHaveBeenCalledTimes(1);
+  });
+
   it('a refused request shows its plain reason', async () => {
     stubChrome();
     const p = await seed('Phone Bill Story', 3, (x) => (x.sceneStates = { [sceneId(1)]: { sceneId: sceneId(1), status: 'failed', message: 'x', pictureIds: [] } }));
