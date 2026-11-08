@@ -1834,7 +1834,8 @@ export async function retryScene(projectId: string, sceneId: string): Promise<vo
  * Skip (spec §19): the scene VidFlow is working on now ends as failed "Skipped by you" and the run moves on. "Now" is
  * the scene the step names (what the panel shows), else the one being sent, else the newest in Flow, else the next to
  * send. If it was in Flow already, its pictures are never saved (see the run's skippedPrompts). Nothing live: no-op.
- * Paused about one slide (pauseSceneId): that slide, never another; the run stays paused until Resume.
+ * Paused: only the slide the pause is about (pauseSceneId), never another; nothing when the pause names none. The
+ * run stays paused until Resume.
  */
 export async function skipCurrent(): Promise<void> {
   await ready;
@@ -1848,9 +1849,12 @@ export async function skipCurrent(): Promise<void> {
       !!id && (run.sceneStates[id]?.status === 'pending' || run.sceneStates[id]?.status === 'submitted');
     const newest = [...run.inFlight].sort((a, b) => (run.sceneStates[b]?.submission?.seq ?? 0) - (run.sceneStates[a]?.submission?.seq ?? 0))[0];
     const next = (project?.scenes ?? []).map((s) => s.id).find((id) => run.sceneStates[id]?.status === 'pending');
-    // Paused about one slide (a clip VidFlow couldn't tell Flow started): Skip means that slide, and only it.
-    const about = run.status === 'paused' ? run.pauseSceneId : undefined;
-    const target = about !== undefined ? [about].find(open) : [step?.projectId === run.projectId ? step.sceneId : null, submitting, newest, next].find(open);
+    // While paused there is nothing current: only the slide the pause is about, never a fallback (a second Skip from
+    // a stale panel must not skip a slide that was already paid for).
+    const target =
+      run.status === 'paused'
+        ? [run.pauseSceneId].find(open)
+        : [step?.projectId === run.projectId ? step.sceneId : null, submitting, newest, next].find(open);
     if (!target) return;
     await commit(reduceRun(run, { type: 'skip', sceneId: target }));
   });

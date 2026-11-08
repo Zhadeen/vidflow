@@ -1119,6 +1119,17 @@ describe('Motion run (clips)', () => {
     expect(run.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you' });
   });
 
+  it('a second Skip during that pause skips nothing else', async () => {
+    const { c2 } = await pausedOnConfirmedSlide();
+    await c2.skipCurrent();
+    await c2.skipCurrent(); // a stale panel or a message race
+    await c2.settledForTests();
+    const run = c2.getRunState()!;
+    expect(run.sceneStates.s1).toMatchObject({ status: 'failed', message: 'Skipped by you' });
+    expect(run.sceneStates.s2!.status).toBe('pending');
+    expect(run.skippedPrompts?.map((x) => x.sceneId)).toEqual(['s1']);
+  });
+
   it("logs Flow's announcement and a panel left open in the run's activity", async () => {
     const { coordinator, project, port, chromeMock } = await setup({ picks: ['s1'] });
     port.prepareClip.mockImplementation(() => new Promise(() => undefined));
