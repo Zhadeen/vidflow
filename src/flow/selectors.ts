@@ -19,6 +19,8 @@ export const SEL = {
   overlay: '.cdk-overlay-container',
   assetList: '[role="listbox"][aria-label="Asset list"]',
   assetOption: '[role="option"]',
+  /** The highlighted asset: "Add to prompt" adds this one, not the last one clicked (live, 8 Nov 2026). */
+  activeAsset: '.asset-item-active',
   /** Flow appends this to <body> when "Upload media" is pressed, and keeps it there. */
   fileInput: 'body > input[type="file"]',
   /** One per ingredient attached to the prompt. */

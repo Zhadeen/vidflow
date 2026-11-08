@@ -457,6 +457,32 @@ class FakeDataTransfer {
 }
 
 /**
+ * Live Flow (8 Nov 2026): one asset in the list is highlighted (asset-item-active), the newest when the list is drawn; a
+ * click moves the highlight, and "Add to prompt" adds the highlighted asset (not the last one clicked).
+ */
+function highlightable(list: Element): void {
+  if ((list as HTMLElement).dataset.highlightable) return;
+  (list as HTMLElement).dataset.highlightable = '1';
+  list.addEventListener('click', (e) => {
+    const option = (e.target as Element).closest('[role="option"]');
+    if (!option) return;
+    list.querySelectorAll('.asset-item-active').forEach((o) => o.classList.remove('asset-item-active'));
+    option.classList.add('asset-item-active');
+  });
+}
+/** Flow draws (or redraws) the list: every option is an asset-item and the newest (first) is highlighted. */
+function highlightNewest(list: Element): void {
+  highlightable(list);
+  const options = [...list.querySelectorAll('[role="option"]')];
+  options.forEach((o) => (o.classList.add('asset-item'), o.classList.remove('asset-item-active')));
+  options[0]?.classList.add('asset-item-active');
+}
+/** The highlighted asset's name, or null. */
+function highlightedName(list: Element | null): string | null {
+  return list?.querySelector('.asset-item-active span')?.textContent ?? null;
+}
+
+/**
  * Stand-in for Flow's ingredients picker, behaving as spike S7 recorded it: the trigger opens the picker in the overlay;
  * "Upload media" appends an input[type=file] to <body> and clicks it; a change shows "Uploading <name>", then
  * "<name> Image" plus a grid tile with its own media id; option → "Add to prompt" puts one Ingredient chip in the bar.
@@ -483,7 +509,7 @@ function fakePicker(
   document.body.append(overlay);
   const uploaded: File[] = [];
   const fileClicks: boolean[] = []; // whether each click on the file input was allowed to open the file window
-  let selected: string | null = null;
+  const added: string[] = []; // what each Add to prompt added
   const assets: string[] = []; // names VidFlow uploaded, kept across picker openings like Flow's project assets
   const uploading = new Set<string>();
 
@@ -505,9 +531,9 @@ function fakePicker(
       o.innerHTML = uploading.has(name)
         ? `<span class="asset-name">Uploading</span><span class="asset-type">${name}</span>`
         : `<span class="asset-name">${name}</span><span class="asset-type">Image</span>`;
-      o.addEventListener('click', () => (selected = name));
       list.prepend(o);
     }
+    highlightNewest(list);
   }
 
   // Live Flow (5 Nov 2026): Escape closes the picker only when it comes from inside the overlay, not from the document.
@@ -517,7 +543,6 @@ function fakePicker(
 
   function open() {
     overlay.innerHTML = fixture('ingredients-picker.html');
-    selected = null;
     if (opts.emptyProject && assets.length === 0) {
       const list = overlay.querySelector('[role="listbox"]')!;
       list.insertAdjacentHTML('afterend', '<div class="no-assets">No assets found.</div>');
@@ -562,7 +587,9 @@ function fakePicker(
       input.click();
     });
     overlay.querySelector('.add-to-prompt')!.addEventListener('click', () => {
-      if (!selected) return;
+      const name = highlightedName(overlay.querySelector('[role="listbox"]'));
+      if (!name) return;
+      added.push(name);
       overlay.innerHTML = '';
       if (opts.addsChip === false) return;
       $(SEL.promptBar).insertAdjacentHTML(
@@ -573,7 +600,7 @@ function fakePicker(
   }
 
   $(SEL.ingredients).addEventListener('click', () => (overlay.querySelector('.upload-media') ? (overlay.innerHTML = '') : open()));
-  return { uploaded, fileClicks, assets, chips: () => document.querySelectorAll(SEL.ingredientChip).length };
+  return { uploaded, fileClicks, assets, added, chips: () => document.querySelectorAll(SEL.ingredientChip).length };
 }
 
 describe('FlowDriver hero reference', () => {
@@ -643,6 +670,16 @@ describe('FlowDriver hero reference', () => {
     expect(picker.chips()).toBe(1);
     expect(d.hasReference()).toBe(true);
     expect(document.querySelector('[role="listbox"]')).toBeNull(); // Add to prompt closed the picker
+  });
+
+  it('attaches the reference, never the newer asset Flow highlights at the top of the list', async () => {
+    load('prompt-bar.html');
+    const picker = fakePicker();
+    const d = driver();
+    await d.uploadReference(png());
+    await d.uploadReference(new File([new Uint8Array([1])], 'newer.png', { type: 'image/png' }));
+    await d.attachReference(REFERENCE);
+    expect(picker.added).toEqual([REFERENCE]);
   });
 
   const NOTICE_HTML =
@@ -1521,7 +1558,7 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
    * the prompt bar into it; pictures are attached with the S7 picker and show as "Image ingredient" chips; Start new
    * session empties the conversation; Close removes the panel. `send()` stands in for the background's trusted press.
    */
-  function fakeAgent(names: string[]) {
+  function fakeAgent(names: string[], opts: { newest?: string; redrawMs?: number } = {}) {
     vi.stubGlobal('DataTransfer', FakeDataTransfer);
     const overlay = document.createElement('div');
     overlay.className = 'cdk-overlay-container';
@@ -1534,15 +1571,29 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
       triggers.push((e.currentTarget as Element).closest('flow-agent-panel') ? 'panel' : 'page');
       overlay.innerHTML = fixture('ingredients-picker.html');
       const list = overlay.querySelector('[role="listbox"]')!;
-      let selected: string | null = null;
-      for (const name of names.filter((n) => !attached.includes(n))) {
-        const o = document.createElement('button');
-        o.setAttribute('role', 'option');
-        o.innerHTML = `<span>${name}</span><span>Image</span>`;
-        o.addEventListener('click', () => (selected = name));
-        list.prepend(o);
-      }
+      const draw = (shown: string[]) => {
+        list.innerHTML = '';
+        for (const name of shown.filter((n) => !attached.includes(n))) {
+          const o = document.createElement('button');
+          o.setAttribute('role', 'option');
+          o.innerHTML = `<span>${name}</span><span>Image</span>`;
+          list.prepend(o);
+        }
+        highlightNewest(list);
+      };
+      // `newest`: an upload Flow's list shows only after a redraw, `redrawMs` after opening, with Add to prompt disabled
+      // until then (live, 8 Nov 2026: the redraw highlighted the newest again, and Add attached it).
+      if (opts.newest && opts.redrawMs) {
+        draw(names.filter((n) => n !== opts.newest));
+        const add = overlay.querySelector<HTMLButtonElement>('.add-to-prompt')!;
+        add.disabled = true;
+        setTimeout(() => {
+          draw(names);
+          add.disabled = false;
+        }, opts.redrawMs);
+      } else draw(names);
       overlay.querySelector('.add-to-prompt')!.addEventListener('click', () => {
+        const selected = highlightedName(list);
         if (!selected) return;
         attached.push(selected);
         overlay.innerHTML = '';
@@ -1607,6 +1658,32 @@ describe('FlowDriver Agent questions (spike S8, Agent panel recorded live)', () 
     expect(agent.attached).toEqual(['vidflow-s01-b.png', 'vidflow-s01-a.png']);
     expect(imageChips()).toHaveLength(2);
     expect($(SEL.promptBox).textContent).toBe(QUESTION);
+  });
+
+  it('attaches the asked pictures in order when the newest upload is highlighted, even after a late redraw', async () => {
+    // Live (8 Nov 2026): "Add to prompt" adds the highlighted asset; the list opened without the newest upload, then
+    // redrew with it on top and highlighted, so the first slot got the wrong picture.
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['vidflow-s02-a.png', 'vidflow-s02-b.png'], { newest: 'vidflow-s02-b.png', redrawMs: 40 });
+    await driver().prepareAgentQuestion(['vidflow-s02-a.png', 'vidflow-s02-b.png'], QUESTION);
+    expect(agent.attached).toEqual(['vidflow-s02-a.png', 'vidflow-s02-b.png']);
+  });
+
+  it('never presses Add to prompt while another picture stays highlighted: it pauses, with nothing attached', async () => {
+    load('prompt-bar.html');
+    ready();
+    const agent = fakeAgent(['vidflow-s02-a.png', 'vidflow-s02-b.png']);
+    // A click that doesn't move the highlight (the newest, s02-b, stays highlighted).
+    const stuck = (e: Event) => void ((e.target as Element).closest?.('[role="option"]') && e.stopPropagation());
+    document.addEventListener('click', stuck, true);
+    const err = await driver()
+      .prepareAgentQuestion(['vidflow-s02-a.png', 'vidflow-s02-b.png'], QUESTION)
+      .catch((e: unknown) => e)
+      .finally(() => document.removeEventListener('click', stuck, true));
+    expect(err).toBeInstanceOf(FlowBlockedError);
+    expect((err as Error).message).toBe(AGENT_ASK_MESSAGE);
+    expect(agent.attached).toEqual([]);
   });
 
   it('returns the new agent row\'s answer, and finishing closes the panel and turns Agent mode off', async () => {

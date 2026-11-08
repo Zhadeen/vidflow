@@ -596,6 +596,27 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
   };
   const chips = () => doc.querySelectorAll(SEL.ingredientChip).length;
 
+  /**
+   * Highlights the asset with this name and answers with "Add to prompt", ready to press. Add adds whichever asset is
+   * highlighted (live, 8 Nov 2026), and the list can redraw after it opens (a new upload on top and highlighted again,
+   * Add disabled until then). So Add must be enabled first, and the click is repeated until this asset is the
+   * highlighted one; Add is never answered while another asset is.
+   */
+  async function highlightForAdd(name: string, wait: number, message?: string): Promise<HTMLElement> {
+    return untilOrBlocked(
+      () => {
+        const add = overlayButton('Add to prompt');
+        const option = readyAsset(name);
+        if (!add || !option) return null;
+        if (option.matches(SEL.activeAsset)) return add;
+        option.click(); // checked on the next look, after any redraw it set off
+        return null;
+      },
+      wait,
+      message,
+    );
+  }
+
   /** The open picker: its asset list, or (in a brand-new Flow project, which says "No assets found.") its Upload button. */
   const pickerOpen = () => q(SEL.assetList) ?? overlayButton('Upload media');
 
@@ -691,10 +712,7 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       await untilOrBlocked(() => chips() === 0, wait);
     }
     await openPicker();
-    const option = await untilOrBlocked(() => readyAsset(name), wait);
-    option.click();
-    const add = await untilOrBlocked(() => overlayButton('Add to prompt'), wait);
-    add.click();
+    (await highlightForAdd(name, wait)).click();
     await untilOrBlocked(() => chips() === 1, wait);
   }
 
@@ -927,10 +945,10 @@ export function createFlowDriver(doc: Document = document, opts: DriverOptions =
       // leaves the list.
       for (const [i, name] of names.entries()) {
         await openPicker(AGENT_ASK_MESSAGE, () => inPanel(SEL.ingredients));
-        const option = await untilOrBlocked(() => readyAsset(name), wait, AGENT_ASK_MESSAGE);
-        option.click();
-        const add = await untilOrBlocked(() => overlayButton('Add to prompt'), wait, AGENT_ASK_MESSAGE);
-        add.click();
+        // Every picture still to attach is listed first: a list drawn before the newest upload showed is redrawn.
+        const rest = names.slice(i);
+        await untilOrBlocked(() => rest.every((n) => readyAsset(n)), wait, AGENT_ASK_MESSAGE);
+        (await highlightForAdd(name, wait, AGENT_ASK_MESSAGE)).click();
         await untilOrBlocked(() => agentChips() === i + 1, wait, AGENT_ASK_MESSAGE);
       }
       const baseline = agentRows().length;
